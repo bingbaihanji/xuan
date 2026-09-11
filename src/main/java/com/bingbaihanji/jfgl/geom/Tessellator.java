@@ -320,12 +320,36 @@ public final class Tessellator {
             if (d >= bestDist) {
                 continue;
             }
+            // 已经用过一次的桥接点（坐标在轮廓里出现了不止一次）不再重复使用：
+            // 两个洞都接在同一个顶点上会让那里变成被访问三次的"掐点"，
+            // 耳切在掐点上找不出合法的耳，只能中途放弃
+            if (isRepeated(mx, my, n, i)) {
+                continue;
+            }
             if (isBridgeVisible(mx, my, n, i, hxp, hyp, holes, holeCounts)) {
                 bestDist = d;
                 best = i;
             }
         }
         return best;
+    }
+
+    /**
+     * 判断轮廓中该顶点坐标是否出现了不止一次（即已被某次桥接占用过）。
+     *
+     * @param mx 轮廓 x 坐标
+     * @param my 轮廓 y 坐标
+     * @param n  轮廓顶点数
+     * @param i  待检查的顶点下标
+     * @return 该坐标在轮廓中重复出现返回 {@code true}
+     */
+    private static boolean isRepeated(float[] mx, float[] my, int n, int i) {
+        for (int j = 0; j < n; j++) {
+            if (j != i && samePoint(mx[j], my[j], mx[i], my[i])) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -543,6 +567,21 @@ public final class Tessellator {
         }
         if (turn <= EPSILON) {
             return true; // 退化耳（三点共线）：面积为零，直接剪掉
+        }
+        // 对角线 a-c 必须落在多边形内部：一旦与别的边真正相交，剪掉这个"耳"
+        // 就会把多边形剪成自交的，后续耳切必然卡死并丢掉大片面积。
+        // 光靠下面"三角形内有没有别的顶点"不够——桥接会制造坐标完全重合的重复顶点，
+        // 与 b 重合的那份拷贝所连出的边可以从三角形外侧穿过对角线，
+        // 两端都不落在三角形内，顶点判定根本看不见。
+        for (int i = 0; i < n; i++) {
+            int j = (i + 1) % n;
+            if (i == a || j == a || i == c || j == c) {
+                continue; // 与 a、c 相连的边和对角线共端点，不算相交
+            }
+            if (segmentsConflict(px[a], py[a], px[c], py[c],
+                    px[i], py[i], px[j], py[j])) {
+                return false;
+            }
         }
         for (int i = 0; i < n; i++) {
             if (i == a || i == b || i == c) {
