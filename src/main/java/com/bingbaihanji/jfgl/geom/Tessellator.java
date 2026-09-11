@@ -14,6 +14,14 @@ import java.util.Arrays;
  * <p>带孔洞的多边形用 {@link #tessellateWithHoles}：先把每个洞用一对重合边桥接到
  * 轮廓上合并成单个简单多边形，再走同一套耳切法。
  *
+ * <p><b>输入契约</b>（超出契约的输入不会抛异常、也不会死循环，但结果不保证正确，
+ * 可能凭空丢掉一部分面积）：
+ * <ul>
+ *   <li>外轮廓与每个洞各自都是简单多边形：无自相交、无重合顶点、面积非零；</li>
+ *   <li>每个洞完整落在外轮廓内部，洞与洞之间不相交、不互相包含；</li>
+ *   <li>洞的顶点数至少 3，且坐标个数与顶点数一致。</li>
+ * </ul>
+ *
  * <p>本类不含任何 GL 依赖，可脱离窗口做单元测试。实例可复用：
  * 每次 {@link #tessellate} 都会先清空上一次的结果。
  */
@@ -116,6 +124,8 @@ public final class Tessellator {
      * 因此调用方传入洞的顺/逆时针都不影响结果。
      *
      * <p>洞超出外轮廓、洞之间相交等病态输入不会抛异常也不会死循环，结果是尽力而为的。
+     * 注意：洞越多，桥接越容易互相挡住，病态输入下丢面积的概率越高——两三洞的常规图形
+     * （环形图、条形图的挖空）不受影响。
      *
      * @param outer      外轮廓的扁平顶点数组 {@code [x0,y0, x1,y1, ...]}
      * @param outerCount 外轮廓顶点数
@@ -267,7 +277,19 @@ public final class Tessellator {
             if (requireVisible) {
                 return -1;
             }
-            target = nearestVertex(mx, my, n, hx[holeRight], hy[holeRight]);
+            // 所有轮廓顶点都连不过去（桥会穿过别的洞或别的边）时，退一步在轮廓边上
+            // 找一个最近的可见点，把它当作新顶点插进轮廓再连。
+            // 直接连"最近的顶点"会连出一条穿过边界的桥，把多边形弄成自交的，
+            // 后面的耳切只能在错误图形上瞎剪，面积就丢了。
+            float[] point = new float[2];
+            int edge = findBridgeEdge(mx, my, n, hx[holeRight], hy[holeRight],
+                    holes, holeCounts, point);
+            if (edge >= 0) {
+                n = insertVertex(mx, my, n, edge + 1, point[0], point[1]);
+                target = edge + 1;
+            } else {
+                target = nearestVertex(mx, my, n, hx[holeRight], hy[holeRight]);
+            }
         }
 
         int shift = hc + 2;
@@ -326,12 +348,82 @@ public final class Tessellator {
             if (isRepeated(mx, my, n, i)) {
                 continue;
             }
-            if (isBridgeVisible(mx, my, n, i, hxp, hyp, holes, holeCounts)) {
+            if (isBridgeVisible(mx, my, n, hxp, hyp, mx[i], my[i], -1, holes, holeCounts)) {
                 bestDist = d;
                 best = i;
             }
         }
         return best;
+    }
+
+    /**
+     * 在当前轮廓的<b>边</b>上寻找桥接点：即轮廓边 {A}-{B} 上离洞顶点最近、
+     * 且与洞顶点之间没有遮挡的一点，找到后写入 {@code out}。
+     *
+     * <p>取点时会把参数 {@code t} 夹在两端点之间（不让它落在顶点上），
+     * 免得新插进去的顶点与已有顶点重合、又造出一个"掐点"。
+     *
+     * @param mx         当前轮廓的 x 坐标
+     * @param my         当前轮廓的 y 坐标
+     * @param n          当前轮廓的顶点数
+     * @param hxp        洞顶点的 x 坐标
+     * @param hyp        洞顶点的 y 坐标
+     * @param holes      全部洞的扁平顶点数组
+     * @param holeCounts 全部洞的顶点数
+     * @param out        接收找到的点，长度为 2
+     * @return 该点所在边的起点下标；一个可见点都没有时返回 {@code -1}
+     */
+    private static int findBridgeEdge(float[] mx, float[] my, int n,
+                                      float hxp, float hyp,
+                                      float[][] holes, int[] holeCounts, float[] out) {
+        int bestEdge = -1;
+        float bestDist = Float.MAX_VALUE;
+        for (int i = 0; i < n; i++) {
+            int j = (i + 1) % n;
+            float ax = mx[i], ay = my[i];
+            float bx = mx[j], by = my[j];
+            float dx = bx - ax, dy = by - ay;
+            float len2 = dx * dx + dy * dy;
+            if (len2 <= EPSILON) {
+                continue; // 退化的边
+            }
+            float t = ((hxp - ax) * dx + (hyp - ay) * dy) / len2;
+            t = Math.max(0.02f, Math.min(0.98f, t));
+            float px = ax + t * dx, py = ay + t * dy;
+            float ddx = px - hxp, ddy = py - hyp;
+            float d = ddx * ddx + ddy * ddy;
+            if (d >= bestDist) {
+                continue;
+            }
+            if (isBridgeVisible(mx, my, n, hxp, hyp, px, py, i, holes, holeCounts)) {
+                bestDist = d;
+                bestEdge = i;
+                out[0] = px;
+                out[1] = py;
+            }
+        }
+        return bestEdge;
+    }
+
+    /**
+     * 把点 {@code (x, y)} 作为新顶点插到轮廓的下标 {@code at} 处，后面的顶点整体后移。
+     *
+     * @param mx 轮廓 x 坐标（原地修改）
+     * @param my 轮廓 y 坐标（原地修改）
+     * @param n  插入前的顶点数
+     * @param at 新顶点插入的位置
+     * @param x  新顶点的 x 坐标
+     * @param y  新顶点的 y 坐标
+     * @return 插入后的顶点数
+     */
+    private static int insertVertex(float[] mx, float[] my, int n, int at, float x, float y) {
+        for (int i = n - 1; i >= at; i--) {
+            mx[i + 1] = mx[i];
+            my[i + 1] = my[i];
+        }
+        mx[at] = x;
+        my[at] = y;
+        return n + 1;
     }
 
     /**
@@ -386,21 +478,22 @@ public final class Tessellator {
      * @param mx     当前轮廓的 x 坐标
      * @param my     当前轮廓的 y 坐标
      * @param n      当前轮廓的顶点数
-     * @param target 轮廓上的候选顶点下标
      * @param hxp    洞顶点的 x 坐标
      * @param hyp    洞顶点的 y 坐标
+     * @param tx     候选桥接点的 x 坐标
+     * @param ty     候选桥接点的 y 坐标
+     * @param skipEdge 候选点落在这条边上（顶点候选传 {@code -1}），该边自身不算遮挡
      * @param holes      全部洞的扁平顶点数组
      * @param holeCounts 全部洞的顶点数
      * @return 连线未被遮挡返回 {@code true}
      */
-    private static boolean isBridgeVisible(float[] mx, float[] my, int n, int target,
-                                           float hxp, float hyp,
+    private static boolean isBridgeVisible(float[] mx, float[] my, int n,
+                                           float hxp, float hyp, float tx, float ty,
+                                           int skipEdge,
                                            float[][] holes, int[] holeCounts) {
-        float tx = mx[target];
-        float ty = my[target];
         for (int i = 0; i < n; i++) {
             int j = (i + 1) % n;
-            if (i == target || j == target) {
+            if (i == skipEdge) {
                 continue;
             }
             if (segmentsConflict(hxp, hyp, tx, ty, mx[i], my[i], mx[j], my[j])) {

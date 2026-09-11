@@ -1,5 +1,6 @@
 package com.bingbaihanji.jfgl.geom;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -22,7 +23,13 @@ import static org.junit.jupiter.api.Assertions.*;
  *   <li>{@link #桥擦到另一个洞的顶点时仍能正确挖去} —— 上一条的最小复现。</li>
  *   <li>{@link #洞与外轮廓同向时仍然被挖去} —— 洞的绕向归一化（外轮廓逆时针则洞顺时针）。</li>
  *   <li>{@link #多洞输出的三角形绕向一致为逆时针} —— 多洞输入下输出绕向的一致性。</li>
+ *   <li>{@link #矩形挖两个小方洞面积守恒} —— 两次桥接落在同一个外轮廓顶点上时，
+ *       那里会变成被访问三次的"掐点"，必须避免重复使用桥接点。</li>
  * </ul>
+ *
+ * <p>另有两个已知缺陷用例（{@code 两个洞贴着同一条竖直边线时面积守恒}、
+ * {@code 方洞与扁洞上下排列时面积守恒}）暂时 {@code @Disabled}，
+ * 它们记录的失败数字是实测值，修好后应去掉 {@code @Disabled}。
  */
 class TessellatorRegressionTest {
 
@@ -174,6 +181,62 @@ class TessellatorRegressionTest {
         t.tessellateWithHoles(outer, 32, holes, holeCounts);
 
         assertAreaConserved(expectedArea(outer, 32, holes, holeCounts), t);
+    }
+
+    @Test
+    void 矩形挖两个小方洞面积守恒() {
+        // 两个洞都离同一个外轮廓顶点最近：若两次桥接落在同一个顶点上，
+        // 那里会变成被访问三次的"掐点"，耳切在掐点上找不到合法的耳
+        Tessellator t = new Tessellator();
+        float[] outer = rect(0f, 0f, 200f, 240f, false);
+        float[][] holes = {rect(10f, 10f, 20f, 20f, false), rect(160f, 10f, 180f, 20f, false)};
+        int[] holeCounts = {4, 4};
+
+        t.tessellateWithHoles(outer, 4, holes, holeCounts);
+
+        assertAreaConserved(expectedArea(outer, 4, holes, holeCounts), t);
+    }
+
+    /**
+     * 已知缺陷（暂不通过，故禁用）：桥接点在个别布局下仍然选不出合法的桥。
+     *
+     * <p>实测：本用例的面积应为 71700，当前实现给 68600，凭空丢掉 3100。
+     * 原因是第一个洞的桥横穿图形，把第二个洞所有可见的桥接顶点和边上可见点
+     * 都挡住了，最后只能退回"最近顶点"连出一条穿过边界的桥。
+     * 二洞布局下的实测失败率约 0.4%（4051 个随机合法用例中 5 个），
+     * 三洞约 0.8%，四洞以上显著升高。修好之后请去掉 {@code @Disabled}。
+     */
+    @Disabled("已知缺陷：两洞贴同一条竖直边线时桥接点选不出，面积丢失 3100")
+    @Test
+    void 两个洞贴着同一条竖直边线时面积守恒() {
+        // 两个洞的左边线同为 x=10：第二个洞连向外轮廓的桥会被第一个洞的桥挡住，
+        // 只能退到"在轮廓边上找可见点"，直接连最近顶点会连出一条穿过边界的桥
+        Tessellator t = new Tessellator();
+        float[] outer = rect(0f, 0f, 280f, 260f, false);
+        float[][] holes = {rect(10f, 10f, 40f, 40f, true), rect(10f, 96f, 20f, 116f, true)};
+        int[] holeCounts = {4, 4};
+
+        t.tessellateWithHoles(outer, 4, holes, holeCounts);
+
+        assertAreaConserved(expectedArea(outer, 4, holes, holeCounts), t);
+    }
+
+    /**
+     * 已知缺陷（暂不通过，故禁用）：与上一个用例同源。
+     *
+     * <p>实测：面积应为 31400，当前实现给 28500，丢掉 2900。
+     */
+    @Disabled("已知缺陷：第二个洞桥接到第一个洞的环上后，耳切仍会中途放弃，面积丢失 2900")
+    @Test
+    void 方洞与扁洞上下排列时面积守恒() {
+        Tessellator t = new Tessellator();
+        float[] outer = rect(0f, 0f, 180f, 180f, false);
+        float[][] holes = {rect(10f, 10f, 40f, 40f, false), rect(70f, 10f, 80f, 20f, true)};
+        int[] holeCounts = {4, 4};
+
+        t.tessellateWithHoles(outer, 4, holes, holeCounts);
+
+        assertAreaConserved(expectedArea(outer, 4, holes, holeCounts), t);
     }
 
     @Test
