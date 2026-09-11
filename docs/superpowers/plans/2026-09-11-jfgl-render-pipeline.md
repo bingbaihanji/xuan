@@ -2542,25 +2542,29 @@ public final class RenderBatch implements Disposable {
 
     private void createVao() {
         vao = gl.createVao();
+        gl.bindVao(vao);
+        gl.bindVbo(vertexBuffer.id());
         configureVaoAttributes();
+        gl.bindVao(0);
     }
 
     /**
-     * 把顶点属性指针配置到当前 VBO 上。
+     * 在当前已绑定的 VAO 与 VBO 上设置顶点属性指针。
      *
-     * <p><strong>关键</strong>：{@code glVertexAttribPointer} 会把<strong>调用时绑定的
-     * GL_ARRAY_BUFFER</strong> 记录进 VAO。而 {@link VertexBuffer#grow()} 在扩容时
-     * 会删除旧 VBO、新建一个 VBO —— 此时 VAO 的属性指针就指向了一个已删除的缓冲，
-     * 绘制会报错或输出空白。事后重新 {@code glBindBuffer} <strong>无法</strong>修复，
-     * 因为 GL_ARRAY_BUFFER 绑定不是 VAO 状态（只有 GL_ELEMENT_ARRAY_BUFFER 是）。
+     * <p><strong>前置条件</strong>：调用方必须已经绑定 {@code vao} 与
+     * {@code vertexBuffer.id()}。本方法<strong>不做任何绑定，也不解绑</strong>——
+     * 绑定职责完整地留给调用方，避免"谁负责解绑"这种含糊契约。
      *
-     * <p>因此每次提交前都要检查 VBO 是否已被替换，是则重新配置属性指针。
-     * 扩容正是 {@link VertexBuffer} 存在的理由，所以这条路径一定会被走到。
+     * <p><strong>为什么需要重新配置</strong>：{@code glVertexAttribPointer} 会把
+     * <strong>调用时绑定的 GL_ARRAY_BUFFER</strong> 记录进 VAO。而
+     * {@link VertexBuffer#grow()} 扩容时会删除旧 VBO 并新建一个 ——
+     * 此时 VAO 的属性指针就指向了一个已删除的缓冲，绘制会报错或输出空白。
+     *
+     * <p>事后重新 {@code glBindBuffer} <strong>无法</strong>修复，因为 GL_ARRAY_BUFFER
+     * 绑定不是 VAO 状态（只有 GL_ELEMENT_ARRAY_BUFFER 是）。所以必须重跑本方法。
+     * 扩容正是 {@link VertexBuffer} 存在的理由，这条路径一定会被走到。
      */
     private void configureVaoAttributes() {
-        gl.bindVao(vao);
-        gl.bindVbo(vertexBuffer.id());
-
         glVertexAttribPointer(0, 2, GL_FLOAT, false, VertexFormat.STRIDE_BYTES,
                 VertexFormat.OFFSET_POSITION);
         glEnableVertexAttribArray(0);
@@ -2578,7 +2582,6 @@ public final class RenderBatch implements Disposable {
                 VertexFormat.STRIDE_BYTES, VertexFormat.OFFSET_ID);
         glEnableVertexAttribArray(3);
 
-        gl.bindVao(0);
         vaoConfiguredVboId = vertexBuffer.id();
     }
 
@@ -2603,15 +2606,16 @@ public final class RenderBatch implements Disposable {
         }
         vertexBuffer.upload(writer.buffer());
 
-        // 扩容会替换底层 VBO，必须重新配置 VAO 的属性指针（详见 configureVaoAttributes 的说明）。
-        // 注意这一步必须在 bindVao 之前完成，因为 configureVaoAttributes 自己会绑定 VAO。
-        if (vaoConfiguredVboId != vertexBuffer.id()) {
-            configureVaoAttributes();
-        }
-
         shader.use();
         gl.bindVao(vao);
         gl.bindVbo(vertexBuffer.id());
+
+        // 扩容会替换底层 VBO，必须重新配置 VAO 的属性指针（详见 configureVaoAttributes）。
+        // 必须在这里调用：此时 VAO 与新 VBO 都已绑定，且紧接着就是绘制。
+        // 不能提前到 bindVao 之前——那样属性指针会设到上一个 VAO 上。
+        if (vaoConfiguredVboId != vertexBuffer.id()) {
+            configureVaoAttributes();
+        }
 
         gl.enableBlend();
         org.lwjgl.opengl.GL11.glBlendFunc(
