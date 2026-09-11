@@ -11,6 +11,9 @@ import java.util.Arrays;
  * <p>算法：先判断凸性。凸多边形走扇形三角化（O(n)）；凹多边形走耳切法（O(n²)）。
  * 顶点顺序（顺/逆时针）不要求，内部会统一为逆时针。
  *
+ * <p>带孔洞的多边形用 {@link #tessellateWithHoles}：先把每个洞用一对重合边桥接到
+ * 轮廓上合并成单个简单多边形，再走同一套耳切法。
+ *
  * <p>本类不含任何 GL 依赖，可脱离窗口做单元测试。实例可复用：
  * 每次 {@link #tessellate} 都会先清空上一次的结果。
  */
@@ -30,6 +33,12 @@ public final class Tessellator {
 
     /** 顶点 y 坐标工作区，避免每次调用重新分配。 */
     private float[] scratchY = new float[64];
+
+    /** 桥接时洞顶点的 x 坐标工作区。 */
+    private float[] holeX = new float[64];
+
+    /** 桥接时洞顶点的 y 坐标工作区。 */
+    private float[] holeY = new float[64];
 
     /** 创建三角化器。 */
     public Tessellator() {
@@ -93,6 +102,380 @@ public final class Tessellator {
         earClip(scratchX, scratchY, count);
     }
 
+    /**
+     * 三角化带孔洞的多边形。
+     *
+     * <p>实现方式：把每个洞用一条"桥"接到当前轮廓上——即插入一对方向相反的重合边，
+     * 使带洞多边形变成单个简单多边形，再走既有的耳切法。桥接点取当前轮廓上
+     * 与洞的最右顶点距离最近的<b>可见</b>顶点（连线不与任何边真正相交）。
+     *
+     * <p>每个洞都针对<b>已经合并了先前洞</b>的轮廓重新寻找桥接点，因此支持任意多个洞。
+     * 某个洞当下的桥如果会被别的洞挡住，就先合并别的洞、下一轮再处理它
+     * （桥接点用"当前轮廓上最近的可见顶点"，可见性同时避开尚未合并的洞）。
+     * 洞被处理时会统一取与外轮廓相反的绕向（外轮廓逆时针则洞顺时针），
+     * 因此调用方传入洞的顺/逆时针都不影响结果。
+     *
+     * <p>洞超出外轮廓、洞之间相交等病态输入不会抛异常也不会死循环，结果是尽力而为的。
+     *
+     * @param outer      外轮廓的扁平顶点数组 {@code [x0,y0, x1,y1, ...]}
+     * @param outerCount 外轮廓顶点数
+     * @param holes      每个洞的扁平顶点数组
+     * @param holeCounts 每个洞的顶点数
+     */
+    public void tessellateWithHoles(float[] outer, int outerCount,
+                                    float[][] holes, int[] holeCounts) {
+        reset();
+        if (outerCount < 3) {
+            return;
+        }
+        if (holes == null || holes.length == 0) {
+            tessellate(outer, outerCount, true);
+            return;
+        }
+
+        int holeNum = Math.min(holes.length, holeCounts.length);
+        int capacity = outerCount + 8;
+        for (int h = 0; h < holeNum; h++) {
+            if (isUsableHole(holes, holeCounts, h)) {
+                capacity += holeCounts[h] + 2; // 洞顶点 + 重合双边的终点
+            }
+        }
+
+        float[] mergedX = new float[capacity];
+        float[] mergedY = new float[capacity];
+        int n = 0;
+        for (int i = 0; i < outerCount; i++) {
+            mergedX[n] = outer[i * 2];
+            mergedY[n] = outer[i * 2 + 1];
+            n++;
+        }
+        // 外轮廓统一为逆时针，洞才能以顺时针"挖去"
+        if (signedArea(mergedX, mergedY, n) < 0f) {
+            reverse(mergedX, mergedY, n);
+        }
+
+        // 一个洞此刻可能找不到可见的桥接点（桥会穿过别的洞），
+        // 但把别的洞先合并进来以后就有了——所以反复扫描，直到没有洞能再合并为止
+        boolean[] done = new boolean[holeNum];
+        int pending = 0;
+        for (int h = 0; h < holeNum; h++) {
+            if (isUsableHole(holes, holeCounts, h)) {
+                pending++;
+            }
+        }
+        while (pending > 0) {
+            boolean progress = false;
+            for (int h = 0; h < holeNum; h++) {
+                if (done[h] || !isUsableHole(holes, holeCounts, h)) {
+                    continue;
+                }
+                prepareHole(holes[h], holeCounts[h]);
+                int merged = bridgeHole(mergedX, mergedY, n, holeX, holeY, holeCounts[h],
+                        holes, holeCounts, true);
+                if (merged >= 0) {
+                    n = merged;
+                    done[h] = true;
+                    pending--;
+                    progress = true;
+                }
+            }
+            if (!progress) {
+                // 剩下的洞对着当前轮廓怎么连都会被挡住：退化成"最近的顶点"，尽力而为
+                for (int h = 0; h < holeNum; h++) {
+                    if (done[h] || !isUsableHole(holes, holeCounts, h)) {
+                        continue;
+                    }
+                    prepareHole(holes[h], holeCounts[h]);
+                    n = bridgeHole(mergedX, mergedY, n, holeX, holeY, holeCounts[h],
+                            holes, holeCounts, false);
+                    done[h] = true;
+                    pending--;
+                }
+            }
+        }
+
+        float[] poly = new float[n * 2];
+        for (int i = 0; i < n; i++) {
+            poly[i * 2] = mergedX[i];
+            poly[i * 2 + 1] = mergedY[i];
+        }
+        tessellate(poly, n, true);
+    }
+
+    /**
+     * 判断第 {@code h} 个洞是否可用（非空且至少 3 个顶点）。
+     *
+     * @param holes      每个洞的扁平顶点数组
+     * @param holeCounts 每个洞的顶点数
+     * @param h          洞的下标
+     * @return 可用返回 {@code true}
+     */
+    private static boolean isUsableHole(float[][] holes, int[] holeCounts, int h) {
+        return holes[h] != null && holeCounts[h] >= 3
+                && holes[h].length >= holeCounts[h] * 2;
+    }
+
+    /**
+     * 把一个洞的顶点复制到工作区，并归一化为与外轮廓相反的绕向
+     * （外轮廓逆时针，则洞取顺时针，才能被"挖去"）。
+     *
+     * @param hole 洞的扁平顶点数组
+     * @param hc   洞的顶点数
+     */
+    private void prepareHole(float[] hole, int hc) {
+        ensureHoleScratch(hc);
+        for (int i = 0; i < hc; i++) {
+            holeX[i] = hole[i * 2];
+            holeY[i] = hole[i * 2 + 1];
+        }
+        if (signedArea(holeX, holeY, hc) > 0f) {
+            reverse(holeX, holeY, hc);
+        }
+    }
+
+    /**
+     * 把一个洞桥接到当前轮廓上，返回合并后的顶点数。
+     *
+     * <p>做法：取洞的最右顶点 H 与轮廓上的桥接点 M，在 M 之后依次插入
+     * {@code H → 绕洞一周 → H → M}，其中 {@code M→H} 与 {@code H→M}
+     * 是那对方向相反的重合边。轮廓在 M 之后的部分整体后移。
+     *
+     * @param mx 当前轮廓的 x 坐标（原地修改）
+     * @param my 当前轮廓的 y 坐标（原地修改）
+     * @param n  当前轮廓的顶点数
+     * @param hx 洞的 x 坐标（已归一化为与外轮廓相反的绕向）
+     * @param hy 洞的 y 坐标
+     * @param hc 洞的顶点数
+     * @param holes       全部洞的扁平顶点数组（用于避开尚未合并的洞）
+     * @param holeCounts  全部洞的顶点数
+     * @param requireVisible 为 {@code true} 时找不到可见桥接点就返回 {@code -1}；
+     *                    为 {@code false} 时退化为"最近的顶点"
+     * @return 合并后的顶点数；{@code requireVisible} 且无可见桥接点时返回 {@code -1}
+     */
+    private static int bridgeHole(float[] mx, float[] my, int n,
+                                  float[] hx, float[] hy, int hc,
+                                  float[][] holes, int[] holeCounts,
+                                  boolean requireVisible) {
+        int holeRight = 0;
+        for (int i = 1; i < hc; i++) {
+            if (hx[i] > hx[holeRight]) {
+                holeRight = i;
+            }
+        }
+        int target = findBridgeVertex(mx, my, n, hx[holeRight], hy[holeRight], holes, holeCounts);
+        if (target < 0) {
+            if (requireVisible) {
+                return -1;
+            }
+            target = nearestVertex(mx, my, n, hx[holeRight], hy[holeRight]);
+        }
+
+        int shift = hc + 2;
+        for (int i = n - 1; i > target; i--) {
+            mx[i + shift] = mx[i];
+            my[i + shift] = my[i];
+        }
+
+        int p = target + 1;
+        for (int k = 0; k < hc; k++) {
+            int idx = (holeRight + k) % hc;
+            mx[p] = hx[idx];
+            my[p] = hy[idx];
+            p++;
+        }
+        mx[p] = hx[holeRight];  // 绕回洞的最右顶点：桥的第一条边终点
+        my[p] = hy[holeRight];
+        p++;
+        mx[p] = mx[target];     // 回到桥接点：与来路重合的第二条边
+        my[p] = my[target];
+        p++;
+
+        return n + shift;
+    }
+
+    /**
+     * 在当前轮廓中寻找洞顶点 {@code (hxp, hyp)} 的桥接顶点。
+     *
+     * <p>取距离最近的可见顶点；一个可见顶点都没有时返回 {@code -1}。
+     *
+     * @param mx  当前轮廓的 x 坐标
+     * @param my  当前轮廓的 y 坐标
+     * @param n   当前轮廓的顶点数
+     * @param hxp 洞顶点的 x 坐标
+     * @param hyp 洞顶点的 y 坐标
+     * @param holes      全部洞的扁平顶点数组
+     * @param holeCounts 全部洞的顶点数
+     * @return 桥接顶点在轮廓中的下标；没有可见顶点时返回 {@code -1}
+     */
+    private static int findBridgeVertex(float[] mx, float[] my, int n,
+                                        float hxp, float hyp,
+                                        float[][] holes, int[] holeCounts) {
+        int best = -1;
+        float bestDist = Float.MAX_VALUE;
+
+        for (int i = 0; i < n; i++) {
+            float dx = mx[i] - hxp;
+            float dy = my[i] - hyp;
+            float d = dx * dx + dy * dy;
+            if (d >= bestDist) {
+                continue;
+            }
+            if (isBridgeVisible(mx, my, n, i, hxp, hyp, holes, holeCounts)) {
+                bestDist = d;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 返回轮廓上距离 {@code (hxp, hyp)} 最近的顶点下标。
+     *
+     * @param mx  当前轮廓的 x 坐标
+     * @param my  当前轮廓的 y 坐标
+     * @param n   当前轮廓的顶点数
+     * @param hxp 洞顶点的 x 坐标
+     * @param hyp 洞顶点的 y 坐标
+     * @return 最近顶点在轮廓中的下标
+     */
+    private static int nearestVertex(float[] mx, float[] my, int n, float hxp, float hyp) {
+        int nearest = 0;
+        float nearestDist = Float.MAX_VALUE;
+        for (int i = 0; i < n; i++) {
+            float dx = mx[i] - hxp;
+            float dy = my[i] - hyp;
+            float d = dx * dx + dy * dy;
+            if (d < nearestDist) {
+                nearestDist = d;
+                nearest = i;
+            }
+        }
+        return nearest;
+    }
+
+    /**
+     * 判断洞顶点到轮廓顶点的连线是否可见（不与任何边真正相交）。
+     *
+     * <p>除了当前轮廓，还要避开<b>所有</b>洞的边界：桥是在洞被逐个合并的过程中选出来的，
+     * 尚未合并的洞此时还不在轮廓里，但桥照样不能从它们身上穿过去。
+     *
+     * @param mx     当前轮廓的 x 坐标
+     * @param my     当前轮廓的 y 坐标
+     * @param n      当前轮廓的顶点数
+     * @param target 轮廓上的候选顶点下标
+     * @param hxp    洞顶点的 x 坐标
+     * @param hyp    洞顶点的 y 坐标
+     * @param holes      全部洞的扁平顶点数组
+     * @param holeCounts 全部洞的顶点数
+     * @return 连线未被遮挡返回 {@code true}
+     */
+    private static boolean isBridgeVisible(float[] mx, float[] my, int n, int target,
+                                           float hxp, float hyp,
+                                           float[][] holes, int[] holeCounts) {
+        float tx = mx[target];
+        float ty = my[target];
+        for (int i = 0; i < n; i++) {
+            int j = (i + 1) % n;
+            if (i == target || j == target) {
+                continue;
+            }
+            if (segmentsConflict(hxp, hyp, tx, ty, mx[i], my[i], mx[j], my[j])) {
+                return false;
+            }
+        }
+        for (int h = 0; h < holes.length && h < holeCounts.length; h++) {
+            float[] hole = holes[h];
+            int hc = holeCounts[h];
+            if (hole == null || hc < 3) {
+                continue;
+            }
+            for (int i = 0; i < hc; i++) {
+                int j = (i + 1) % hc;
+                if (segmentsConflict(hxp, hyp, tx, ty,
+                        hole[i * 2], hole[i * 2 + 1], hole[j * 2], hole[j * 2 + 1])) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 判断桥与一条边是否冲突：不仅包含真正的交叉跨越，也包含"擦到"——
+     * 边的端点落在桥内部，或桥的端点落在边内部。
+     *
+     * <p>桥与别的洞擦到虽然不算穿越，却会让合并后的多边形出现"顶点正好压在某条边上"，
+     * 耳切在这种退化图形上很容易卡死，所以这里直接避开。
+     * 桥自身两个端点落在别的边上（起止点是相邻边的端点）不算冲突。
+     *
+     * @param ax 桥起点 x 坐标
+     * @param ay 桥起点 y 坐标
+     * @param bx 桥终点 x 坐标
+     * @param by 桥终点 y 坐标
+     * @param cx 边的起点 x 坐标
+     * @param cy 边的起点 y 坐标
+     * @param dx 边的终点 x 坐标
+     * @param dy 边的终点 y 坐标
+     * @return 冲突返回 {@code true}
+     */
+    private static boolean segmentsConflict(float ax, float ay, float bx, float by,
+                                            float cx, float cy, float dx, float dy) {
+        if (segmentsProperlyIntersect(ax, ay, bx, by, cx, cy, dx, dy)) {
+            return true;
+        }
+        return strictlyInside(ax, ay, bx, by, cx, cy)
+                || strictlyInside(ax, ay, bx, by, dx, dy)
+                || strictlyInside(cx, cy, dx, dy, ax, ay)
+                || strictlyInside(cx, cy, dx, dy, bx, by);
+    }
+
+    /**
+     * 判断点是否落在线段内部（在线段上但不算两个端点）。
+     *
+     * @param ax 线段起点 x 坐标
+     * @param ay 线段起点 y 坐标
+     * @param bx 线段终点 x 坐标
+     * @param by 线段终点 y 坐标
+     * @param px 被测试点的 x 坐标
+     * @param py 被测试点的 y 坐标
+     * @return 落在内部返回 {@code true}
+     */
+    private static boolean strictlyInside(float ax, float ay, float bx, float by,
+                                          float px, float py) {
+        if (Math.abs(cross(ax, ay, bx, by, px, py)) > EPSILON) {
+            return false;
+        }
+        if (samePoint(px, py, ax, ay) || samePoint(px, py, bx, by)) {
+            return false;
+        }
+        return px >= Math.min(ax, bx) - EPSILON && px <= Math.max(ax, bx) + EPSILON
+                && py >= Math.min(ay, by) - EPSILON && py <= Math.max(ay, by) + EPSILON;
+    }
+
+    /**
+     * 判断两条线段是否真正相交（交叉跨越，共端点或共线不算）。
+     *
+     * @param ax 线段 1 起点 x 坐标
+     * @param ay 线段 1 起点 y 坐标
+     * @param bx 线段 1 终点 x 坐标
+     * @param by 线段 1 终点 y 坐标
+     * @param cx 线段 2 起点 x 坐标
+     * @param cy 线段 2 起点 y 坐标
+     * @param dx 线段 2 终点 x 坐标
+     * @param dy 线段 2 终点 y 坐标
+     * @return 真正相交返回 {@code true}
+     */
+    private static boolean segmentsProperlyIntersect(float ax, float ay, float bx, float by,
+                                                     float cx, float cy, float dx, float dy) {
+        float d1 = cross(cx, cy, dx, dy, ax, ay);
+        float d2 = cross(cx, cy, dx, dy, bx, by);
+        float d3 = cross(ax, ay, bx, by, cx, cy);
+        float d4 = cross(ax, ay, bx, by, dx, dy);
+        boolean straddle1 = (d1 > EPSILON && d2 < -EPSILON) || (d1 < -EPSILON && d2 > EPSILON);
+        boolean straddle2 = (d3 > EPSILON && d4 < -EPSILON) || (d3 < -EPSILON && d4 > EPSILON);
+        return straddle1 && straddle2;
+    }
+
     // ------------------------------------------------------------------
     // 耳切法
     // ------------------------------------------------------------------
@@ -150,11 +533,30 @@ public final class Tessellator {
      * @return 是耳返回 {@code true}
      */
     private static boolean isEar(float[] px, float[] py, int n, int a, int b, int c) {
-        if (cross(px[a], py[a], px[b], py[b], px[c], py[c]) <= EPSILON) {
-            return false; // 凹角或退化，不是耳
+        // 允许共线（cross == 0）：凸多边形里不会有，但桥接多边形里桥的两端
+        // 必然造成共线顶点，若一律拒绝它们当耳，耳切会卡在"没有任何顶点是耳"
+        // 的僵局里提前放弃，结果就是大面积丢失。共线的耳面积为零，挖掉它
+        // 不改变结果面积。
+        float turn = cross(px[a], py[a], px[b], py[b], px[c], py[c]);
+        if (turn < -EPSILON) {
+            return false; // 凹角，不是耳
+        }
+        if (turn <= EPSILON) {
+            return true; // 退化耳（三点共线）：面积为零，直接剪掉
         }
         for (int i = 0; i < n; i++) {
             if (i == a || i == b || i == c) {
+                continue;
+            }
+            // 桥接多边形里同一个坐标会出现两次（重合双边的两端），
+            // 与三角形角点重合的顶点不算遮挡，否则这些角永远成不了耳
+            if (samePoint(px[i], py[i], px[a], py[a])
+                    || samePoint(px[i], py[i], px[b], py[b])
+                    || samePoint(px[i], py[i], px[c], py[c])) {
+                continue;
+            }
+            // 落在这条对角线上的顶点只是相切，不构成遮挡
+            if (onSegment(px[a], py[a], px[c], py[c], px[i], py[i])) {
                 continue;
             }
             if (pointInTriangle(px[i], py[i],
@@ -163,6 +565,39 @@ public final class Tessellator {
             }
         }
         return true;
+    }
+
+    /**
+     * 判断点是否落在线段 {@code (ax,ay)-(bx,by)} 上（含端点，按 {@link #EPSILON} 容差）。
+     *
+     * @param ax 线段起点 x 坐标
+     * @param ay 线段起点 y 坐标
+     * @param bx 线段终点 x 坐标
+     * @param by 线段终点 y 坐标
+     * @param px 被测试点的 x 坐标
+     * @param py 被测试点的 y 坐标
+     * @return 落在线段上返回 {@code true}
+     */
+    private static boolean onSegment(float ax, float ay, float bx, float by,
+                                     float px, float py) {
+        if (Math.abs(cross(ax, ay, bx, by, px, py)) > EPSILON) {
+            return false;
+        }
+        return px >= Math.min(ax, bx) - EPSILON && px <= Math.max(ax, bx) + EPSILON
+                && py >= Math.min(ay, by) - EPSILON && py <= Math.max(ay, by) + EPSILON;
+    }
+
+    /**
+     * 判断两点是否重合（按 {@link #EPSILON} 容差）。
+     *
+     * @param ax 第一个点的 x 坐标
+     * @param ay 第一个点的 y 坐标
+     * @param bx 第二个点的 x 坐标
+     * @param by 第二个点的 y 坐标
+     * @return 重合返回 {@code true}
+     */
+    private static boolean samePoint(float ax, float ay, float bx, float by) {
+        return Math.abs(ax - bx) <= EPSILON && Math.abs(ay - by) <= EPSILON;
     }
 
     /**
@@ -184,9 +619,10 @@ public final class Tessellator {
         float d1 = cross(ax, ay, bx, by, px, py);
         float d2 = cross(bx, by, cx, cy, px, py);
         float d3 = cross(cx, cy, ax, ay, px, py);
-        boolean hasNeg = d1 < -EPSILON || d2 < -EPSILON || d3 < -EPSILON;
-        boolean hasPos = d1 > EPSILON || d2 > EPSILON || d3 > EPSILON;
-        return !(hasNeg && hasPos);
+        // 传进来的三角形一定是逆时针的（isEar 已保证），故"三条叉积都非负"即在内部。
+        // 若用"有正有负"判断，角点落在某条边延长线外侧时会被误判为在内部，
+        // 导致本来合法的耳被挡住、耳切提前放弃。
+        return d1 >= -EPSILON && d2 >= -EPSILON && d3 >= -EPSILON;
     }
 
     /**
@@ -283,6 +719,19 @@ public final class Tessellator {
         }
         scratchX = new float[count];
         scratchY = new float[count];
+    }
+
+    /**
+     * 按需扩容洞顶点工作区。
+     *
+     * @param count 本次要容纳的洞顶点个数
+     */
+    private void ensureHoleScratch(int count) {
+        if (count <= holeX.length) {
+            return;
+        }
+        holeX = new float[count];
+        holeY = new float[count];
     }
 
     /**
