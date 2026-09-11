@@ -195,7 +195,14 @@ public final class Flattener {
     }
 
     /**
-     * 三次贝塞尔：分别取 t=1/3 与 t=2/3 处到弦的距离，取较大者作为最大偏差上界。
+     * 三次贝塞尔：按控制多边形二阶差分的标准上界估算到弦的最大偏差，再求所需段数。
+     *
+     * <p>用 {@link #cubicMaxDeviationBound} 而非在 t=1/3、t=2/3 处采样：那两个采样点并非
+     * 最大偏差所在位置，会低估偏差，从而细分不足、放大后露出棱角。
+     *
+     * <p>衰减指数取 2：曲线按参数等分成 n 段后，每段到其弦的偏差与控制点二阶差分都按
+     * {@code n^-2} 衰减，二次与三次贝塞尔皆然。此处若取 4 会严重低估段数
+     * （例如本包测试曲线在 scale=16、tol=0.25 下只用 10 段，实际偏差达 12 设备像素）。
      *
      * @param x0        起点的 x 坐标
      * @param y0        起点的 y 坐标
@@ -212,40 +219,37 @@ public final class Flattener {
     private int cubicSegments(float x0, float y0, float c1x, float c1y,
                               float c2x, float c2y, float x1, float y1,
                               float scale, float tolerance) {
-        float d1 = pointLineDistance(
-                (float) (0.2962962963 * x0 + 0.4444444444 * c1x + 0.2222222222 * c2x + 0.0370370370 * x1),
-                (float) (0.2962962963 * y0 + 0.4444444444 * c1y + 0.2222222222 * c2y + 0.0370370370 * y1),
-                x0, y0, x1, y1);
-        float d2 = pointLineDistance(
-                (float) (0.0370370370 * x0 + 0.2222222222 * c1x + 0.4444444444 * c2x + 0.2962962963 * x1),
-                (float) (0.0370370370 * y0 + 0.2222222222 * c1y + 0.4444444444 * c2y + 0.2962962963 * y1),
-                x0, y0, x1, y1);
-        return segmentsForDeviation(Math.max(d1, d2), scale, tolerance, 4f);
+        float deviation = cubicMaxDeviationBound(x0, y0, c1x, c1y, c2x, c2y, x1, y1);
+        return segmentsForDeviation(deviation, scale, tolerance, 2f);
     }
 
     /**
-     * 计算点 ({@code px}, {@code py}) 到线段 ({@code x0}, {@code y0})-({@code x1}, {@code y1}) 的垂直距离。
+     * 计算三次贝塞尔曲线到其弦的最大偏差上界：(3/4)·max(|P0−2P1+P2|, |P1−2P2+P3|)。
      *
-     * <p>线段退化成一点时（弦长为零）返回点到该点的距离。
+     * <p>这是基于控制多边形二阶差分（second difference）的标准保守上界：曲线按参数等分成
+     * n 段后，每一段到其弦的偏差不超过该上界的 {@code 1/n^2}，因此可直接用于反解段数。
+     * 上界恒不小于真实最大偏差（例如控制点 (0,0)、(0,100)、(100,100)、(100,0) 时上界为
+     * 106.07，而真实最大偏差为 75），故不会细分不足。
      *
-     * @param px 点的 x 坐标
-     * @param py 点的 y 坐标
-     * @param x0 线段起点的 x 坐标
-     * @param y0 线段起点的 y 坐标
-     * @param x1 线段终点的 x 坐标
-     * @param y1 线段终点的 y 坐标
-     * @return 点到线段的距离
+     * @param x0  起点的 x 坐标
+     * @param y0  起点的 y 坐标
+     * @param c1x 第一个控制点的 x 坐标
+     * @param c1y 第一个控制点的 y 坐标
+     * @param c2x 第二个控制点的 x 坐标
+     * @param c2y 第二个控制点的 y 坐标
+     * @param x1  终点的 x 坐标
+     * @param y1  终点的 y 坐标
+     * @return 曲线到弦的最大偏差上界（世界单位）
      */
-    private static float pointLineDistance(float px, float py,
-                                           float x0, float y0, float x1, float y1) {
-        float dx = x1 - x0, dy = y1 - y0;
-        float len2 = dx * dx + dy * dy;
-        if (len2 < 1e-12f) {
-            float ex = px - x0, ey = py - y0;
-            return (float) Math.sqrt(ex * ex + ey * ey);
-        }
-        float cross = Math.abs((px - x0) * dy - (py - y0) * dx);
-        return cross / (float) Math.sqrt(len2);
+    private static float cubicMaxDeviationBound(float x0, float y0, float c1x, float c1y,
+                                                float c2x, float c2y, float x1, float y1) {
+        float d1x = x0 - 2f * c1x + c2x;
+        float d1y = y0 - 2f * c1y + c2y;
+        float d2x = c1x - 2f * c2x + x1;
+        float d2y = c1y - 2f * c2y + y1;
+        float n1 = (float) Math.sqrt(d1x * d1x + d1y * d1y);
+        float n2 = (float) Math.sqrt(d2x * d2x + d2y * d2y);
+        return 0.75f * Math.max(n1, n2);
     }
 
     /**
@@ -258,7 +262,7 @@ public final class Flattener {
      * @param worldDeviation 世界单位下的最大偏差
      * @param scale          当前变换的缩放因子（设备像素 / 世界单位）
      * @param tolerance      允许的最大偏差（设备像素）
-     * @param exponent       误差衰减指数（二次曲线取 2，三次曲线取 4）
+     * @param exponent       误差衰减指数；二次与三次贝塞尔的弦逼近偏差都按 {@code n^-2} 衰减，均取 2
      * @return 该曲线应细分的段数
      */
     private static int segmentsForDeviation(float worldDeviation, float scale,

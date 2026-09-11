@@ -74,4 +74,103 @@ class FlattenerTest {
         assertEquals(0, f.subPathStart(0));
         assertEquals(2, f.subPathStart(1));
     }
+
+    @Test
+    void 显式容差生效() {
+        Path p = new Path();
+        p.moveTo(0f, 0f).cubicTo(0f, 100f, 100f, 100f, 100f, 0f);
+
+        Flattener loose = new Flattener();
+        loose.flatten(p, 1f, 64f);
+
+        Flattener strict = new Flattener();
+        strict.flatten(p, 1f, 0.25f);
+
+        assertTrue(loose.pointCount() < strict.pointCount(),
+                "容差 64 应比容差 0.25 产生更少的点：loose=" + loose.pointCount()
+                        + " strict=" + strict.pointCount());
+    }
+
+    @Test
+    void 平坦化偏差不超过设备像素容差() {
+        Path p = new Path();
+        p.moveTo(0f, 0f).cubicTo(0f, 100f, 100f, 100f, 100f, 0f);
+
+        final float scale = 16f;
+        final float tolerance = 0.25f;
+        Flattener f = new Flattener();
+        f.flatten(p, scale, tolerance);
+
+        // 独立采样真实曲线（不复用生产代码），逐点量到输出折线的最近距离，
+        // 取最大值换算成设备像素后与容差比较。这是该类的核心契约。
+        float worstDevice = 0f;
+        for (int s = 0; s <= 4000; s++) {
+            float t = s / 4000f;
+            float u = 1f - t;
+            float cx = 3f * u * t * t * 100f + t * t * t * 100f;
+            float cy = 3f * u * u * t * 100f + 3f * u * t * t * 100f;
+            float d = distanceToPolyline(f, cx, cy) * scale;
+            if (d > worstDevice) {
+                worstDevice = d;
+            }
+        }
+
+        assertTrue(worstDevice <= tolerance,
+                "最大偏差应不超过 " + tolerance + " 设备像素，实际 " + worstDevice);
+    }
+
+    @Test
+    void 闭合子路径回到自身起点() {
+        Path p = new Path();
+        p.moveTo(0f, 0f).lineTo(10f, 0f).lineTo(10f, 10f).close();
+        Flattener f = new Flattener();
+        f.flatten(p, 1f);
+        assertEquals(4, f.pointCount());
+        assertEquals(0f, f.x(3), 1e-4f);
+        assertEquals(0f, f.y(3), 1e-4f);
+    }
+
+    @Test
+    void 多子路径各自闭合到自身起点() {
+        Path p = new Path();
+        p.moveTo(0f, 0f).lineTo(10f, 0f).close()
+                .moveTo(50f, 50f).lineTo(60f, 50f).close();
+        Flattener f = new Flattener();
+        f.flatten(p, 1f);
+        assertEquals(6, f.pointCount());
+        assertEquals(2, f.subPathCount());
+        assertEquals(0, f.subPathStart(0));
+        assertEquals(3, f.subPathStart(1));
+        // 第二个子路径的收尾点必须是它自己的起点，而不是上一个子路径的起点
+        assertEquals(50f, f.x(5), 1e-4f);
+        assertEquals(50f, f.y(5), 1e-4f);
+    }
+
+    @Test
+    void close在不产生线段时不多加点() {
+        // 已在起点上再次 close：不应追加重复点
+        Flattener repeated = new Flattener();
+        repeated.flatten(new Path().moveTo(0f, 0f).lineTo(10f, 0f).close().close(), 1f);
+        assertEquals(3, repeated.pointCount());
+
+        // 从未 moveTo 过（hasSubPath 为假）：close 不应产生任何点
+        Flattener orphan = new Flattener();
+        orphan.flatten(new Path().close(), 1f);
+        assertEquals(0, orphan.pointCount());
+        assertEquals(0, orphan.subPathCount());
+    }
+
+    /** 返回点 ({@code px}, {@code py}) 到折线所有线段的最短距离。 */
+    private static float distanceToPolyline(Flattener f, float px, float py) {
+        float best = Float.MAX_VALUE;
+        for (int i = 0; i + 1 < f.pointCount(); i++) {
+            float ax = f.x(i), ay = f.y(i);
+            float dx = f.x(i + 1) - ax, dy = f.y(i + 1) - ay;
+            float len2 = dx * dx + dy * dy;
+            float u = len2 < 1e-12f ? 0f : ((px - ax) * dx + (py - ay) * dy) / len2;
+            u = Math.max(0f, Math.min(1f, u));
+            best = Math.min(best, (float) Math.hypot(px - (ax + u * dx), py - (ay + u * dy)));
+        }
+        return best;
+    }
 }
