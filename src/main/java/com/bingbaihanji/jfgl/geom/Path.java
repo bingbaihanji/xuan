@@ -4,7 +4,7 @@ package com.bingbaihanji.jfgl.geom;
  * 可变的 2D 路径累加器，用于在绘制热路径上零分配地构建路径。
  *
  * <p>与不可变的构建器不同，此类的实例可被反复 {@link #reset()} 并复用。
- * 命令与坐标存储在基本类型数组中，{@code moveTo}/{@code lineTo} 等调用不产生对象分配。
+ * 命令与坐标存储在基本类型数组中，{@code moveTo}/{@code lineTo} 等调用不产生对象分配（扩容时除外）。
  *
  * <p>用法：
  * <pre>{@code
@@ -12,6 +12,12 @@ package com.bingbaihanji.jfgl.geom;
  * path.reset();
  * path.moveTo(0, 0).lineTo(100, 0).lineTo(100, 100).close();
  * }</pre>
+ *
+ * <p>{@link #reset()} 只把命令计数归零，既不重新分配也不清零内部数组；追加命令时，
+ * 点数为零的命令（{@link Type#CLOSE}）也不写入坐标槽。因此带下标的访问器
+ * （{@link #commandType(int)}、{@link #pointCount(int)}、{@link #commandX(int, int)}、
+ * {@link #commandY(int, int)}）只在 {@code i < commandCount()} 且 {@code p < pointCount(i)}
+ * 时有意义，其余下标会读到上一次填充遗留的数据，不应作为有效几何使用。
  *
  * <p>本类不依赖 {@code gl} 包，可脱离 GL 上下文进行单元测试。
  */
@@ -225,7 +231,8 @@ public final class Path {
         if (needed <= types.length) {
             return;
         }
-        int newCap = Math.max(needed, types.length * 2);
+        // 此处 needed == count + 1 <= types.length + 1 <= types.length * 2，按 2 倍增长必然够用。
+        int newCap = types.length * 2;
         byte[] newTypes = new byte[newCap];
         byte[] newCounts = new byte[newCap];
         float[] newCoords = new float[newCap * MAX_POINTS_PER_COMMAND * 2];
