@@ -1,0 +1,7 @@
+target/
+bin/
+out/
+.idea/
+.xcodemap/
+*.iml
+*.log
