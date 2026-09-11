@@ -3300,16 +3300,18 @@ git commit -m "feat(renderer): 加入 Gc 门面（变换栈与裁剪）"
         }
     }
 
-    /** 返回当前变换的平均缩放因子。 */
-    private fun matrixScale(): Float {
-        val m = currentMatrix
-        val a = m.transform(com.bingbaihanji.jfgl.math.Vec2(1f, 0f))
-        val b = m.transform(com.bingbaihanji.jfgl.math.Vec2(0f, 1f))
-        val sx = kotlin.math.hypot(a.x().toDouble(), a.y().toDouble()).toFloat()
-        val sy = kotlin.math.hypot(b.x().toDouble(), b.y().toDouble()).toFloat()
-        return (sx + sy) * 0.5f
-    }
 ```
+
+> **不要在本任务再定义 `matrixScale()`** —— Task 11 的 `Gc` 已经提供了 `internal fun matrixScale()`，
+> 这里再写一个会重复定义。
+>
+> 而且**计划原版的 `matrixScale()` 实现是错的**：它测量的是 `currentMatrix`，而该矩阵**包含基础矩阵**
+> （像素→NDC 的缩放约为 `2/W`，800px 窗口下约 0.006）。结果是恒等变换下返回 0.006 而不是 1.0，
+> 把 `Flattener` 的设备像素容差放大约 400 倍地变小，同时让 `circleSegments` 直接顶到 256 上限 ——
+> 每个圆都被过度细分两个数量级。
+>
+> 正确做法：把线性部分与 NDC→设备像素的 `(W/2, H/2)` 复合后再求两个轴长度的平均值，
+> 使恒等变换在任何视口下都返回 1.0、`scale(3,5)` 返回 4.0。Task 11 已按此实现并有单测覆盖。
 
 - [ ] **Step 2: 重写 dsl/JFGL.kt**
 
