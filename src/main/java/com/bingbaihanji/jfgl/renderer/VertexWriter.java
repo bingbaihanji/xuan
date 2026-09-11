@@ -199,6 +199,10 @@ public final class VertexWriter {
      * 清空后状态视为未设置，需重新调用 {@link #setState} 才能继续写入顶点。
      */
     public void reset() {
+        // buffer() 会把 limit 收窄到本帧已写入的字节数，而绝对定位写入
+        // putFloat(int,float) 是按 limit 而非 capacity 判定越界的。不恢复的话，
+        // 下一帧只要顶点数超过本帧，第一次写入就会抛 IndexOutOfBoundsException。
+        buffer.limit(buffer.capacity());
         vertexCount = 0;
         finishedCommands.clear();
         currentFirstVertex = NO_COMMAND;
@@ -323,7 +327,11 @@ public final class VertexWriter {
         capacityVertices = Math.min(capacityVertices * 2, maxVertexCapacity);
         ByteBuffer old = buffer;
         buffer = allocate(capacityVertices);
-        // 拷贝已写入的字节；old 的容量必定不超过新缓冲区容量，offset 0 起整段搬运即可。
+        // 拷贝整段旧数据（未写入区域的内容永不被读取）。
+        // 注意 put(int,ByteBuffer,int,int) 是按源缓冲区的 limit 而非 capacity 校验的，
+        // 而 buffer() 可能已把 limit 收窄，所以这里先把 limit 恢复回 capacity 再搬运，
+        // 否则会把「已写入字节数」当成越界长度抛出 IndexOutOfBoundsException。
+        old.limit(old.capacity());
         buffer.put(0, old, 0, Math.min(oldCapacityBytes, buffer.capacity()));
         flushThresholdVertices = capacityVertices - PRIMITIVE_RESERVE_VERTICES - 1;
     }

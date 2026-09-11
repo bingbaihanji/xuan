@@ -127,4 +127,49 @@ class VertexWriterTest {
                 0f, 0f, 1f, 1f, WHITE, 0));
         assertEquals(before + 6, w.vertexCount());
     }
+
+    @Test
+    void 上一帧写入更多顶点后下一帧仍可写入() {
+        VertexWriter w = new VertexWriter(64);
+        w.setState(1, 0, 0, 100, 100);
+        for (int i = 0; i < 10; i++) {
+            w.vertex(0f, 0f, 0f, 0f, WHITE, 0);
+        }
+        w.buffer();          // 收窄 limit 到 10 个顶点
+        w.reset();           // 必须恢复 limit
+        w.setState(1, 0, 0, 100, 100);
+        for (int i = 0; i < 20; i++) {   // 比上一帧多写顶点
+            w.vertex(0f, 0f, 0f, 0f, WHITE, 0);
+        }
+        assertEquals(20, w.vertexCount());
+    }
+
+    @Test
+    void buffer收窄limit后触发扩容不抛异常且旧数据保留() {
+        VertexWriter w = new VertexWriter(8, 64);   // 阈值 1，很快就会扩容
+        w.setState(1, 0, 0, 100, 100);
+        w.vertex(7f, 8f, 0f, 0f, WHITE, 0);
+        w.buffer();                                 // 收窄 limit 到 1 个顶点
+        // 不抛异常即为通过：扩容搬运不得按被收窄的 limit 校验长度
+        assertDoesNotThrow(() -> {
+            for (int i = 0; i < 40; i++) {
+                w.vertex(i, i, 0f, 0f, WHITE, i);
+            }
+        });
+        assertEquals(41, w.vertexCount());
+        ByteBuffer b = w.buffer();
+        assertEquals(7f, b.getFloat(0), 1e-6f, "扩容后第 0 个顶点的 x 应保留");
+        assertEquals(8f, b.getFloat(4), 1e-6f, "扩容后第 0 个顶点的 y 应保留");
+    }
+
+    @Test
+    void reset后以相同状态setState再写顶点不抛异常() {
+        VertexWriter w = new VertexWriter(64);
+        w.setState(1, 0, 0, 100, 100);
+        w.vertex(0f, 0f, 0f, 0f, WHITE, 0);
+        w.reset();
+        w.setState(1, 0, 0, 100, 100);   // 与 reset 前完全相同的状态
+        w.vertex(1f, 1f, 0f, 0f, WHITE, 0);
+        assertEquals(1, w.vertexCount());
+    }
 }
