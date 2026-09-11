@@ -5,6 +5,8 @@ import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL30;
 
+import java.nio.ByteBuffer;
+
 /**
  * LWJGL-based implementation of {@link GLAbstraction} that delegates
  * to the standard LWJGL OpenGL bindings (GL11, GL15, GL20, GL30).
@@ -57,6 +59,11 @@ public class LwjglGLAbstraction implements GLAbstraction {
 
     @Override
     public void uploadVboData(int[] data) {
+        GL15.glBufferData(GL15.GL_ARRAY_BUFFER, data, GL15.GL_DYNAMIC_DRAW);
+    }
+
+    @Override
+    public void uploadVboBytes(ByteBuffer data) {
         GL15.glBufferData(GL15.GL_ARRAY_BUFFER, data, GL15.GL_DYNAMIC_DRAW);
     }
 
