@@ -458,6 +458,23 @@ class FlattenerTest {
 Run: `mvn test -Dtest=FlattenerTest`
 Expected: 编译失败，`找不到符号: 类 Flattener`
 
+> ### ⚠️ 本节 Step 3 的细分指数是错的（务必修正）
+>
+> 参考实现里三次贝塞尔的指数取 `exponent = 4`，但**弦逼近的误差按 `n⁻²` 衰减**——
+> 这对二次和三次曲线都成立（每段的偏差 ≈ ⅛·κ·(L/n)²）。用 4 会把细分段数开平方般低估。
+>
+> 实测：计划自带的那条测试曲线在 `scale=16, tol=0.25` 下只分出 9 段，
+> 真实偏差 **0.926 世界单位 = 14.8 设备像素**，是标称容差的约 **59 倍**。
+> 也就是说放大后的三次曲线会露出明显折线棱角 —— 正是这个类要消灭的问题。
+>
+> **修正两点：**
+> 1. 指数改为 **2**（二次、三次都用 2）。
+> 2. 三次曲线的偏差估计不能只取 `t=1/3`、`t=2/3` 到弦的距离 —— 那不是最大偏差。
+>    改为**在若干固定 `t` 上采样取到弦的最大距离**，构造上保守且好测。
+>    实际用的上界：对控制点 `P0..P3`，`(3/4)·max(|P0−2P1+P2|, |P1−2P2+P3|)`
+>    （对 `P0(0,0) P1(0,100) P2(100,100) P3(100,0)` 给出上界 106，真实最大偏差 75，确实保守）。
+>    二次曲线维持原估计不变：它取 `t=0.5` 处的偏差，而那**恰好就是**最大偏差。
+
 - [ ] **Step 3: 实现 Flattener**
 
 ```java
@@ -2632,15 +2649,8 @@ public final class RenderBatch implements Disposable {
         createVao();
     }
 
-    /** VAO 的属性指针当前是相对哪个 VBO 配置的；-1 表示尚未配置。 */
-    private int vaoConfiguredVboId = -1;
-
     private void createVao() {
         vao = gl.createVao();
-        gl.bindVao(vao);
-        gl.bindVbo(vertexBuffer.id());
-        configureVaoAttributes();
-        gl.bindVao(0);
     }
 
     /**
@@ -2650,14 +2660,21 @@ public final class RenderBatch implements Disposable {
      * {@code vertexBuffer.id()}。本方法<strong>不做任何绑定，也不解绑</strong>——
      * 绑定职责完整地留给调用方，避免"谁负责解绑"这种含糊契约。
      *
-     * <p><strong>为什么需要重新配置</strong>：{@code glVertexAttribPointer} 会把
+     * <p><strong>为什么每帧都要重跑</strong>：{@code glVertexAttribPointer} 会把
      * <strong>调用时绑定的 GL_ARRAY_BUFFER</strong> 记录进 VAO。而
      * {@link VertexBuffer#grow()} 扩容时会删除旧 VBO 并新建一个 ——
      * 此时 VAO 的属性指针就指向了一个已删除的缓冲，绘制会报错或输出空白。
+     * 事后重新 {@code glBindBuffer} <strong>无法</strong>修复，因为 GL_ARRAY_BUFFER
+     * 绑定不是 VAO 状态（只有 GL_ELEMENT_ARRAY_BUFFER 是）。
      *
-     * <p>事后重新 {@code glBindBuffer} <strong>无法</strong>修复，因为 GL_ARRAY_BUFFER
-     * 绑定不是 VAO 状态（只有 GL_ELEMENT_ARRAY_BUFFER 是）。所以必须重跑本方法。
-     * 扩容正是 {@link VertexBuffer} 存在的理由，这条路径一定会被走到。
+     * <p><strong>不要试图用"VBO 的 ID 有没有变"来跳过这次调用。</strong>
+     * {@code glGenBuffers} 返回的是 GL 对象<strong>名</strong>，而名字是会被回收复用的。
+     * {@code grow()} 恰好是"先 delete 再 gen"的顺序，被释放的名字是驱动空闲列表里最新的一项，
+     * 极可能原样发回来。于是 ID 比较会得到"没变"的结论而跳过重配置 ——
+     * 正好在需要它的场景下失效。用代数或标志位判断同样是在维护一份容易失同步的平行状态。
+     *
+     * <p>每帧多跑 8 次 GL 调用（4 次 VertexAttribPointer + 4 次 EnableVertexAttribArray）
+     * 相对整帧开销完全可以忽略，因此这里选择**无条件重跑**，把问题彻底消掉。
      */
     private void configureVaoAttributes() {
         glVertexAttribPointer(0, 2, GL_FLOAT, false, VertexFormat.STRIDE_BYTES,
@@ -2705,12 +2722,10 @@ public final class RenderBatch implements Disposable {
         gl.bindVao(vao);
         gl.bindVbo(vertexBuffer.id());
 
-        // 扩容会替换底层 VBO，必须重新配置 VAO 的属性指针（详见 configureVaoAttributes）。
+        // 无条件重新配置属性指针。原因见 configureVaoAttributes 的说明：
+        // 扩容会替换底层 VBO，而 GL 名字会被回收，无法靠比较 ID 可靠地检测到替换。
         // 必须在这里调用：此时 VAO 与新 VBO 都已绑定，且紧接着就是绘制。
-        // 不能提前到 bindVao 之前——那样属性指针会设到上一个 VAO 上。
-        if (vaoConfiguredVboId != vertexBuffer.id()) {
-            configureVaoAttributes();
-        }
+        configureVaoAttributes();
 
         gl.enableBlend();
         org.lwjgl.opengl.GL11.glBlendFunc(
