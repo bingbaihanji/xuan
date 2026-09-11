@@ -3258,8 +3258,23 @@ git commit -m "feat(renderer): 加入 Gc 门面（变换栈与裁剪）"
         emitTriangles(strokeGenerator.triangles(), stroke)
     }
 
+    /**
+     * 若缓冲区已满则在图元边界处执行帧中途 flush。
+     *
+     * 必须**在每个图元写入之前**调用：`VertexWriter` 触发 flush 请求时只预留了一个最大图元的余量，
+     * 不检查就会越界。flush 后 `reset()` 会把状态清回"未设置"，
+     * 因此下一个图元会经由 [syncState] 重新 `setState`，无需在此额外处理。
+     */
+    private fun flushIfNeeded() {
+        if (writer.isFlushRequested()) {
+            batch.submit(writer)
+            writer.reset()
+        }
+    }
+
     private fun emitTriangles(triangles: FloatArray, argb: Int) {
         if (triangles.isEmpty()) return
+        flushIfNeeded()
         syncState(batch.whiteTextureId())
         val packed = packColor(argb)
         val m = currentMatrix
