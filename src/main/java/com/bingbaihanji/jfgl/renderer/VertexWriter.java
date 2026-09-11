@@ -24,6 +24,12 @@ public final class VertexWriter {
     /** 顶点数硬上限，约 24 MB。 */
     public static final int MAX_VERTEX_CAPACITY = 1 << 20;
 
+    /**
+     * 单个图元最多占用的顶点数（四边形展开为两个三角形，共 6 个）。
+     * 容量阈值必须为最大的单个图元预留这么多顶点。
+     */
+    public static final int PRIMITIVE_RESERVE_VERTICES = 6;
+
     /** {@link #currentFirstVertex} 的哨兵值，表示当前没有未定稿的命令（即状态尚未设置）。 */
     private static final int NO_COMMAND = -1;
 
@@ -39,7 +45,18 @@ public final class VertexWriter {
     /** 缓冲区可容纳的顶点数。 */
     private int capacityVertices;
 
-    /** 达到此顶点数时触发帧中途 flush（由 RenderBatch 消费）。 */
+    /** 顶点数上限；生产环境为 {@link #MAX_VERTEX_CAPACITY}，测试可调小以便覆盖兜底路径。 */
+    private final int maxVertexCapacity;
+
+    /**
+     * 达到此顶点数时触发帧中途 flush（由 RenderBatch 消费）。
+     * <p>
+     * <strong>消费方契约</strong>：必须在<strong>每个图元之前</strong>检查
+     * {@link #isFlushRequested()}——既不是每帧一次，也不能在图元中间检查。标志置位后，
+     * 缓冲区只剩 {@link #PRIMITIVE_RESERVE_VERTICES} 个顶点的余量，恰好够写完一个完整图元；
+     * 一旦开始写某个图元就必须把它写完。检查到标志置位时应立即提交已收集的顶点，
+     * 随后调用 {@link #reset()} 与 {@link #clearFlushRequest()} 再继续。
+     */
     private int flushThresholdVertices;
 
     /** 本帧是否已发生过帧中途 flush 请求。 */
@@ -64,14 +81,25 @@ public final class VertexWriter {
     private int currentFirstVertex = NO_COMMAND;
 
     /**
-     * 创建一个顶点收集器。
+     * 创建一个顶点收集器，上限为 {@link #MAX_VERTEX_CAPACITY}。
      *
      * @param initialVertexCapacity 初始顶点容量
      */
     public VertexWriter(int initialVertexCapacity) {
-        this.capacityVertices = Math.max(1, initialVertexCapacity);
+        this(initialVertexCapacity, MAX_VERTEX_CAPACITY);
+    }
+
+    /**
+     * 指定上限构造，仅供测试使用。
+     *
+     * @param initialVertexCapacity 初始顶点容量
+     * @param maxVertexCapacity     顶点数上限
+     */
+    VertexWriter(int initialVertexCapacity, int maxVertexCapacity) {
+        this.maxVertexCapacity = Math.max(1, maxVertexCapacity);
+        this.capacityVertices = Math.min(Math.max(1, initialVertexCapacity), this.maxVertexCapacity);
         this.buffer = allocate(this.capacityVertices);
-        this.flushThresholdVertices = this.capacityVertices - 3;
+        this.flushThresholdVertices = this.capacityVertices - PRIMITIVE_RESERVE_VERTICES - 1;
     }
 
     /**
@@ -287,17 +315,17 @@ public final class VertexWriter {
      * 容量翻倍，并保留已写入的顶点数据。若已达到硬上限仍未满足，则改为请求帧中途 flush 并复用已有缓冲区。
      */
     private void grow() {
-        if (capacityVertices >= MAX_VERTEX_CAPACITY) {
+        if (capacityVertices >= maxVertexCapacity) {
             flushRequested = true;
             return;
         }
         int oldCapacityBytes = buffer.capacity();
-        capacityVertices = Math.min(capacityVertices * 2, MAX_VERTEX_CAPACITY);
+        capacityVertices = Math.min(capacityVertices * 2, maxVertexCapacity);
         ByteBuffer old = buffer;
         buffer = allocate(capacityVertices);
         // 拷贝已写入的字节；old 的容量必定不超过新缓冲区容量，offset 0 起整段搬运即可。
         buffer.put(0, old, 0, Math.min(oldCapacityBytes, buffer.capacity()));
-        flushThresholdVertices = capacityVertices - 3;
+        flushThresholdVertices = capacityVertices - PRIMITIVE_RESERVE_VERTICES - 1;
     }
 
     /**

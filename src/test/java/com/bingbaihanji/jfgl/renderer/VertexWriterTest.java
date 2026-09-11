@@ -108,4 +108,23 @@ class VertexWriterTest {
         assertThrows(IllegalStateException.class,
                 () -> w.vertex(0f, 0f, 0f, 0f, WHITE, 0));
     }
+
+    @Test
+    void 容量耗尽后仍能完整写入一个四边形() {
+        // 用一个很小的上限，让兜底路径在几次写入内就被触发，无需真的写满 1M 顶点
+        VertexWriter w = new VertexWriter(8, 16);
+        w.setState(1, 0, 0, 100, 100);
+
+        int guard = 0;
+        while (!w.isFlushRequested() && guard++ < 1000) {
+            w.vertex(0f, 0f, 0f, 0f, WHITE, 0);
+        }
+        assertTrue(w.isFlushRequested(), "持续写入应最终触发 flush 请求");
+
+        int before = w.vertexCount();
+        // 不抛异常即为通过：置位 flush 之后仍必须容得下整个四边形
+        assertDoesNotThrow(() -> w.quad(0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f,
+                0f, 0f, 1f, 1f, WHITE, 0));
+        assertEquals(before + 6, w.vertexCount());
+    }
 }
