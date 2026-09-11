@@ -938,6 +938,25 @@ class VertexWriterTest {
     }
 
     @Test
+    void 容量耗尽后仍能完整写入一个四边形() {
+        // 用一个很小的上限，让兜底路径在几次写入内就被触发，无需真的写满 1M 顶点
+        VertexWriter w = new VertexWriter(8, 16);
+        w.setState(1, 0, 0, 100, 100);
+
+        int guard = 0;
+        while (!w.isFlushRequested() && guard++ < 1000) {
+            w.vertex(0f, 0f, 0f, 0f, WHITE, 0);
+        }
+        assertTrue(w.isFlushRequested(), "持续写入应最终触发 flush 请求");
+
+        int before = w.vertexCount();
+        // 不抛异常即为通过：置位 flush 之后仍必须容得下整个四边形
+        assertDoesNotThrow(() -> w.quad(0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f,
+                0f, 0f, 1f, 1f, WHITE, 0));
+        assertEquals(before + 6, w.vertexCount());
+    }
+
+    @Test
     void reset清空顶点与命令() {
         VertexWriter w = new VertexWriter(64);
         w.setState(1, 0, 0, 100, 100);
@@ -994,19 +1013,55 @@ public final class VertexWriter {
     private int textureId = STATE_UNSET;
     private int scissorX, scissorY, scissorWidth, scissorHeight;
 
-    /** 达到此顶点数时触发帧中途 flush（由 RenderBatch 消费）。 */
+    /**
+     * 单个图元最多占用的顶点数（四边形展开为两个三角形，共 6 个）。
+     *
+     * <p>容量阈值必须为最大的单个图元预留这么多顶点，否则在触发帧中途 flush 之后、
+     * 消费方尚未及处理之前，一次 {@link #quad} 写入就可能越过缓冲区末尾。
+     */
+    public static final int PRIMITIVE_RESERVE_VERTICES = 6;
+
+    /**
+     * 达到此顶点数时触发扩容或帧中途 flush。
+     *
+     * <p><strong>消费方契约</strong>：必须在<strong>每个图元写入之前</strong>检查
+     * {@link #isFlushRequested()}，若为 {@code true} 则先执行帧中途 flush
+     * （提交已收集的顶点、调用 {@link #reset()} 与 {@link #clearFlushRequest()}），
+     * 再继续写入。
+     *
+     * <p>之所以要求"每个图元之前"而不是"每帧"，是因为容量耗尽后仅剩
+     * {@link #PRIMITIVE_RESERVE_VERTICES} 个顶点的余量，正好够写完一个图元；
+     * 若只在图元中途或帧级别检查，就会越界写入。
+     */
     private int flushThresholdVertices;
 
     /** 本帧是否已发生过帧中途 flush 请求。 */
     private boolean flushRequested = false;
 
+    /** 顶点数上限；生产环境为 {@link #MAX_VERTEX_CAPACITY}，测试可调小以便覆盖兜底路径。 */
+    private final int maxVertexCapacity;
+
     /**
      * @param initialVertexCapacity 初始顶点容量
      */
     public VertexWriter(int initialVertexCapacity) {
-        this.capacityVertices = Math.max(1, initialVertexCapacity);
+        this(initialVertexCapacity, MAX_VERTEX_CAPACITY);
+    }
+
+    /**
+     * 指定上限构造，仅供测试使用（便于用小上限覆盖帧中途 flush 兜底路径）。
+     *
+     * @param initialVertexCapacity 初始顶点容量
+     * @param maxVertexCapacity     顶点数上限
+     */
+    VertexWriter(int initialVertexCapacity, int maxVertexCapacity) {
+        this.maxVertexCapacity = Math.max(1, maxVertexCapacity);
+        this.capacityVertices = Math.min(Math.max(1, initialVertexCapacity), this.maxVertexCapacity);
         this.buffer = allocate(this.capacityVertices);
-        this.flushThresholdVertices = this.capacityVertices - 3;
+        // 额外减 1：触发扩容/置位的那次写入本身也会消耗一个顶点，
+        // 因此余量必须比最大图元多 1，才能保证置位后仍写得下整个图元。
+        this.flushThresholdVertices =
+                this.capacityVertices - PRIMITIVE_RESERVE_VERTICES - 1;
     }
 
     /**
@@ -1114,17 +1169,17 @@ public final class VertexWriter {
      * 容量翻倍。若已达到硬上限仍未满足，则改为请求帧中途 flush 并复用已有缓冲区。
      */
     private void grow() {
-        if (capacityVertices >= MAX_VERTEX_CAPACITY) {
+        if (capacityVertices >= maxVertexCapacity) {
             flushRequested = true;
             return;
         }
-        capacityVertices = Math.min(capacityVertices * 2, MAX_VERTEX_CAPACITY);
+        capacityVertices = Math.min(capacityVertices * 2, maxVertexCapacity);
         ByteBuffer old = buffer;
         buffer = allocate(capacityVertices);
         old.position(0);
         old.limit(Math.min(old.capacity(), capacityVertices * VertexFormat.STRIDE_BYTES));
         buffer.put(0, old, 0, Math.min(old.capacity(), buffer.capacity()));
-        flushThresholdVertices = capacityVertices - 3;
+        flushThresholdVertices = capacityVertices - PRIMITIVE_RESERVE_VERTICES - 1;
     }
 
     /** 顶点数硬上限，约 24 MB。 */
@@ -1137,7 +1192,17 @@ public final class VertexWriter {
 }
 ```
 
-> **实现提示**：`vertex()` 中更新 `last` 命令顶点数的逻辑较绕。若实现时觉得难以读懂，可改为更直白的写法——在 `setState` 时把**上一条**命令的 `vertexCount` 定稿，并把新命令的 `firstVertex` 记为当前 `vertexCount`。两种写法行为等价，选可读性更好的那个，但测试必须全部通过。
+> **实现提示（已由实际实现验证，请照此实现）**：`vertex()` 中更新 `last` 命令顶点数的写法较绕，且计划中的原版会在每次 `vertex()` 分配一个 `DrawCommand`——那正好违背了这个类存在的意义。已落地的写法是：
+>
+> - `setState()` 把**已结束**的命令封存进 `finishedCommands`；
+> - 处于进行中的那条命令不实际存储，而是在读取时由 `vertexCount - currentFirstVertex` 现场合成。
+>
+> 净效果：每个顶点一次缓冲写入、**零分配**，公开 API 与命令序列不变。
+>
+> **另外两处计划原有的缺陷，实现时必须修正：**
+>
+> 1. **`quad()` 的第二个三角形必须是 `0-2-3`，不是计划正文写的 `2-3-0`。** 两者是同一对三角形、同一绕向（循环轮换），渲染结果一致，但决定第二个三角形从哪个角起始。测试断言顶点 5 是左下角 `(x3,y3,u0,v1)`（`v=1`），而 `2-3-0` 会让顶点 5 变成左上角（`v=0`）。**测试是准绳**，请按 `0-2-3` 实现，并在 Javadoc 中写明实际顺序。
+> 2. **`setState()` 的提前返回必须额外判断"当前是否有进行中的命令"。** 计划的 `reset()` 不重置 `textureId`，因此 `reset()` 之后若以相同状态调用 `setState()`，只比较状态字段会提前返回而不创建命令，随后的 `vertex()` 就会抛 `IllegalStateException`。加一个 `currentFirstVertex != NO_COMMAND` 之类的守卫即可。
 
 - [ ] **Step 4: 运行测试确认通过**
 
