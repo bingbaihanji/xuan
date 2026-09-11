@@ -797,7 +797,12 @@ public final class VertexFormat {
         int gi = toByte(clamp(g) * ca);
         int bi = toByte(clamp(b) * ca);
         int ai = toByte(ca);
-        return (ri << 24) | (gi << 16) | (bi << 8) | ai;
+        // 必须让**内存字节序**为 R,G,B,A。写入方 VertexWriter 用的是小端 ByteBuffer，
+        // 整数的低字节落在低地址，而 glVertexAttribPointer(..., GL_UNSIGNED_BYTE, ...)
+        // 是按地址升序把 4 个字节读成 vec4 的 (x,y,z,w)，也就是 (r,g,b,a)。
+        // 因此整数的最高字节必须是 A —— 写反的话通道会整体错位：
+        // 不透明绿 (0,1,0,1) 会被读成 (1,0,1,0)，即 alpha=0 的品红，肉眼完全看不见。
+        return (ai << 24) | (bi << 16) | (gi << 8) | ri;
     }
 
     private static float clamp(float v) {
