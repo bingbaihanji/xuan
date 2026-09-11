@@ -782,7 +782,10 @@ public final class VertexFormat {
     /**
      * 把直通（非预乘）的 RGBA 分量打包为预乘后的 32 位整数。
      * <p>
-     * 字节序为 RGBA，即最高字节是 R。分量先夹紧到 0..1，再预乘 alpha。
+     * <strong>整数的最高字节是 A、最低字节是 R</strong>（{@code (a<<24)|(b<<16)|(g<<8)|r}）。
+     * 这样配合写入方 {@link VertexWriter} 的小端 {@code ByteBuffer}，
+     * 落进内存的字节顺序才是 {@code R,G,B,A}——也就是 GL 读到的 {@code vec4(r,g,b,a)}。
+     * 分量先夹紧到 0..1，再预乘 alpha。
      * 预乘是为了避免重叠的半透明抗锯齿边缘出现二次混合的暗缝。
      *
      * @param r 红色分量（0-1，直通）
@@ -1044,16 +1047,13 @@ public final class VertexWriter {
     public static final int PRIMITIVE_RESERVE_VERTICES = 6;
 
     /**
-     * 达到此顶点数时触发扩容或帧中途 flush。
+     * 达到此顶点数时触发扩容或帧中途 flush（置位 {@link #flushRequested}）。
      *
-     * <p><strong>消费方契约</strong>：必须在<strong>每个图元写入之前</strong>检查
-     * {@link #isFlushRequested()}，若为 {@code true} 则先执行帧中途 flush
-     * （提交已收集的顶点、调用 {@link #reset()} 与 {@link #clearFlushRequest()}），
-     * 再继续写入。
+     * <p>取值比容量少 {@link #PRIMITIVE_RESERVE_VERTICES} + 1：多减的那个 1 是触发置位的
+     * 本次写入自身消耗的顶点，这样置位之后仍恰好写得下整个图元。
      *
-     * <p>之所以要求"每个图元之前"而不是"每帧"，是因为容量耗尽后仅剩
-     * {@link #PRIMITIVE_RESERVE_VERTICES} 个顶点的余量，正好够写完一个图元；
-     * 若只在图元中途或帧级别检查，就会越界写入。
+     * <p><strong>消费方契约写在 {@link #isFlushRequested()} 与类说明里</strong>，
+     * 不要写在私有字段上——私有成员不进生成的文档，读者看不到。
      */
     private int flushThresholdVertices;
 
@@ -1111,13 +1111,25 @@ public final class VertexWriter {
                 scissorX, scissorY, scissorWidth, scissorHeight));
     }
 
-    /** 追加一个顶点。必须先调用 {@link #setState}。 */
+    /**
+     * 追加一个顶点。必须先调用 {@link #setState}。
+     *
+     * @throws IllegalStateException 尚未设置状态时；或缓冲区已写满、消费方始终没有
+     *                               执行帧中途 flush 时（消息里点名补救办法，取代早期
+     *                               那个 msg 为 null 的 {@code IndexOutOfBoundsException}）
+     */
     public void vertex(float x, float y, float u, float v, int premultipliedRgba, int id) {
         if (textureId == STATE_UNSET) {
             throw new IllegalStateException("写入顶点前必须先调用 setState()");
         }
         if (vertexCount >= flushThresholdVertices) {
             grow();
+        }
+        // 缓冲区写满 = 消费方没有遵守「每个图元之前检查 isFlushRequested()」的契约
+        // （grow() 在容量耗尽时正是置位该标志的地方，所以这个状态下标志必然是 true）
+        if (vertexCount >= capacityVertices) {
+            throw new IllegalStateException(
+                    "顶点缓冲已满：必须在每个图元之前检查 isFlushRequested() 并执行帧中途 flush");
         }
         int offset = vertexCount * VertexFormat.STRIDE_BYTES;
         buffer.putFloat(offset, x);
@@ -1156,17 +1168,19 @@ public final class VertexWriter {
     /**
      * 清空所有顶点与命令，保留缓冲区容量。
      *
-     * <p><strong>必须恢复 limit</strong>：{@link #buffer()} 会把 limit 收窄到"本帧已写入的字节数"，
-     * 而 JDK 的绝对定位写入 {@code putFloat(int, float)} 是按 <strong>limit</strong>
-     * 而非 capacity 判定越界的。若不恢复，下一帧只要顶点数超过上一帧，
-     * 第一次写入就会抛 {@code IndexOutOfBoundsException} —— 即渲染器会在
-     * "本帧与上一帧不同"的第一次就崩溃。
+     * <p>这是<strong>唯一</strong>能退出"已请求帧中途 flush"状态的方法：它同时清掉
+     * {@code flushRequested} 标志（因此没有单独的清除方法）。
+     *
+     * <p>清空后状态视为未设置，需重新调用 {@link #setState} 才能继续写入顶点——
+     * 帧中途 flush 之后继续画下一个图元时最容易忘的就是这一步。
+     *
+     * <p>内部缓冲区的 limit 不在此处恢复，也无需恢复：{@link #buffer()} 只返回副本，
+     * 从不改动内部缓冲区。
      */
     public void reset() {
         vertexCount = 0;
         commands.clear();
         flushRequested = false;
-        buffer.limit(buffer.capacity());
     }
 
     public int vertexCount() { return vertexCount; }
@@ -1179,26 +1193,40 @@ public final class VertexWriter {
     public List<DrawCommand> commands() { return java.util.Collections.unmodifiableList(commands); }
 
     /**
-     * 返回顶点缓冲区。position 为 0，limit 为已写入字节数。
+     * 返回顶点缓冲区的一张只读视图（{@link ByteBuffer#duplicate()} 副本），
+     * position 为 0，limit 为已写入字节数，小端序，可直接交给 {@code glBufferData}。
      *
-     * <p><strong>注意</strong>：本方法会收窄 limit，且不负责恢复。
-     * 恢复由 {@link #reset()} 负责（见其说明）——因为 JDK 的绝对定位写入是按 limit
-     * 判定越界的，忘记恢复会让下一帧写入直接抛异常。
+     * <p><strong>不变量：limit == capacity，且只有副本会被收窄。</strong>
+     * 返回的不是内部缓冲区本身，因此本方法可以被反复调用（每帧、或帧中途 flush 时）
+     * 而不给下一次写入留下越界隐患：JDK 的绝对定位写入 {@code putFloat(int,float)}
+     * 是按 <strong>limit</strong> 而非 capacity 判定越界的，早期实现直接返回内部缓冲区
+     * 并收窄它的 limit，下一帧只要顶点数超过上一帧，第一次写入就会抛
+     * {@code IndexOutOfBoundsException}。
+     *
+     * <p>返回值不得保留：副本与内部缓冲区共享同一段直接内存，下一次 {@link #grow()}
+     * 会换一块新分配的内存，旧副本随即失效。
      */
     public ByteBuffer buffer() {
-        buffer.position(0);
-        buffer.limit(vertexCount * VertexFormat.STRIDE_BYTES);
-        return buffer;
+        ByteBuffer view = buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN);
+        view.position(0);
+        view.limit(vertexCount * VertexFormat.STRIDE_BYTES);
+        return view;
     }
 
     /** 返回当前顶点容量。 */
     public int vertexCapacity() { return capacityVertices; }
 
-    /** 返回是否因达到容量上限而请求了帧中途 flush。 */
+    /**
+     * 返回是否因达到容量上限而请求了帧中途 flush。
+     *
+     * <p><strong>消费方契约</strong>：必须在<strong>每个图元写入之前</strong>调用本方法——
+     * 既不是每帧一次，也不能在图元中间调用。标志置位后缓冲区只剩
+     * {@link #PRIMITIVE_RESERVE_VERTICES} 个顶点的余量，恰好够写完一个完整图元；
+     * 一旦开始写某个图元就必须把它写完。读到 {@code true} 时：先 {@link #buffer()} 提交，
+     * 再 {@link #reset()}（它清空顶点与命令<strong>并清掉本标志</strong>），
+     * 然后必须重新 {@link #setState} 才能继续写入顶点。
+     */
     public boolean isFlushRequested() { return flushRequested; }
-
-    /** 清除帧中途 flush 请求标志。 */
-    public void clearFlushRequest() { flushRequested = false; }
 
     /**
      * 容量翻倍。若已达到硬上限仍未满足，则改为请求帧中途 flush 并复用已有缓冲区。
@@ -1208,12 +1236,13 @@ public final class VertexWriter {
             flushRequested = true;
             return;
         }
+        int oldCapacityBytes = buffer.capacity();
         capacityVertices = Math.min(capacityVertices * 2, maxVertexCapacity);
         ByteBuffer old = buffer;
         buffer = allocate(capacityVertices);
-        old.position(0);
-        old.limit(Math.min(old.capacity(), capacityVertices * VertexFormat.STRIDE_BYTES));
-        buffer.put(0, old, 0, Math.min(old.capacity(), buffer.capacity()));
+        // 内部缓冲区的 limit 恒等于 capacity——buffer() 只返回副本、不碰内部缓冲区，
+        // 所以无需再像早期实现那样先把 limit 恢复回 capacity 才能搬运。
+        buffer.put(0, old, 0, Math.min(oldCapacityBytes, buffer.capacity()));
         flushThresholdVertices = capacityVertices - PRIMITIVE_RESERVE_VERTICES - 1;
     }
 
@@ -1294,7 +1323,7 @@ class TessellatorTest {
     @Test
     void 三角形输入产生一个三角形() {
         Tessellator t = new Tessellator();
-        t.tessellate(new float[]{0f, 0f, 10f, 0f, 0f, 10f}, 3, false);
+        t.tessellate(new float[]{0f, 0f, 10f, 0f, 0f, 10f}, 3);
         assertEquals(1, t.triangleCount());
         assertEquals(50f, area(t.triangles()), 1e-3f);
     }
@@ -1302,7 +1331,7 @@ class TessellatorTest {
     @Test
     void 凸四边形面积守恒() {
         Tessellator t = new Tessellator();
-        t.tessellate(new float[]{0f, 0f, 10f, 0f, 10f, 10f, 0f, 10f}, 4, false);
+        t.tessellate(new float[]{0f, 0f, 10f, 0f, 10f, 10f, 0f, 10f}, 4);
         assertEquals(100f, area(t.triangles()), 1e-3f);
     }
 
@@ -1311,7 +1340,7 @@ class TessellatorTest {
         // L 形：外框 10x10 减去右上角 5x5
         Tessellator t = new Tessellator();
         float[] poly = {0f, 0f, 10f, 0f, 10f, 5f, 5f, 5f, 5f, 10f, 0f, 10f};
-        t.tessellate(poly, 6, false);
+        t.tessellate(poly, 6);
         assertEquals(75f, area(t.triangles()), 1e-3f);
     }
 
@@ -1319,17 +1348,17 @@ class TessellatorTest {
     void 凹多边形的三角形数不超过N减2() {
         Tessellator t = new Tessellator();
         float[] poly = {0f, 0f, 10f, 0f, 10f, 5f, 5f, 5f, 5f, 10f, 0f, 10f};
-        t.tessellate(poly, 6, false);
+        t.tessellate(poly, 6);
         assertTrue(t.triangleCount() <= 4, "6 边形最多 4 个三角形，实际 " + t.triangleCount());
     }
 
     @Test
     void 顺时针与逆时针输入结果一致() {
         Tessellator a = new Tessellator();
-        a.tessellate(new float[]{0f, 0f, 10f, 0f, 10f, 10f, 0f, 10f}, 4, false);
+        a.tessellate(new float[]{0f, 0f, 10f, 0f, 10f, 10f, 0f, 10f}, 4);
 
         Tessellator b = new Tessellator();
-        b.tessellate(new float[]{0f, 0f, 0f, 10f, 10f, 10f, 10f, 0f}, 4, false);
+        b.tessellate(new float[]{0f, 0f, 0f, 10f, 10f, 10f, 10f, 0f}, 4);
 
         assertEquals(a.triangleCount(), b.triangleCount());
         assertEquals(area(a.triangles()), area(b.triangles()), 1e-3f);
@@ -1338,14 +1367,14 @@ class TessellatorTest {
     @Test
     void 退化输入不抛异常且产生零面积() {
         Tessellator t = new Tessellator();
-        t.tessellate(new float[]{0f, 0f, 1f, 1f, 2f, 2f}, 3, false);
+        t.tessellate(new float[]{0f, 0f, 1f, 1f, 2f, 2f}, 3);
         assertEquals(0f, area(t.triangles()), 1e-3f);
     }
 
     @Test
     void 顶点数不足时不产生三角形() {
         Tessellator t = new Tessellator();
-        t.tessellate(new float[]{0f, 0f, 1f, 1f}, 2, false);
+        t.tessellate(new float[]{0f, 0f, 1f, 1f}, 2);
         assertEquals(0, t.triangleCount());
     }
 }
@@ -1399,11 +1428,15 @@ public final class Tessellator {
     /**
      * 三角化一个简单多边形。
      *
+     * <p>输入<strong>始终</strong>按闭合环处理：填充的是多边形内部，首尾之间天然有边。
+     * 早期版本这里还有一个被忽略的 {@code closed} 参数，它只会让填开放折线的调用方
+     * 以为自己传的 {@code false} 起了作用——已删除。开放折线的端点封口属于
+     * {@link StrokeGenerator} 的职责。
+     *
      * @param points 扁平顶点数组 {@code [x0,y0, x1,y1, ...]}
      * @param count  顶点个数
-     * @param closed 输入是否为闭合环（当前实现忽略此参数，始终按闭合环处理）
      */
-    public void tessellate(float[] points, int count, boolean closed) {
+    public void tessellate(float[] points, int count) {
         reset();
         if (count < 3) {
             return;
@@ -1614,7 +1647,7 @@ class TessellatorHoleTest {
     @Test
     void 无洞时与普通三角化等价() {
         Tessellator a = new Tessellator();
-        a.tessellate(new float[]{0f, 0f, 10f, 0f, 10f, 10f, 0f, 10f}, 4, false);
+        a.tessellate(new float[]{0f, 0f, 10f, 0f, 10f, 10f, 0f, 10f}, 4);
 
         Tessellator b = new Tessellator();
         b.tessellateWithHoles(new float[]{0f, 0f, 10f, 0f, 10f, 10f, 0f, 10f}, 4,
@@ -1663,7 +1696,7 @@ Expected: 编译失败，`找不到符号: 方法 tessellateWithHoles`
             return;
         }
         if (holes == null || holes.length == 0) {
-            tessellate(outer, outerCount, true);
+            tessellate(outer, outerCount);
             return;
         }
 
@@ -1693,7 +1726,7 @@ Expected: 编译失败，`找不到符号: 方法 tessellateWithHoles`
             poly[i * 2] = mergedX[i];
             poly[i * 2 + 1] = mergedY[i];
         }
-        tessellate(poly, n, true);
+        tessellate(poly, n);
     }
 
     private static int sumLengths(int[] counts) {
@@ -3182,7 +3215,7 @@ git commit -m "feat(renderer): 加入 Gc 门面（变换栈与裁剪）"
         if (path.isEmpty) return
         flattener.flatten(path, matrixScale())
         if (flattener.pointCount() < 3) return
-        tessellator.tessellate(flattenerPoints(), flattener.pointCount(), true)
+        tessellator.tessellate(flattenerPoints(), flattener.pointCount())
         emitTriangles(tessellator.triangles(), fill)
     }
 
@@ -3194,14 +3227,16 @@ git commit -m "feat(renderer): 加入 Gc 门面（变换栈与裁剪）"
         strokeOutline(flattenerPoints())
     }
 
+    // 注意：不要在每个形状里现搭数组。Flattener 提供了
+    // copyPointsTo(dst)（返回写入的 float 个数），把结果写进本对象复用的
+    // scratch FloatArray 即可，跨帧不分配。三角化结果同理用
+    // Tessellator.rawTriangles() / StrokeGenerator.rawTriangles() 直接遍历，
+    // 不要走每次复制的 triangles()（那个留给测试用）。
     private fun flattenerPoints(): FloatArray {
         val n = flattener.pointCount()
-        val pts = FloatArray(n * 2)
-        for (i in 0 until n) {
-            pts[i * 2] = flattener.x(i)
-            pts[i * 2 + 1] = flattener.y(i)
-        }
-        return pts
+        if (scratchPoints.size < n * 2) scratchPoints = FloatArray(n * 2)
+        flattener.copyPointsTo(scratchPoints)
+        return scratchPoints
     }
 
     // ------------------------------------------------------------------
@@ -3210,7 +3245,7 @@ git commit -m "feat(renderer): 加入 Gc 门面（变换栈与裁剪）"
 
     private fun emitShape(points: FloatArray, color: Int) {
         if (points.size < 6) return
-        tessellator.tessellate(points, points.size / 2, true)
+        tessellator.tessellate(points, points.size / 2)
         emitTriangles(tessellator.triangles(), color)
     }
 

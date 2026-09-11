@@ -160,6 +160,41 @@ class FlattenerTest {
         assertEquals(0, orphan.subPathCount());
     }
 
+    @Test
+    void copyPointsTo写出扁平交错数组() {
+        Path p = new Path();
+        p.moveTo(0f, 0f).lineTo(10f, 0f).lineTo(10f, 5f);
+        Flattener f = new Flattener();
+        f.flatten(p, 1f);
+
+        float[] dst = new float[64];
+        int written = f.copyPointsTo(dst);
+        assertEquals(f.pointCount() * 2, written, "返回的应是写入的 float 个数");
+        for (int i = 0; i < f.pointCount(); i++) {
+            assertEquals(f.x(i), dst[i * 2], 0f, "第 " + i + " 个点的 x 应逐位一致");
+            assertEquals(f.y(i), dst[i * 2 + 1], 0f, "第 " + i + " 个点的 y 应逐位一致");
+        }
+
+        // 调用方复用同一块缓冲区摊平下一条路径：只覆盖前 4 个 float，不重新分配
+        Path q = new Path();
+        q.moveTo(1f, 2f).lineTo(3f, 4f);
+        f.flatten(q, 1f);
+        assertEquals(4, f.copyPointsTo(dst));
+        assertEquals(1f, dst[0], 0f);
+        assertEquals(2f, dst[1], 0f);
+        assertEquals(3f, dst[2], 0f);
+        assertEquals(4f, dst[3], 0f);
+    }
+
+    @Test
+    void copyPointsTo目标数组太小时抛出异常() {
+        Path p = new Path();
+        p.moveTo(0f, 0f).lineTo(10f, 0f).lineTo(10f, 5f);
+        Flattener f = new Flattener();
+        f.flatten(p, 1f);
+        assertThrows(IllegalArgumentException.class, () -> f.copyPointsTo(new float[5]));
+    }
+
     /** 返回点 ({@code px}, {@code py}) 到折线所有线段的最短距离。 */
     private static float distanceToPolyline(Flattener f, float px, float py) {
         float best = Float.MAX_VALUE;

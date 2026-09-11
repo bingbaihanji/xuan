@@ -30,7 +30,7 @@ class TessellatorHoleTest {
     @Test
     void 无洞时与普通三角化等价() {
         Tessellator a = new Tessellator();
-        a.tessellate(new float[]{0f, 0f, 10f, 0f, 10f, 10f, 0f, 10f}, 4, false);
+        a.tessellate(new float[]{0f, 0f, 10f, 0f, 10f, 10f, 0f, 10f}, 4);
 
         Tessellator b = new Tessellator();
         b.tessellateWithHoles(new float[]{0f, 0f, 10f, 0f, 10f, 10f, 0f, 10f}, 4,

@@ -83,10 +83,31 @@ public final class Tessellator {
     /**
      * 返回当前结果的紧凑副本。
      *
+     * <p>每次调用都分配并复制一个新数组；热路径上请改用 {@link #rawTriangles()}。
+     *
      * @return 扁平三角形数组，长度为 {@code triangleCount() * 6}
      */
     public float[] triangles() {
         return Arrays.copyOf(triangles, triangleCount * 6);
+    }
+
+    /**
+     * 返回内部三角形数组本身，<strong>不复制</strong>。每 6 个 float 一个三角形
+     * （{@code x0,y0,x1,y1,x2,y2}），有效数据是前 {@code triangleCount() * 6} 个 float，
+     * 后面是上一次调用遗留的无效数据。
+     *
+     * <p>给热路径用：调用方（{@code RenderBatch} 一侧）可以直接遍历这 {@code count * 6} 个 float
+     * 写顶点，省掉一次整表复制。作为代价，数组长度通常<strong>大于</strong>有效数据长度，
+     * 千万不要把整个数组当成三角形列表。
+     *
+     * <p><strong>不得保留</strong>：这是内部缓冲，内容只在下一次 {@link #reset()} /
+     * {@link #tessellate} / {@link #tessellateWithHoles} 调用之前有效，且扩容时会换一块新数组。
+     * 需要稳定副本请用 {@link #triangles()}。
+     *
+     * @return 内部三角形数组（数组长度 ≥ {@code triangleCount() * 6}）
+     */
+    public float[] rawTriangles() {
+        return triangles;
     }
 
     /** 清空上一次三角化的结果。 */
@@ -97,11 +118,15 @@ public final class Tessellator {
     /**
      * 三角化一个简单多边形。
      *
+     * <p>输入<strong>始终</strong>按闭合环处理：填充的是多边形内部，首尾之间天然有边，
+     * 因此没有「是否闭合」这个开关——一个被忽略的参数只会让填开放折线的调用方
+     * 以为自己传的 {@code false} 起了作用。需要描边（含开放折线的端点封口）请用
+     * {@link StrokeGenerator}。
+     *
      * @param points 扁平顶点数组 {@code [x0,y0, x1,y1, ...]}
      * @param count  顶点个数
-     * @param closed 输入是否为闭合环（当前实现忽略此参数，始终按闭合环处理）
      */
-    public void tessellate(float[] points, int count, boolean closed) {
+    public void tessellate(float[] points, int count) {
         reset();
         if (count < 3) {
             return;
@@ -157,7 +182,7 @@ public final class Tessellator {
             return;
         }
         if (holes == null || holes.length == 0) {
-            tessellate(outer, outerCount, true);
+            tessellate(outer, outerCount);
             checkArea(outer, outerCount, null, null);
             return;
         }
@@ -228,7 +253,7 @@ public final class Tessellator {
             poly[i * 2] = mergedX[i];
             poly[i * 2 + 1] = mergedY[i];
         }
-        tessellate(poly, n, true);
+        tessellate(poly, n);
         checkArea(outer, outerCount, holes, holeCounts);
     }
 

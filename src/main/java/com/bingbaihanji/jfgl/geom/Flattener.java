@@ -71,6 +71,33 @@ public final class Flattener {
     public float y(int i) { return ys[i]; }
 
     /**
+     * 把折线顶点按扁平的 {@code [x0,y0, x1,y1, ...]} 顺序复制到 {@code dst}，
+     * 返回写入的 float 个数（等于 {@code pointCount() * 2}）。
+     *
+     * <p>{@link Tessellator#tessellate} 与 {@link StrokeGenerator#stroke} 消费的都是这种交错布局，
+     * 而本类的 {@link #x(int)}/{@link #y(int)} 是两条平行数组，直接喂给它们就得每个形状
+     * 每帧现搭一个数组。用本方法让调用方在帧之间复用同一块缓冲区，热路径上零分配。
+     *
+     * <p>与 {@link #x(int)} 一样，只在 {@code i < pointCount()} 时有意义。
+     *
+     * @param dst 接收顶点数据的数组，长度至少为 {@code pointCount() * 2}
+     * @return 实际写入的 float 个数
+     * @throws IllegalArgumentException {@code dst} 装不下全部顶点时
+     */
+    public int copyPointsTo(float[] dst) {
+        int needed = count * 2;
+        if (dst.length < needed) {
+            throw new IllegalArgumentException(
+                    "目标数组太小：需要 " + needed + " 个 float，实际只有 " + dst.length + " 个");
+        }
+        for (int i = 0; i < count; i++) {
+            dst[i * 2] = xs[i];
+            dst[i * 2 + 1] = ys[i];
+        }
+        return needed;
+    }
+
+    /**
      * 返回子路径数量。
      *
      * @return 由 {@code moveTo} 开启的子路径数量

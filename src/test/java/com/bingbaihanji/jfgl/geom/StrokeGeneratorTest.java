@@ -267,4 +267,21 @@ class StrokeGeneratorTest {
                 StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 4f);
         assertAllFinite(g.triangles());
     }
+
+    @Test
+    void rawTriangles返回内部数组而不是副本() {
+        StrokeGenerator g = new StrokeGenerator();
+        g.stroke(new float[]{0f, 0f, 10f, 0f}, 2, false, 4f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 4f);
+
+        float[] raw = g.rawTriangles();
+        assertSame(raw, g.rawTriangles(), "不得每次分配新数组，否则热路径省不掉复制");
+        assertTrue(raw.length >= g.triangleCount() * 6, "内部数组长度只保证不小于有效数据长度");
+
+        float[] copy = g.triangles();
+        assertEquals(copy.length, g.triangleCount() * 6);
+        for (int i = 0; i < copy.length; i++) {
+            assertEquals(copy[i], raw[i], 0f, "第 " + i + " 个 float 应与副本一致");
+        }
+    }
 }

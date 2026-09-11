@@ -1,6 +1,8 @@
 package com.bingbaihanji.jfgl.renderer;
 
 import org.junit.jupiter.api.Test;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import static org.junit.jupiter.api.Assertions.*;
 
 class VertexFormatTest {
@@ -18,12 +20,13 @@ class VertexFormatTest {
 
     @Test
     void 打包颜色为预乘整数() {
-        // 50% 透明红，预乘后 r=0.5, g=0, b=0, a=0.5
+        // 50% 透明红，预乘后 r=0.5, g=0, b=0, a=0.5。
+        // 整数布局自高字节到低字节为 A,B,G,R（配合小端写入，内存里才是 R,G,B,A）
         int packed = VertexFormat.packPremultiplied(1f, 0f, 0f, 0.5f);
-        assertEquals(128, (packed >> 24) & 0xFF, 1);
-        assertEquals(0, (packed >> 16) & 0xFF);
-        assertEquals(0, (packed >> 8) & 0xFF);
-        assertEquals(128, packed & 0xFF, 1);
+        assertEquals(128, (packed >> 24) & 0xFF, "最高字节应为 A");
+        assertEquals(0, (packed >> 16) & 0xFF, "次高字节应为 B");
+        assertEquals(0, (packed >> 8) & 0xFF, "次低字节应为 G");
+        assertEquals(128, packed & 0xFF, "最低字节应为 R");
     }
 
     @Test
@@ -34,10 +37,33 @@ class VertexFormatTest {
 
     @Test
     void 打包时数值被夹紧到合法范围() {
+        // 夹紧后 r=1, g=0, b=0.5, a=1；再按 alpha=1 预乘，分量不变。
+        // 整数布局自高字节到低字节为 A,B,G,R
         int packed = VertexFormat.packPremultiplied(2f, -1f, 0.5f, 2f);
-        assertEquals(255, (packed >> 24) & 0xFF);
-        assertEquals(0, (packed >> 16) & 0xFF);
-        assertEquals(255, packed & 0xFF);
+        assertEquals(255, (packed >> 24) & 0xFF, "最高字节应为夹紧后的 A=1");
+        assertEquals(128, (packed >> 16) & 0xFF, "次高字节应为 B=0.5");
+        assertEquals(0, (packed >> 8) & 0xFF, "次低字节应为夹紧后的 G=0");
+        assertEquals(255, packed & 0xFF, "最低字节应为夹紧后的 R=1");
+    }
+
+    /**
+     * 字节级回归：着色器读到的通道顺序由<strong>内存字节</strong>决定，而不是整数的位序。
+     *
+     * <p>写入方 {@link VertexWriter} 用小端 {@code ByteBuffer} 写这个 int，
+     * {@code glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, normalized, ...)} 再按地址升序
+     * 读成 {@code vec4(r,g,b,a)}。所以「不透明绿」的内存字节必须恰好是 {@code [0,255,0,255]}。
+     * 此前打包成 {@code (r<<24)|(g<<16)|(b<<8)|a}，内存里是 {@code [a,b,g,r]}，
+     * 不透明绿被读成 {@code (1,0,1,0)}——alpha=0 的品红，肉眼完全看不见。
+     */
+    @Test
+    void 打包后的内存字节序为RGBA() {
+        int packed = VertexFormat.packPremultiplied(0f, 1f, 0f, 1f);   // 不透明绿
+        ByteBuffer b = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
+        b.putInt(0, packed);
+        assertEquals(0, b.get(0) & 0xFF, "字节0 应为 R");
+        assertEquals(255, b.get(1) & 0xFF, "字节1 应为 G");
+        assertEquals(0, b.get(2) & 0xFF, "字节2 应为 B");
+        assertEquals(255, b.get(3) & 0xFF, "字节3 应为 A");
     }
 
     @Test

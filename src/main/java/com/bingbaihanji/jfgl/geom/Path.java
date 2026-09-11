@@ -45,6 +45,15 @@ public final class Path {
     /** 每条命令最多携带的点数（三次贝塞尔为 3）。 */
     public static final int MAX_POINTS_PER_COMMAND = 3;
 
+    /**
+     * {@link Type#values()} 的缓存。
+     * <p>
+     * {@code Type.values()} 每次都返回 {@code $VALUES.clone()}，即每个调用分配一个 5 元素数组；
+     * 而 {@link #commandType(int)} 在平坦化时<strong>每条命令每帧</strong>都会被调用一次，
+     * 处在类说明所承诺的零分配热路径上。这里缓存一份，按 {@code ordinal()} 直接下标取值。
+     */
+    private static final Type[] VALUES = Type.values();
+
     /** 每条命令的类型，存放 {@link Type#ordinal()}。 */
     private byte[] types = new byte[16];
 
@@ -100,7 +109,7 @@ public final class Path {
      * @return 该命令的类型
      */
     public Type commandType(int i) {
-        return Type.values()[types[i]];
+        return VALUES[types[i]];
     }
 
     /**

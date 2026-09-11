@@ -2,6 +2,7 @@ package com.bingbaihanji.jfgl.renderer;
 
 import org.junit.jupiter.api.Test;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import static org.junit.jupiter.api.Assertions.*;
 
 class VertexWriterTest {
@@ -130,13 +131,15 @@ class VertexWriterTest {
 
     @Test
     void 上一帧写入更多顶点后下一帧仍可写入() {
+        // 取过 buffer() 之后内部缓冲区的 limit 不受影响（返回的是副本），
+        // 所以下一帧写更多顶点不会像早期实现那样撞上被收窄的 limit。
         VertexWriter w = new VertexWriter(64);
         w.setState(1, 0, 0, 100, 100);
         for (int i = 0; i < 10; i++) {
             w.vertex(0f, 0f, 0f, 0f, WHITE, 0);
         }
-        w.buffer();          // 收窄 limit 到 10 个顶点
-        w.reset();           // 必须恢复 limit
+        w.buffer();          // 只收窄副本
+        w.reset();
         w.setState(1, 0, 0, 100, 100);
         for (int i = 0; i < 20; i++) {   // 比上一帧多写顶点
             w.vertex(0f, 0f, 0f, 0f, WHITE, 0);
@@ -149,7 +152,7 @@ class VertexWriterTest {
         VertexWriter w = new VertexWriter(8, 64);   // 阈值 1，很快就会扩容
         w.setState(1, 0, 0, 100, 100);
         w.vertex(7f, 8f, 0f, 0f, WHITE, 0);
-        w.buffer();                                 // 收窄 limit 到 1 个顶点
+        w.buffer();                                 // 只收窄副本，内部 limit 仍是 capacity
         // 不抛异常即为通过：扩容搬运不得按被收窄的 limit 校验长度
         assertDoesNotThrow(() -> {
             for (int i = 0; i < 40; i++) {
@@ -160,6 +163,63 @@ class VertexWriterTest {
         ByteBuffer b = w.buffer();
         assertEquals(7f, b.getFloat(0), 1e-6f, "扩容后第 0 个顶点的 x 应保留");
         assertEquals(8f, b.getFloat(4), 1e-6f, "扩容后第 0 个顶点的 y 应保留");
+    }
+
+    @Test
+    void buffer返回的是副本调用方改不动写入器状态() {
+        VertexWriter w = new VertexWriter(64);
+        w.setState(1, 0, 0, 100, 100);
+        for (int i = 0; i < 10; i++) {
+            w.vertex(i, i, 0f, 0f, WHITE, i);
+        }
+
+        ByteBuffer view = w.buffer();
+        assertEquals(10 * VertexFormat.STRIDE_BYTES, view.limit(), "副本的 limit 应为已写入字节数");
+        assertEquals(0, view.position());
+        assertEquals(7f, view.getFloat(7 * VertexFormat.STRIDE_BYTES), 1e-6f);
+        assertEquals(WHITE, view.getInt(16));
+
+        // 在副本上任意折腾 position/limit/字节序，都不得影响写入器的内部状态。
+        // （副本与内部缓冲区共享同一段直接内存，所以往副本里写字节会改到顶点数据本身——
+        //  这是零拷贝 API 的固有性质；这里要保证的是计数、命令与 limit 不变量不被破坏。
+        //  顺带一提：绝对定位读也是按 limit 而非 capacity 判界的，收窄 limit 后就读不到了，
+        //  这正是早期直接把内部缓冲区交出去时会踩的坑。）
+        view.order(ByteOrder.BIG_ENDIAN);
+        view.limit(3);
+        assertThrows(IndexOutOfBoundsException.class, () -> view.getInt(16),
+                "副本被收窄的 limit 只影响副本自己");
+        view.position(1);
+
+        // 写入器继续可用：顶点数正确、再取一次仍是全新的副本
+        for (int i = 0; i < 20; i++) {
+            w.vertex(i, i, 0f, 0f, WHITE, i);
+        }
+        assertEquals(30, w.vertexCount());
+        ByteBuffer again = w.buffer();
+        assertEquals(30 * VertexFormat.STRIDE_BYTES, again.limit());
+        assertEquals(0, again.position());
+        assertNotSame(view, again, "每次都应返回新的副本，而不是同一个实例");
+        // 内部缓冲区没有被副本带偏：第 0 个顶点仍是副本写入前的数据
+        assertEquals(0f, again.getFloat(0), 1e-6f);
+    }
+
+    @Test
+    void 缓冲区写满后继续写入抛出点名补救办法的异常() {
+        // 容量与上限都是 8：写满即置位 flush，之后继续写必然越界。
+        // 不用清标志就能走到这条路——消费方忽略 isFlushRequested() 一直写就是这个下场。
+        VertexWriter w = new VertexWriter(8, 8);
+        w.setState(1, 0, 0, 100, 100);
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class, () -> {
+            for (int i = 0; i < 100; i++) {
+                w.vertex(0f, 0f, 0f, 0f, WHITE, 0);
+            }
+        }, "越界必须是点明补救办法的 IllegalStateException，而不是 msg 为 null 的 IndexOutOfBoundsException");
+        assertNotNull(ex.getMessage(), "异常消息不得为空");
+        assertTrue(ex.getMessage().contains("isFlushRequested()"),
+                "异常消息必须点名补救办法，实际为：" + ex.getMessage());
+        assertTrue(ex.getMessage().contains("flush"),
+                "异常消息必须点名补救办法，实际为：" + ex.getMessage());
     }
 
     @Test

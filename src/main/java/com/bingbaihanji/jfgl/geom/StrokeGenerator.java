@@ -65,6 +65,14 @@ public final class StrokeGenerator {
     private int triangleCount = 0;
 
     /**
+     * {@link #strokeDashed} 切分实线格时复用的端点对 {@code [ax,ay,bx,by]}。
+     * <p>
+     * 做成字段而不是局部变量，是为了让「不分配临时对象」的承诺成立：虚线每一格都要生成一次轮廓，
+     * 每帧调用一次 {@code strokeDashed} 却按格分配数组的话，热路径就在持续制造垃圾。
+     */
+    private final float[] dashSegment = new float[4];
+
+    /**
      * 返回已生成的三角形数量。
      *
      * @return 三角形个数
@@ -76,12 +84,32 @@ public final class StrokeGenerator {
     /**
      * 返回已生成三角形的顶点副本。
      *
-     * <p>返回值只包含有效部分，长度为 {@code triangleCount() * 6}。
+     * <p>返回值只包含有效部分，长度为 {@code triangleCount() * 6}；
+     * 每次调用都分配并复制一个新数组，热路径上请改用 {@link #rawTriangles()}。
      *
      * @return 顶点数组副本，布局为每个三角形 6 个 float
      */
     public float[] triangles() {
         return Arrays.copyOf(triangles, triangleCount * 6);
+    }
+
+    /**
+     * 返回内部三角形数组本身，<strong>不复制</strong>。每 6 个 float 一个三角形
+     * （{@code x0,y0,x1,y1,x2,y2}），有效数据是前 {@code triangleCount() * 6} 个 float，
+     * 后面是上一次调用遗留的无效数据。
+     *
+     * <p>给热路径用：调用方可以直接遍历这 {@code count * 6} 个 float 写顶点，
+     * 省掉一次整表复制。作为代价，数组长度通常<strong>大于</strong>有效数据长度，
+     * 千万不要把整个数组当成三角形列表。
+     *
+     * <p><strong>不得保留</strong>：这是内部缓冲，内容只在下一次 {@link #reset()} /
+     * {@link #stroke} / {@link #strokeDashed} 调用之前有效，且扩容时会换一块新数组。
+     * 需要稳定副本请用 {@link #triangles()}。
+     *
+     * @return 内部三角形数组（数组长度 ≥ {@code triangleCount() * 6}）
+     */
+    public float[] rawTriangles() {
+        return triangles;
     }
 
     /**
@@ -188,8 +216,9 @@ public final class StrokeGenerator {
             consumed = 0f;
         }
 
-        // 复用同一对端点数组，逐格追加；patternIndex/consumed 跨段连续，不按段重置
-        float[] seg = new float[4];
+        // 复用同一对端点数组（实例字段，跨调用也不分配），逐格追加；
+        // patternIndex/consumed 跨段连续，不按段重置
+        final float[] seg = dashSegment;
         for (int i = 0; i < segmentCount; i++) {
             int b = (i + 1) % count;
             float ax = points[i * 2], ay = points[i * 2 + 1];

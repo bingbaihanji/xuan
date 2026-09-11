@@ -18,6 +18,23 @@ import java.util.List;
  * <p>实现上，当前命令在状态切换时才「定稿」写入 {@link #finishedCommands}；最后一条尚未定稿的
  * 命令在读取时按「已写顶点数 − 起始顶点索引」现算。这样每个顶点只做一次缓冲区写入，
  * 不产生任何中间对象。
+ *
+ * <h2>消费方契约（帧中途 flush）</h2>
+ *
+ * <p><strong>着色器与 VBO 一侧的 {@code RenderBatch} 是这条契约的读者</strong>：
+ * <ol>
+ *   <li>必须在<strong>每个图元之前</strong>检查 {@link #isFlushRequested()}。既不是每帧一次，
+ *       也不能在图元中间检查：标志置位后缓冲区只剩 {@link #PRIMITIVE_RESERVE_VERTICES} 个顶点的
+ *       余量，恰好够写完一个完整图元，一旦开始写某个图元就必须把它写完。</li>
+ *   <li>读到标志置位时立即提交已收集的顶点：{@link #buffer()} 取出当前内容上传，
+ *       然后调用 {@link #reset()} 开始新的一批。{@link #reset()} 是<strong>唯一</strong>能退出
+ *       「已请求 flush」状态的方法，它同时清掉标志。</li>
+ *   <li>{@link #reset()} 会把写入器带回「尚未设置状态」的初始条件，因此提交完继续画之前
+ *       <strong>必须重新调用 {@link #setState}</strong>；否则下一次 {@link #vertex} 会抛
+ *       {@code IllegalStateException("写入顶点前必须先调用 setState()")}。</li>
+ *   <li>忽略标志继续写不会安静地绕过去：缓冲区写满之后 {@link #vertex} 会抛出点名补救办法的
+ *       {@link IllegalStateException}，而不是一个消息为 {@code null} 的越界异常。</li>
+ * </ol>
  */
 public final class VertexWriter {
 
@@ -49,13 +66,12 @@ public final class VertexWriter {
     private final int maxVertexCapacity;
 
     /**
-     * 达到此顶点数时触发帧中途 flush（由 RenderBatch 消费）。
+     * 达到此顶点数时触发扩容或帧中途 flush（置位 {@link #flushRequested}）。
      * <p>
-     * <strong>消费方契约</strong>：必须在<strong>每个图元之前</strong>检查
-     * {@link #isFlushRequested()}——既不是每帧一次，也不能在图元中间检查。标志置位后，
-     * 缓冲区只剩 {@link #PRIMITIVE_RESERVE_VERTICES} 个顶点的余量，恰好够写完一个完整图元；
-     * 一旦开始写某个图元就必须把它写完。检查到标志置位时应立即提交已收集的顶点，
-     * 随后调用 {@link #reset()} 与 {@link #clearFlushRequest()} 再继续。
+     * 取值比容量少 {@link #PRIMITIVE_RESERVE_VERTICES} + 1：多减的那个 1 是触发置位的本次写入
+     * 自身消耗的顶点，这样置位之后仍恰好写得下整个图元。
+     * <p>
+     * 消费方要遵守的契约写在 {@link #isFlushRequested()} 与类说明里。
      */
     private int flushThresholdVertices;
 
@@ -140,7 +156,8 @@ public final class VertexWriter {
      * @param v                纹理坐标 v
      * @param premultipliedRgba 预乘 alpha 后的 RGBA 颜色
      * @param id               拾取 ID
-     * @throws IllegalStateException 尚未调用 {@link #setState} 时
+     * @throws IllegalStateException 尚未调用 {@link #setState} 时；
+     *                               或缓冲区已写满、消费方始终没有执行帧中途 flush 时
      */
     public void vertex(float x, float y, float u, float v, int premultipliedRgba, int id) {
         if (currentFirstVertex == NO_COMMAND) {
@@ -148,6 +165,14 @@ public final class VertexWriter {
         }
         if (vertexCount >= flushThresholdVertices) {
             grow();
+        }
+        // 缓冲区已经写满 = 消费方没有遵守「每个图元之前检查 isFlushRequested()」的契约
+        // （grow() 在容量耗尽时正是置位该标志的地方，所以这个状态下标志必然是 true）。
+        // 旧行为是让绝对定位写入抛一个 msg 为 null 的 IndexOutOfBoundsException——
+        // 帧中途一个没有消息的越界异常根本无从定位；这里换成点名补救办法的异常。
+        if (vertexCount >= capacityVertices) {
+            throw new IllegalStateException(
+                    "顶点缓冲已满：必须在每个图元之前检查 isFlushRequested() 并执行帧中途 flush");
         }
         int offset = vertexCount * VertexFormat.STRIDE_BYTES;
         buffer.putFloat(offset, x);
@@ -196,13 +221,16 @@ public final class VertexWriter {
     /**
      * 清空所有顶点与命令，保留缓冲区容量。
      * <p>
-     * 清空后状态视为未设置，需重新调用 {@link #setState} 才能继续写入顶点。
+     * 这是<strong>唯一</strong>能退出「已请求帧中途 flush」状态的方法：它同时清掉
+     * {@link #flushRequested} 标志（因此不需要、也没有单独的清除方法）。
+     * <p>
+     * 清空后状态视为未设置，需重新调用 {@link #setState} 才能继续写入顶点——
+     * 帧中途 flush 之后继续画下一个图元时最容易忘的就是这一步，忘了会在下一次
+     * {@link #vertex} 抛 {@code IllegalStateException("写入顶点前必须先调用 setState()")}。
+     * <p>
+     * 内部缓冲区的 limit 不在此处恢复，也无需恢复：{@link #buffer()} 不再改动内部缓冲区。
      */
     public void reset() {
-        // buffer() 会把 limit 收窄到本帧已写入的字节数，而绝对定位写入
-        // putFloat(int,float) 是按 limit 而非 capacity 判定越界的。不恢复的话，
-        // 下一帧只要顶点数超过本帧，第一次写入就会抛 IndexOutOfBoundsException。
-        buffer.limit(buffer.capacity());
         vertexCount = 0;
         finishedCommands.clear();
         currentFirstVertex = NO_COMMAND;
@@ -261,14 +289,28 @@ public final class VertexWriter {
     }
 
     /**
-     * 返回顶点缓冲区。position 为 0，limit 为已写入字节数。
+     * 返回顶点缓冲区的一张只读视图（{@link ByteBuffer#duplicate()} 副本），
+     * position 为 0，limit 为已写入字节数（{@code vertexCount * }{@value VertexFormat#STRIDE_BYTES}），
+     * 字节序为小端，可直接交给 {@code glBufferData}。
      *
-     * @return 顶点缓冲区
+     * <p><strong>不变量：limit == capacity，且只有副本会被收窄。</strong>
+     * 返回的是副本，内部缓冲区的 position/limit 一律不受影响，因此本方法可以被反复调用
+     * （每一帧、或帧中途 flush 时），也不会给下一次写入留下任何越界隐患：
+     * 绝对定位写入 {@code putFloat(int,float)} 是按 <strong>limit</strong> 而非 capacity 判定越界的，
+     * 若像早期实现那样直接返回内部缓冲区并收窄它的 limit，下一帧只要顶点数超过本帧，
+     * 第一次写入就会抛 {@code IndexOutOfBoundsException}。
+     *
+     * <p><strong>返回值不得保留</strong>：副本与内部缓冲区共享同一段直接内存，
+     * 且下一次 {@link #grow()} 会换一块新分配的内存，旧副本随即指向废弃的数据。
+     * 消费方应在拿到后立即上传，不要缓存。
+     *
+     * @return 顶点缓冲区的小端副本，position 为 0、limit 为已写入字节数
      */
     public ByteBuffer buffer() {
-        buffer.position(0);
-        buffer.limit(vertexCount * VertexFormat.STRIDE_BYTES);
-        return buffer;
+        ByteBuffer view = buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN);
+        view.position(0);
+        view.limit(vertexCount * VertexFormat.STRIDE_BYTES);
+        return view;
     }
 
     /**
@@ -283,15 +325,27 @@ public final class VertexWriter {
     /**
      * 返回是否因达到容量上限而请求了帧中途 flush。
      *
+     * <p><strong>消费方契约</strong>：{@code RenderBatch} 必须在<strong>每个图元之前</strong>
+     * 调用本方法——既不是每帧一次，也不能在图元中间调用。标志置位后缓冲区只剩
+     * {@link #PRIMITIVE_RESERVE_VERTICES} 个顶点的余量，恰好够写完一个完整图元；
+     * 一旦开始写某个图元就必须把它写完。
+     *
+     * <p>读到 {@code true} 时的完整处理步骤：
+     * <ol>
+     *   <li>{@link #buffer()} 取出当前内容并提交（上传 + 按 {@link #commands()} 执行 draw call）；</li>
+     *   <li>{@link #reset()}——它清空顶点与命令，<strong>并清掉本标志</strong>；
+     *       这是退出「已请求 flush」状态的唯一途径，没有单独的清除方法。</li>
+     *   <li>{@link #setState}——{@code reset()} 把写入器带回「尚未设置状态」的初始条件，
+     *       不重新设状态就写顶点会抛 {@code IllegalStateException("写入顶点前必须先调用 setState()")}。</li>
+     * </ol>
+     *
+     * <p>若消费方忽略标志继续写入，缓冲区写满后 {@link #vertex} 会抛出消息中点明补救办法的
+     * {@link IllegalStateException}，不会一直安静地写下去。
+     *
      * @return 是否已请求帧中途 flush
      */
     public boolean isFlushRequested() {
         return flushRequested;
-    }
-
-    /** 清除帧中途 flush 请求标志。 */
-    public void clearFlushRequest() {
-        flushRequested = false;
     }
 
     /**
@@ -328,10 +382,9 @@ public final class VertexWriter {
         ByteBuffer old = buffer;
         buffer = allocate(capacityVertices);
         // 拷贝整段旧数据（未写入区域的内容永不被读取）。
-        // 注意 put(int,ByteBuffer,int,int) 是按源缓冲区的 limit 而非 capacity 校验的，
-        // 而 buffer() 可能已把 limit 收窄，所以这里先把 limit 恢复回 capacity 再搬运，
-        // 否则会把「已写入字节数」当成越界长度抛出 IndexOutOfBoundsException。
-        old.limit(old.capacity());
+        // 内部缓冲区的 limit 恒等于 capacity——buffer() 只返回副本、不碰内部缓冲区，
+        // 所以这里无需再像早期实现那样先把 limit 恢复回 capacity 才能搬运。
+        // 注意 put(int,ByteBuffer,int,int) 是按源缓冲区的 limit 而非 capacity 校验长度的。
         buffer.put(0, old, 0, Math.min(oldCapacityBytes, buffer.capacity()));
         flushThresholdVertices = capacityVertices - PRIMITIVE_RESERVE_VERTICES - 1;
     }
