@@ -1,7 +1,8 @@
 package com.bingbaihanji.jfgl.glview
 
-import com.bingbaihanji.jfgl.engine.DrawEngine
 import com.bingbaihanji.jfgl.gl.LwjglGLAbstraction
+import com.bingbaihanji.jfgl.renderer.Gc
+import com.bingbaihanji.jfgl.renderer.RenderBatch
 import com.huskerdev.grapl.gl.GLContext
 import com.huskerdev.grapl.gl.GLProfile
 import com.huskerdev.openglfx.GLExecutor
@@ -14,6 +15,17 @@ import org.lwjgl.opengl.GL11.*
 
 /**
  * JavaFX 与 OpenGL 的桥接封装，提供可配置的 GLCanvas 及事件管理。
+ *
+ * <p>本类同时持有批处理管线：GL 上下文就绪时创建 [RenderBatch] 与 [Gc]，
+ * 每帧由本类配对调用 `beginFrame`/`endFrame`，中间的绘制交给 [onFrame] 注册的回调。
+ * 之所以在这里创建而不是让调用方创建：[RenderBatch] 的构造会编译着色器、生成 VAO/VBO，
+ * 必须在 GL 线程且上下文已 current 的时刻进行，而这个时刻只有本类知道。
+ *
+ * <p>**构造时机**：本类必须在 **JavaFX 工具包启动之后**才能构造。默认参数
+ * `GLCanvas.Defaults.INTEROP_TYPE` 是 `GLInteropType.auto`，其类初始化要向 JavaFX 询问当前
+ * Prism 渲染管线，工具包尚未启动时会抛
+ * `UnsupportedOperationException: Could not detect pipeline`。
+ * 也就是说：不要在 `Application.launch` 之前 `new FXGLTransfer()`，要放到 `Application.start` 里。
  *
  * @param executor OpenGL 实现库（默认 LWJGL_MODULE）
  * @param flipY Y 轴翻转
@@ -43,10 +55,18 @@ class FXGLTransfer(
     externalWindow: Boolean = GLCanvas.Defaults.EXTERNAL_WINDOW
 ) {
 
-    private var drawEngine: DrawEngine? = null
+    /** 批处理提交器。只有在 GL 上下文就绪之后才能构造，因此是在初始化回调里创建的。 */
+    private var renderBatch: RenderBatch? = null
+
+    /** 绘制上下文门面。与 [renderBatch] 同生共死，未初始化时为 null。 */
+    private var gc: Gc? = null
+
     private var onInitCallback: (() -> Unit)? = null
     private var onRenderCallback: (() -> Unit)? = null
     private var onDisposeCallback: (() -> Unit)? = null
+
+    /** 逐帧绘制回调，参数是当前帧的 [Gc]。 */
+    private var onFrameCallback: ((Gc) -> Unit)? = null
 
     // 创建 GLCanvas 实例（所有参数在构造时确定，不可变）
     private val canvas = GLCanvas(
@@ -63,33 +83,45 @@ class FXGLTransfer(
         minorVersion = minorVersion,
         externalWindow = externalWindow
     ).apply {
-        // 初始化：创建并初始化 DrawEngine
+        // 初始化：创建批处理提交器与绘制上下文
         addOnInitEvent {
             glClearColor(0.2f, 0.2f, 0.2f, 1.0f)
             val gl = LwjglGLAbstraction()
-            drawEngine = DrawEngine(gl, scaledWidth, scaledHeight)
-            drawEngine?.initialize()
+            // RenderBatch 在构造期就编译着色器、生成 VAO/VBO/纹理，必须有活着的 GL 上下文，
+            // 因此只能在这里创建；此前 gc() 一直返回 null。
+            val batch = RenderBatch(gl, INITIAL_VERTEX_CAPACITY)
+            renderBatch = batch
+            gc = Gc(batch)
             onInitCallback?.invoke()
         }
 
-        // 渲染：委托给 DrawEngine
-        addOnRenderEvent { event ->
+        // 渲染：开一帧、交给逐帧回调画、提交
+        addOnRenderEvent {
             glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
-            drawEngine?.render()
+            val context = gc
+            // 画布尺寸在首帧布局完成前可能还是 0，而 beginFrame 要求正尺寸；
+            // 这里跳过而不是抛异常，否则渲染线程会每帧刷一次栈。
+            if (context != null && scaledWidth > 0 && scaledHeight > 0) {
+                context.beginFrame(scaledWidth, scaledHeight)
+                onFrameCallback?.invoke(context)
+                context.endFrame()
+            }
             onRenderCallback?.invoke()
         }
 
-        // 视口调整：通知 DrawEngine
+        // 视口调整：Gc 的像素→NDC 基础矩阵每帧都按 scaledWidth/scaledHeight 重建，
+        // 这里同步 GL 视口即可。reshape 事件带的宽高正是 DPI 缩放后的帧缓冲尺寸，
+        // 与 beginFrame 用的是同一套值，两者不会对不上。
         addOnReshapeEvent { event ->
             glViewport(0, 0, event.width, event.height)
-            drawEngine?.resize(scaledWidth, scaledHeight)
         }
 
-        // 释放：销毁 DrawEngine
+        // 释放：销毁批处理提交器持有的全部 GL 资源
         addOnDisposeEvent {
             onDisposeCallback?.invoke()
-            drawEngine?.dispose()
-            drawEngine = null
+            renderBatch?.dispose()
+            renderBatch = null
+            gc = null
         }
     }
 
@@ -123,9 +155,24 @@ class FXGLTransfer(
     }
 
     /**
-     * 返回当前的 DrawEngine 实例，可用于配置场景、相机等。
+     * 返回当前的绘制上下文；**GL 初始化完成之前为 null**。
+     *
+     * <p>本方法可在任意线程调用，但返回的 [Gc] 只能在 GL 线程上使用
+     * （见 [Gc] 的线程说明）。
+     *
+     * @return 绘制上下文，未初始化时为 null
      */
-    fun getDrawEngine(): DrawEngine? = drawEngine
+    fun gc(): Gc? = gc
+
+    /**
+     * 设置逐帧绘制回调。**帧已经开好**，回调里直接画即可，不要自己调用
+     * `beginFrame`/`endFrame`（它们由本类配对调用）。
+     *
+     * @param callback 接收当前帧绘制上下文的回调
+     */
+    fun onFrame(callback: (Gc) -> Unit) {
+        onFrameCallback = callback
+    }
 
     /**
      * 设置GL初始化时的回调
@@ -148,4 +195,13 @@ class FXGLTransfer(
         onDisposeCallback = callback
     }
 
+    companion object {
+        /**
+         * [RenderBatch] 的初始顶点容量（单位：顶点）。
+         *
+         * <p>65536 个顶点即 1.5 MB（每个顶点 24 字节），够画满一屏文字级别的图元量而无需扩容；
+         * 超出后会触发帧中途 flush，不会失败。
+         */
+        private const val INITIAL_VERTEX_CAPACITY = 65536
+    }
 }

@@ -1,194 +1,166 @@
 package com.bingbaihanji.jfgl.dsl
 
 import com.bingbaihanji.jfgl.glview.FXGLTransfer
+import com.bingbaihanji.jfgl.renderer.Gc
+import com.bingbaihanji.jfgl.view.MainView
 import javafx.application.Application
 import javafx.scene.Scene
-import javafx.scene.input.MouseButton
-import javafx.scene.input.MouseEvent
 import javafx.stage.Stage
 
 /**
- * JFGL 绘图框架的 DSL 入口。
+ * JFGL 应用配置与入口，承载窗口参数与两个生命周期回调。
  *
- * 使用示例：
+ * <p>典型用法：
  * ```kotlin
- * jfgl {
- *     title = "我的应用"
- *     width = 800.0
- *     height = 600.0
- *
- *     onInit {
- *         // 初始化代码
- *     }
- *
- *     onRender {
- *         // 绘制代码
- *         drawCircle(0f, 0f, 0.5f, r = 1f, g = 0f, b = 0f)
- *         drawRect(-0.5f, -0.5f, 0.3f, 0.3f, r = 0f, g = 1f, b = 0f)
- *     }
- *
- *     onClick { x, y, button ->
- *         // 鼠标点击处理
- *     }
- *
- *     onMove { x, y ->
- *         // 鼠标移动处理
+ * fun main() {
+ *     jfgl {
+ *         title = "我的应用"
+ *         onRender {
+ *             fill = 0xFFFF0000.toInt()
+ *             fillRect(10f, 10f, 100f, 50f)
+ *         }
  *     }
  * }
  * ```
+ *
+ * <p>与旧版 DSL 的区别：回调拿到的是 [Gc]（批处理的 2D 绘制上下文）而不是逐图元刷屏的
+ * `DrawDSL`；坐标是**像素、原点左上、y 向下**，不再是 NDC 的 `[-1, 1]`。
+ *
+ * <p>**回调线程**：[onInit] 与 [onRender] 都在 GL 线程上调用，可以直接调用 [Gc] 的任何方法，
+ * 但**不要**在其中做 JavaFX 场景图操作——那些必须在 JavaFX 应用线程上进行。
  */
 class JFGL {
-    /** 窗口标题 */
+
+    /** 窗口标题。 */
     var title: String = "JFGL 应用"
 
-    /** 窗口宽度 */
+    /** 窗口宽度（逻辑像素）。 */
     var width: Double = 800.0
 
-    /** 窗口高度 */
+    /** 窗口高度（逻辑像素）。 */
     var height: Double = 600.0
 
-    /** 清屏颜色（RGBA，0-1） */
-    var clearColor: FloatArray = floatArrayOf(0.2f, 0.2f, 0.2f, 1.0f)
+    /** GL 初始化完成、[Gc] 已可用时的回调。 */
+    private var onInitCallback: ((Gc) -> Unit)? = null
 
-    // 回调函数
-    private var onInitCallback: ((DrawDSL) -> Unit)? = null
-    private var onRenderCallback: (DrawDSL.() -> Unit)? = null
-    private var onClickCallback: ((Float, Float, MouseButton) -> Unit)? = null
-    private var onMoveCallback: ((Float, Float) -> Unit)? = null
-
-    // 绘制工具
-    private var drawDSL: DrawDSL? = null
-    private var transfer: FXGLTransfer? = null
+    /** 每帧绘制回调，接收者为 [Gc]。 */
+    private var onRenderCallback: (Gc.() -> Unit)? = null
 
     /**
-     * 设置初始化回调
+     * 设置初始化回调：GL 上下文就绪后调用一次，参数是可用于**一次性**准备工作的 [Gc]
+     * （例如预上传纹理、构建路径）。
+     *
+     * <p>此时不能绘制——绘制必须发生在 [onRender] 里，因为每帧开始时顶点缓冲会被清空。
+     *
+     * @param block 初始化回调
      */
-    fun onInit(block: (DrawDSL) -> Unit) {
+    fun onInit(block: (Gc) -> Unit) {
         onInitCallback = block
     }
 
     /**
-     * 设置渲染回调
+     * 设置逐帧绘制回调。每帧被调用一次，返回后本帧收集到的全部顶点会被一次性提交。
+     *
+     * @param block 绘制回调，接收者为 [Gc]
      */
-    fun onRender(block: DrawDSL.() -> Unit) {
+    fun onRender(block: Gc.() -> Unit) {
         onRenderCallback = block
     }
 
     /**
-     * 设置鼠标点击回调
-     */
-    fun onClick(block: (Float, Float, MouseButton) -> Unit) {
-        onClickCallback = block
-    }
-
-    /**
-     * 设置鼠标移动回调
-     */
-    fun onMove(block: (Float, Float) -> Unit) {
-        onMoveCallback = block
-    }
-
-    /**
-     * 获取绘制工具
-     */
-    fun getDraw(): DrawDSL? = drawDSL
-
-    /**
-     * 启动应用
+     * 启动 JavaFX 应用。本方法会阻塞到窗口关闭。
+     *
+     * <p>桥接对象**必须等到 JavaFX 工具包启动之后**才能创建——`GLCanvas.Defaults.INTEROP_TYPE`
+     * 是 `GLInteropType.auto`，它在类初始化时要向 JavaFX 询问当前的 Prism 渲染管线，
+     * 工具包尚未启动时会抛 `UnsupportedOperationException: Could not detect pipeline`。
+     * 因此这里只把配置交给 [JFGLApplication]，真正创建 [FXGLTransfer] 的时机放在
+     * `Application.start` 里（那时工具包必然已经就绪）。
      */
     fun start() {
-        transfer = FXGLTransfer().apply {
-            onInit {
-                drawDSL = DrawDSL(this).apply { init() }
-                onInitCallback?.invoke(drawDSL!!)
-            }
-
-            onRender {
-                drawDSL?.let { draw ->
-                    onRenderCallback?.invoke(draw)
-                }
-            }
-
-            onDispose {
-                drawDSL?.dispose()
-            }
-        }
-
-        // 启动 JavaFX 应用
-        JFGLApplication.title = title
-        JFGLApplication.width = width
-        JFGLApplication.height = height
-        JFGLApplication.transfer = transfer
-        JFGLApplication.onClickCallback = onClickCallback
-        JFGLApplication.onMoveCallback = onMoveCallback
-
+        JFGLApplication.config = this
         Application.launch(JFGLApplication::class.java)
+    }
+
+    /**
+     * 转发初始化回调。由 [JFGLApplication] 在 GL 上下文就绪后调用。
+     *
+     * @param gc 已可用的绘制上下文
+     */
+    internal fun invokeInit(gc: Gc) {
+        onInitCallback?.invoke(gc)
+    }
+
+    /**
+     * 转发逐帧绘制回调。由 [JFGLApplication] 在每帧开帧之后调用。
+     *
+     * @param gc 当前帧的绘制上下文
+     */
+    internal fun invokeRender(gc: Gc) {
+        onRenderCallback?.invoke(gc)
     }
 }
 
 /**
- * JavaFX 应用程序类
+ * JavaFX 应用外壳：只负责搭出窗口并把 [FXGLTransfer] 的 GL 画布放进场景图。
+ *
+ * <p>之所以用伴生对象传递配置：`Application.launch` 要求目标类有一个无参构造器并由 JavaFX
+ * 自行实例化，没有机会把配置通过构造器传进去。
  */
-class JFGLApplication : Application() {
+internal class JFGLApplication : Application() {
+
     companion object {
-        var title: String = "JFGL 应用"
-        var width: Double = 800.0
-        var height: Double = 600.0
-        var transfer: FXGLTransfer? = null
-        var onClickCallback: ((Float, Float, MouseButton) -> Unit)? = null
-        var onMoveCallback: ((Float, Float) -> Unit)? = null
+        /** 当前应用配置，由 [JFGL.start] 在 `launch` 之前写入。 */
+        var config: JFGL? = null
     }
 
+    /**
+     * 桥接对象。
+     *
+     * <p>是实例字段而不是伴生对象字段：它只能在本类的 `start` 里创建
+     * （见 [JFGL.start] 里关于 JavaFX 工具包启动顺序的说明），
+     * 而 `stop` 与 `start` 是同一个实例上的回调，实例字段天然配对。
+     */
+    private var transfer: FXGLTransfer? = null
+
+    /**
+     * JavaFX 启动回调：创建桥接对象、接线回调，把 GL 画布放进 [MainView] 的中心区域并显示窗口。
+     *
+     * <p>此刻 JavaFX 工具包已经启动，因此可以安全地构造 [FXGLTransfer]。
+     *
+     * @param stage 主窗口
+     */
     override fun start(stage: Stage) {
-        val mainView = com.bingbaihanji.jfgl.view.MainView().apply {
-            center = transfer!!.createGlFXView()
+        val config = config ?: error("JFGL 配置缺失：请通过 jfgl { } 启动，不要直接 launch JFGLApplication")
+        val bridge = FXGLTransfer()
+        bridge.onInit {
+            // 走到这里 Gc 必然已经创建好；用 let 兜住"未来某天接线顺序变了"的情况，
+            // 而不是用 !! 在回调里制造一个无从定位的空指针。
+            bridge.gc()?.let { gc -> config.invokeInit(gc) }
         }
+        bridge.onFrame { gc -> config.invokeRender(gc) }
+        transfer = bridge
 
-        val scene = Scene(mainView.createMainView(), width, height)
-
-        // 鼠标点击事件
-        scene.addEventHandler(MouseEvent.MOUSE_CLICKED) { event ->
-            val glX = ((event.x / width) * 2 - 1).toFloat()
-            val glY = (-(event.y / height) * 2 + 1).toFloat()
-            onClickCallback?.invoke(glX, glY, event.button)
-            transfer?.repaint()
+        val mainView = MainView().apply {
+            center = bridge.createGlFXView()
         }
-
-        // 鼠标移动事件
-        scene.addEventHandler(MouseEvent.MOUSE_MOVED) { event ->
-            val glX = ((event.x / width) * 2 - 1).toFloat()
-            val glY = (-(event.y / height) * 2 + 1).toFloat()
-            onMoveCallback?.invoke(glX, glY)
-        }
-
-        stage.title = title
-        stage.scene = scene
+        stage.title = config.title
+        stage.scene = Scene(mainView.createMainView(), config.width, config.height)
         stage.show()
     }
 
+    /** 窗口关闭时释放 GL 资源。 */
     override fun stop() {
         transfer?.dispose()
     }
 }
 
 /**
- * JFGL DSL 入口函数
+ * JFGL DSL 入口：配置并启动一个 JFGL 应用。
  *
- * 使用示例：
- * ```kotlin
- * fun main() {
- *     jfgl {
- *         title = "我的应用"
+ * <p>本函数会阻塞到窗口关闭（内部是 `Application.launch`）。
  *
- *         onRender {
- *             drawCircle(0f, 0f, 0.5f)
- *         }
- *     }
- * }
- * ```
+ * @param block 应用配置块，接收者为 [JFGL]
  */
 fun jfgl(block: JFGL.() -> Unit) {
-    val jfgl = JFGL()
-    jfgl.block()
-    jfgl.start()
+    JFGL().apply(block).start()
 }
