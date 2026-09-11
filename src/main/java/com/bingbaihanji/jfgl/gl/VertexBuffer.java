@@ -29,15 +29,18 @@ public final class VertexBuffer implements Disposable {
     /**
      * 创建顶点缓冲并按给定字节数预分配容量。
      *
-     * <p>构造过程为：创建 VBO → 绑定 → 上传占位数据（占位数据以 float 数组形式给出，
-     * 因此实际分配量按 4 字节向下取整，调用方应传入 4 的倍数）→ 解绑。
+     * <p>构造过程为：创建 VBO → 绑定 → 上传占位数据（占位数据以 float 数组形式给出）→ 解绑。
      *
      * @param gl                   GL 抽象层
-     * @param initialCapacityBytes 初始容量（字节），小于 1 时按 1 处理
+     * @param initialCapacityBytes 初始容量（字节），小于 1 时按 1 处理，
+     *                             非 4 的倍数时向上对齐到 4 的倍数
      */
     public VertexBuffer(GLAbstraction gl, int initialCapacityBytes) {
         this.gl = gl;
-        this.capacityBytes = Math.max(1, initialCapacityBytes);
+        // 占位数据以 float 数组给出，而 new float[capacityBytes / 4] 会截断小数部分，
+        // 因此容量必须向上对齐到 4 的倍数：否则 capacityBytes 会高估实际分配量，
+        // 恰好上传这么多字节时就会越界写入 GL 缓冲。
+        this.capacityBytes = (Math.max(1, initialCapacityBytes) + 3) & ~3;
         this.vbo = gl.createVbo();
         gl.bindVbo(vbo);
         gl.uploadVboData(new float[this.capacityBytes / 4]);
@@ -55,6 +58,8 @@ public final class VertexBuffer implements Disposable {
 
     /**
      * 返回当前缓冲容量（字节）。
+     *
+     * <p>容量始终为 4 的倍数，与底层实际分配量一致。
      *
      * @return 当前容量（字节）
      */
@@ -91,6 +96,9 @@ public final class VertexBuffer implements Disposable {
         while (newCapacity < neededBytes) {
             newCapacity *= 2;
         }
+        // 同构造函数：分配量按 newCapacity / 4 个 float 计算，必须对齐到 4 的倍数，
+        // 否则 capacityBytes 会高估实际分配量，恰好上传这么多字节时就会越界。
+        newCapacity = (newCapacity + 3) & ~3;
         gl.deleteVbo(vbo);
         this.capacityBytes = newCapacity;
         this.vbo = gl.createVbo();
