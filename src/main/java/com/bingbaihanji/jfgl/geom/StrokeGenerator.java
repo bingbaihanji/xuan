@@ -119,6 +119,137 @@ public final class StrokeGenerator {
     public void stroke(float[] points, int count, boolean closed, float width,
                        Cap cap, Join join, float miterLimit, int roundSegments) {
         reset();
+        generateOutline(points, count, closed, width, cap, join, miterLimit, roundSegments);
+    }
+
+    /**
+     * 生成虚线描边轮廓，结果写入本实例（会清空上一次的结果）。
+     *
+     * <p>实现方式：沿折线按 dash 模式累计弧长切分出实线段，再逐段生成描边。
+     * 相位在整条折线上连续推进，折线拐角处的虚线不会重新起算。
+     *
+     * <p>每一格实线的描边直接追加进本实例（见 {@link #generateOutline}），
+     * 不分配临时对象，也不复制已有顶点，因此可在每帧的热路径上调用。
+     *
+     * @param points        扁平折线顶点数组，布局为 {@code x0,y0,x1,y1,...}
+     * @param count         顶点个数
+     * @param closed        是否闭合
+     * @param width         线宽（局部空间单位）
+     * @param cap           端点样式，通常为 {@link Cap#BUTT}
+     * @param join          接头样式
+     * @param miterLimit    miter 接头超限后回退为 bevel 的阈值（相对于半线宽）
+     * @param dashPattern   虚线模式，偶数下标为实线长度、奇数下标为空白长度；
+     *                      为 {@code null} 或空数组时等价于实线，总长为零时不产生三角形
+     * @param dashPhase     起始相位，会先归一化到 {@code [0, 模式总长)}
+     * @param roundSegments 圆端点与圆角接头的细分段数
+     */
+    public void strokeDashed(float[] points, int count, boolean closed, float width,
+                             Cap cap, Join join, float miterLimit,
+                             float[] dashPattern, float dashPhase, int roundSegments) {
+        if (dashPattern == null || dashPattern.length == 0) {
+            // 无模式即实线
+            stroke(points, count, closed, width, cap, join, miterLimit, roundSegments);
+            return;
+        }
+        float patternLength = 0f;
+        for (float d : dashPattern) {
+            patternLength += d;
+        }
+        if (patternLength <= 1e-6f) {
+            // 全零模式：没有任何实线格
+            reset();
+            return;
+        }
+
+        reset();
+        int segmentCount = closed ? count : count - 1;
+        if (count < 2 || width <= 0f || segmentCount < 1) {
+            return;
+        }
+        int patternCount = dashPattern.length;
+
+        // 相位归一化到 [0, patternLength)，再定位到起始模式格；相位小于总长，故最多走完一轮
+        float consumed = dashPhase % patternLength;
+        if (consumed < 0f) {
+            consumed += patternLength;
+        }
+        int patternIndex = 0;
+        for (int i = 0; i < patternCount
+                && consumed >= dashPattern[patternIndex % patternCount] - 1e-6f; i++) {
+            consumed -= dashPattern[patternIndex % patternCount];
+            patternIndex++;
+        }
+        if (consumed < 0f) {
+            consumed = 0f;
+        }
+
+        // 复用同一对端点数组，逐格追加；patternIndex/consumed 跨段连续，不按段重置
+        float[] seg = new float[4];
+        for (int i = 0; i < segmentCount; i++) {
+            int b = (i + 1) % count;
+            float ax = points[i * 2], ay = points[i * 2 + 1];
+            float bx = points[b * 2], by = points[b * 2 + 1];
+            float dx = bx - ax, dy = by - ay;
+            float len = (float) Math.sqrt(dx * dx + dy * dy);
+            if (len < 1e-6f) {
+                continue;
+            }
+            float ux = dx / len, uy = dy / len;
+
+            float cursor = 0f;
+            while (cursor < len) {
+                float dashLen = dashPattern[patternIndex % patternCount];
+                if (dashLen <= 1e-6f) {
+                    // 零长度格不占用弧长，直接跳到下一格
+                    consumed = 0f;
+                    patternIndex++;
+                    continue;
+                }
+                if (consumed >= dashLen - 1e-6f) {
+                    // 当前格在本段之前已经走完，进入下一格
+                    consumed = 0f;
+                    patternIndex++;
+                    continue;
+                }
+                float step = Math.min(dashLen - consumed, len - cursor);
+                if (step <= 1e-6f) {
+                    break;
+                }
+                if ((patternIndex % 2) == 0) {
+                    seg[0] = ax + ux * cursor;
+                    seg[1] = ay + uy * cursor;
+                    seg[2] = ax + ux * (cursor + step);
+                    seg[3] = ay + uy * (cursor + step);
+                    generateOutline(seg, 2, false, width, cap, join, miterLimit, roundSegments);
+                }
+                cursor += step;
+                consumed += step;
+                if (consumed >= dashLen - 1e-6f) {
+                    consumed = 0f;
+                    patternIndex++;
+                }
+            }
+        }
+    }
+
+    /**
+     * 生成描边轮廓并追加到当前三角形列表，<strong>不</strong>清空已有结果。
+     *
+     * <p>这是 {@link #stroke} 与 {@link #strokeDashed} 共用的核心：虚线需要把每一格
+     * 依次追加到同一个实例上，因此拆出这个不调用 {@link #reset()} 的版本，
+     * 避免为每格分配临时实例、也避免复制已生成的顶点。
+     *
+     * @param points        扁平折线顶点数组，布局为 {@code x0,y0,x1,y1,...}
+     * @param count         顶点个数
+     * @param closed        是否闭合；闭合路径不生成端点封口，并在首尾之间补接头
+     * @param width         线宽（局部空间单位）
+     * @param cap           端点样式
+     * @param join          接头样式
+     * @param miterLimit    miter 接头超限后回退为 bevel 的阈值（相对于半线宽）
+     * @param roundSegments 圆端点与圆角接头的细分段数
+     */
+    private void generateOutline(float[] points, int count, boolean closed, float width,
+                                 Cap cap, Join join, float miterLimit, int roundSegments) {
         if (count < 2 || width <= 0f) {
             return;
         }
