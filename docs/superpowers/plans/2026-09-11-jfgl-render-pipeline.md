@@ -3126,6 +3126,15 @@ fun jfgl(block: JFGL.() -> Unit) {
 
 > **实现提示**：`FXGLTransfer` 目前不暴露 `DrawEngine` 之外的渲染钩子，且 `Gc` 需要 `RenderBatch`（依赖 GL 上下文）。因此 `jfgl` 与 `FXGLTransfer` 的接线是**下一步**：需要在 `FXGLTransfer` 的 `onInit`/`onRender` 回调里创建 `RenderBatch` 与 `Gc`，并转发调用。本步骤先让代码可编译，接线在 Step 3 完成。
 
+> **本步必须一并删除 `example/DrawExample.kt`。** 它使用的是旧 DSL API
+> （`onInit { draw -> }`、NDC 坐标的 `drawRect(...)`、已被移除的 `onClick`/`onMove`），
+> 重写 `JFGL.kt` 后它无法编译。它由本任务新建的 `PipelineExample.kt` 取代。
+> 计划原先把它的删除放在 Task 13，那会导致 Task 12 的 `mvn -o compile` 失败。
+>
+> ```bash
+> git rm src/main/kotlin/com/bingbaihanji/jfgl/example/DrawExample.kt
+> ```
+
 - [ ] **Step 3: 在 FXGLTransfer 中接线**
 
 修改 `src/main/kotlin/com/bingbaihanji/jfgl/glview/FXGLTransfer.kt`：删除其中对 `DrawEngine` 的依赖，改为持有 `RenderBatch` 与 `Gc`，并新增 `onFrame` 回调：
@@ -3264,12 +3273,13 @@ git rm -r src/main/kotlin/com/bingbaihanji/jfgl/dsl/Shapes.kt \
 
 - [ ] **Step 2: 删除引用了已删类的示例与入口**
 
-`App.kt`、`Main.kt`、`example/DrawExample.kt` 依赖已删除的 `DrawEngine`/`DrawDSL`。删除它们，并把 `Main.kt` 的启动目标改为新的示例：
+`App.kt` 依赖已删除的 `DrawEngine`/`DrawDSL`。删除它，并把 `Main.kt` 的启动目标改为新的示例：
 
 ```bash
 git rm src/main/kotlin/com/bingbaihanji/jfgl/App.kt
-git rm src/main/kotlin/com/bingbaihanji/jfgl/example/DrawExample.kt
 ```
+
+> `example/DrawExample.kt` 已在 Task 12 删除（它依赖被重写的旧 DSL API），此处不再重复删除。
 
 修改 `src/main/kotlin/com/bingbaihanji/jfgl/Main.kt` 为：
 
