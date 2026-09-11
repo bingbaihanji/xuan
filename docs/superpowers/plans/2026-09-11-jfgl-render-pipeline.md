@@ -2353,7 +2353,9 @@ public final class VertexBuffer implements Disposable {
      */
     public VertexBuffer(GLAbstraction gl, int initialCapacityBytes) {
         this.gl = gl;
-        this.capacityBytes = Math.max(1, initialCapacityBytes);
+        // 向上取整到 4 字节。否则 capacityBytes / 4 会截断，
+        // 导致 capacityBytes() 报告的容量大于实际分配的 GL 缓冲（如 6 → 只分配 4 字节）。
+        this.capacityBytes = (Math.max(1, initialCapacityBytes) + 3) & ~3;
         this.vbo = gl.createVbo();
         gl.bindVbo(vbo);
         gl.uploadVboData(new float[this.capacityBytes / 4]);
@@ -2389,6 +2391,8 @@ public final class VertexBuffer implements Disposable {
         while (newCapacity < neededBytes) {
             newCapacity *= 2;
         }
+        // 与构造函数保持一致，保持 4 字节对齐
+        newCapacity = (newCapacity + 3) & ~3;
         gl.deleteVbo(vbo);
         this.capacityBytes = newCapacity;
         this.vbo = gl.createVbo();
@@ -2533,8 +2537,27 @@ public final class RenderBatch implements Disposable {
         createVao();
     }
 
+    /** VAO 的属性指针当前是相对哪个 VBO 配置的；-1 表示尚未配置。 */
+    private int vaoConfiguredVboId = -1;
+
     private void createVao() {
         vao = gl.createVao();
+        configureVaoAttributes();
+    }
+
+    /**
+     * 把顶点属性指针配置到当前 VBO 上。
+     *
+     * <p><strong>关键</strong>：{@code glVertexAttribPointer} 会把<strong>调用时绑定的
+     * GL_ARRAY_BUFFER</strong> 记录进 VAO。而 {@link VertexBuffer#grow()} 在扩容时
+     * 会删除旧 VBO、新建一个 VBO —— 此时 VAO 的属性指针就指向了一个已删除的缓冲，
+     * 绘制会报错或输出空白。事后重新 {@code glBindBuffer} <strong>无法</strong>修复，
+     * 因为 GL_ARRAY_BUFFER 绑定不是 VAO 状态（只有 GL_ELEMENT_ARRAY_BUFFER 是）。
+     *
+     * <p>因此每次提交前都要检查 VBO 是否已被替换，是则重新配置属性指针。
+     * 扩容正是 {@link VertexBuffer} 存在的理由，所以这条路径一定会被走到。
+     */
+    private void configureVaoAttributes() {
         gl.bindVao(vao);
         gl.bindVbo(vertexBuffer.id());
 
@@ -2556,6 +2579,7 @@ public final class RenderBatch implements Disposable {
         glEnableVertexAttribArray(3);
 
         gl.bindVao(0);
+        vaoConfiguredVboId = vertexBuffer.id();
     }
 
     /** 设置本帧的视口高度，用于裁剪坐标换算。 */
@@ -2578,6 +2602,12 @@ public final class RenderBatch implements Disposable {
             return;
         }
         vertexBuffer.upload(writer.buffer());
+
+        // 扩容会替换底层 VBO，必须重新配置 VAO 的属性指针（详见 configureVaoAttributes 的说明）。
+        // 注意这一步必须在 bindVao 之前完成，因为 configureVaoAttributes 自己会绑定 VAO。
+        if (vaoConfiguredVboId != vertexBuffer.id()) {
+            configureVaoAttributes();
+        }
 
         shader.use();
         gl.bindVao(vao);
