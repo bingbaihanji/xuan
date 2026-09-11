@@ -1148,11 +1148,20 @@ public final class VertexWriter {
         vertex(x0, y0, u0, v0, premultipliedRgba, id);
     }
 
-    /** 清空所有顶点与命令，保留缓冲区容量。 */
+    /**
+     * 清空所有顶点与命令，保留缓冲区容量。
+     *
+     * <p><strong>必须恢复 limit</strong>：{@link #buffer()} 会把 limit 收窄到"本帧已写入的字节数"，
+     * 而 JDK 的绝对定位写入 {@code putFloat(int, float)} 是按 <strong>limit</strong>
+     * 而非 capacity 判定越界的。若不恢复，下一帧只要顶点数超过上一帧，
+     * 第一次写入就会抛 {@code IndexOutOfBoundsException} —— 即渲染器会在
+     * "本帧与上一帧不同"的第一次就崩溃。
+     */
     public void reset() {
         vertexCount = 0;
         commands.clear();
         flushRequested = false;
+        buffer.limit(buffer.capacity());
     }
 
     public int vertexCount() { return vertexCount; }
@@ -1166,6 +1175,10 @@ public final class VertexWriter {
 
     /**
      * 返回顶点缓冲区。position 为 0，limit 为已写入字节数。
+     *
+     * <p><strong>注意</strong>：本方法会收窄 limit，且不负责恢复。
+     * 恢复由 {@link #reset()} 负责（见其说明）——因为 JDK 的绝对定位写入是按 limit
+     * 判定越界的，忘记恢复会让下一帧写入直接抛异常。
      */
     public ByteBuffer buffer() {
         buffer.position(0);
