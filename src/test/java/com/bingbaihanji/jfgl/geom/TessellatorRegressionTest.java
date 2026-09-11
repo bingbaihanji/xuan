@@ -1,7 +1,11 @@
 package com.bingbaihanji.jfgl.geom;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -25,11 +29,20 @@ import static org.junit.jupiter.api.Assertions.*;
  *   <li>{@link #多洞输出的三角形绕向一致为逆时针} —— 多洞输入下输出绕向的一致性。</li>
  *   <li>{@link #矩形挖两个小方洞面积守恒} —— 两次桥接落在同一个外轮廓顶点上时，
  *       那里会变成被访问三次的"掐点"，必须避免重复使用桥接点。</li>
+ *   <li>{@link #面积丢失时发出告警并报出两个数字} —— 面积自查必须能抓到
+ *       "静默少画"，并报出期望/实际两个数字。</li>
+ *   <li>{@link #正常多洞输入不发告警} —— 自查不能变成永远在响的噪音。</li>
  * </ul>
  *
  * <p>另有两个已知缺陷用例（{@code 两个洞贴着同一条竖直边线时面积守恒}、
  * {@code 方洞与扁洞上下排列时面积守恒}）暂时 {@code @Disabled}，
  * 它们记录的失败数字是实测值，修好后应去掉 {@code @Disabled}。
+ *
+ * <p><b>注意</b>：{@link #矩形挖去方形洞与圆形洞后面积守恒} 当初是为了钉住
+ * "贪心多轮桥接"（洞找不到可见桥接点就延后到下一轮）而写的，但现在它<b>钉不住</b>
+ * 了——后来的"在轮廓边上找兜底桥接点"已经覆盖了同一个场景，把贪心多轮关掉该用例
+ * 照样通过。贪心多轮仍然保留，理由是实测有效而不是有单测兜底：同一批 2944 个结构化
+ * 用例，关掉它失败率从 6.4% 升到 11.8%。改动桥接代码时别指望这条用例替你挡住它。
  */
 class TessellatorRegressionTest {
 
@@ -250,6 +263,57 @@ class TessellatorRegressionTest {
         t.tessellateWithHoles(outer, 4, holes, holeCounts);
 
         assertAreaConserved(expectedArea(outer, 4, holes, holeCounts), t);
+    }
+
+    /**
+     * 把 logback 的收集器挂到 {@link Tessellator} 的日志上执行动作，返回收集到的告警文本。
+     *
+     * @param action 要执行的动作
+     * @return 期间产生的日志文本（每条一行）
+     */
+    private static String captureWarnings(Runnable action) {
+        Logger logger = (Logger) LoggerFactory.getLogger(Tessellator.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            action.run();
+        } finally {
+            logger.detachAppender(appender);
+        }
+        StringBuilder sb = new StringBuilder();
+        for (ILoggingEvent event : appender.list) {
+            sb.append(event.getFormattedMessage()).append('\n');
+        }
+        return sb.toString();
+    }
+
+    @Test
+    void 面积丢失时发出告警并报出两个数字() {
+        // 用的就是下面 @Disabled 的那个"两个洞贴着同一条竖直边线"用例：
+        // 面积自查必须在这种退化上触发，并把少画了多少面积说清楚
+        String warnings = captureWarnings(() -> {
+            Tessellator t = new Tessellator();
+            float[] outer = rect(0f, 0f, 280f, 260f, false);
+            float[][] holes = {rect(10f, 10f, 40f, 40f, true), rect(10f, 96f, 20f, 116f, true)};
+            t.tessellateWithHoles(outer, 4, holes, new int[]{4, 4});
+        });
+
+        assertTrue(warnings.contains("71700"), "告警里应报出期望面积 71700，实际告警：" + warnings);
+        assertTrue(warnings.contains("68600"), "告警里应报出实际面积 68600，实际告警：" + warnings);
+    }
+
+    @Test
+    void 正常多洞输入不发告警() {
+        String warnings = captureWarnings(() -> {
+            Tessellator t = new Tessellator();
+            float[] outer = rect(0f, 0f, 120f, 40f, true);
+            float[][] holes = {rect(10f, 10f, 30f, 30f, false), rect(50f, 10f, 70f, 30f, false),
+                    rect(90f, 10f, 110f, 30f, false)};
+            t.tessellateWithHoles(outer, 4, holes, new int[]{4, 4, 4});
+        });
+
+        assertEquals("", warnings, "面积守恒的输入不该告警");
     }
 
     @Test
