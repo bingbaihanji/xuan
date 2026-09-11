@@ -73,7 +73,9 @@ src/test/java/com/bingbaihanji/jfgl/renderer/ 单测
 
 **保留复用不动**：`math/`、`util/`、`gl/GLAbstraction.java`、`gl/LwjglGLAbstraction.java`、`gl/ShaderProgram.java`、`gl/Texture.java`、`glview/FXGLTransfer.kt`、`view/MainView.kt`、`gpu/`
 
-**移动**：`renderer/Path.java` → `geom/Path.java`（并重写为可变累加器，见 Task 1）
+**取代**：`renderer/Path.java` 被 `geom/Path.java` 取代（Task 1 新建后者）。
+但**旧文件要到 Task 13 才删除**——`scene/ShapeNode` 与 `chart/` 四个类在 Task 13 之前仍引用它，
+提前删除会让项目从 Task 1 起就无法编译。两个 `Path` 分属不同包，并存不冲突。
 
 ---
 
@@ -352,9 +354,12 @@ Expected: `Tests run: 6, Failures: 0, Errors: 0`
 
 ```bash
 git add src/main/java/com/bingbaihanji/jfgl/geom/Path.java src/test/java/com/bingbaihanji/jfgl/geom/PathTest.java
-git rm src/main/java/com/bingbaihanji/jfgl/renderer/Path.java
 git commit -m "feat(geom): 用可变零分配累加器重写 Path"
 ```
+
+> **不要在此任务删除 `renderer/Path.java`。** `scene/ShapeNode` 与 `chart/` 的四个图表类仍引用它，
+> 提前删除会导致整个项目在 Task 13 之前都无法编译，后续任务全部无法验证。
+> 旧文件保留到 Task 13 随 `scene/`、`chart/` 一并清除。两个 `Path` 分属不同包，同时存在不冲突。
 
 ---
 
@@ -3244,6 +3249,7 @@ git rm -r src/main/java/com/bingbaihanji/jfgl/scene
 git rm -r src/main/java/com/bingbaihanji/jfgl/event
 git rm -r src/main/java/com/bingbaihanji/jfgl/chart
 git rm -r src/main/java/com/bingbaihanji/jfgl/engine
+git rm src/main/java/com/bingbaihanji/jfgl/renderer/Path.java
 git rm src/main/java/com/bingbaihanji/jfgl/renderer/BatchRenderer.java
 git rm src/main/java/com/bingbaihanji/jfgl/renderer/RenderContext.java
 git rm src/main/java/com/bingbaihanji/jfgl/renderer/TextRenderer.java
