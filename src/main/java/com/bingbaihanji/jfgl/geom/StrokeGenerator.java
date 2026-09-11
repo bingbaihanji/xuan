@@ -15,8 +15,11 @@ import java.util.Arrays;
  *
  * <p><strong>已知限制</strong>：凹角处相邻段的偏移轮廓会自相交，产生重叠三角形。
  * 配合预乘 alpha，不透明描边无可见影响；半透明描边会出现颜色叠加。
- * 另外，共线折回（180° 反向，例如折线原路折返）处不生成接头：两段轮廓完全重合、
- * 覆盖面积不缺失，只是圆角接头本应在尖端补出的那个半圆不会出现，尖端看起来是平的。
+ *
+ * <p><strong>180° 折回</strong>（折线原路折返、反向共线）处两段轮廓完全重合，覆盖面积本就不缺。
+ * 此处 {@link Join#MITER} 与 {@link Join#BEVEL} 不生成接头（三角形退化为零面积），
+ * {@link Join#ROUND} 则在尖端补出一个半径等于半线宽的半圆——这才是圆角接头应有的外形，
+ * 代价是该拐点额外产生 {@code roundSegments} 个三角形（默认 8 个）。只有选择 ROUND 才付这份代价。
  *
  * <p><strong>零长度段</strong>：长度小于 {@code 1e-6} 的段会被跳过（不产生三角形，
  * 也不会出现除零），其两侧的接头与端点会自动落到最近的有效段上。但重复顶点过多时
@@ -361,10 +364,12 @@ public final class StrokeGenerator {
 
         float cross = u1x * u2y - u1y * u2x;
         float dot = u1x * u2x + u1y * u2y;
-        // 共线（同向或反向）都不存在需要填补的拐角缝隙：同向是直行，反向是折回重叠。
-        // 反向时必须在这里返回——否则下面求 miter 交点得到 t = -Infinity，
-        // 而 0 * -Infinity = NaN，会发出一个污染顶点。
-        if (Math.abs(cross) < 1e-6f) {
+        // 共线同向：直行，两段轮廓相接，不存在缝隙。
+        // 共线反向（180° 折回）：只有 MITER 必须在这里返回——它要求两条偏移线的交点，
+        // 而 cross = 0 会让 t = -Infinity，0 * -Infinity = NaN，污染顶点会被发出去。
+        // BEVEL/ROUND 走下面的分支，够不到那次除法：BEVEL 退化为零面积三角形（无害），
+        // ROUND 用有限的法线求 atan2 并扫出尖端半圆。
+        if (Math.abs(cross) < 1e-6f && (dot > 0f || join == Join.MITER)) {
             return;
         }
 
@@ -380,7 +385,15 @@ public final class StrokeGenerator {
             if (join == Join.ROUND) {
                 // 从 o1 方向扫到 o2 方向，扫过角度即转向角
                 float start = (float) Math.atan2(o1y, o1x);
-                emitArc(px, py, half, start, (float) Math.atan2(cross, dot), roundSegments);
+                float sweep = (float) Math.atan2(cross, dot);
+                if (Math.abs(cross) < 1e-6f && dot < 0f) {
+                    // 180° 折回：o1 与 o2 恰好反向，两条半圆路线扫过的角度都是 π，
+                    // 而 atan2(±0.0, -1) 的正负只由 cross 里那个零的符号决定（与几何无关），
+                    // 会把半圆画到内侧、被两段重合的四边形完全盖住（+x 与 -y 方向曾如此）。
+                    // 尖端必须朝行进方向 u1：从 o1 绕过 u1 到 o2，扫过 -π * s。
+                    sweep = -s * (float) Math.PI;
+                }
+                emitArc(px, py, half, start, sweep, roundSegments);
             }
             return;
         }
@@ -392,7 +405,9 @@ public final class StrokeGenerator {
         float my = py + o1y + u1y * t;
         float miterLength = (float) Math.sqrt((mx - px) * (mx - px) + (my - py) * (my - py));
 
-        // 非有限值一并回退：任何未预料的退化都应降级为 bevel，而不是把 NaN/Infinity 发出去
+        // 非有限值一并回退。这一条不是死代码：上面那道共线守卫若缺失或被改动，
+        // 它就是接住 NaN/Infinity 的网（实测去掉共线守卫后，仅凭本条即可阻止污染顶点）；
+        // 任何未预料的退化都应降级为 bevel，而不是把 NaN 发出去。
         if (!Float.isFinite(miterLength) || miterLength > miterLimit * half) {
             // 超过 miter limit，回退为 bevel
             emitTriangle(px, py, px + o1x, py + o1y, px + o2x, py + o2y);

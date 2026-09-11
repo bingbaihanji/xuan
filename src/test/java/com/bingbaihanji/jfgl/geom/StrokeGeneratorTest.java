@@ -225,6 +225,29 @@ class StrokeGeneratorTest {
     }
 
     @Test
+    void 折回处圆角尖端朝外且四个方向一致() {
+        // 180° 折回时 cross = ±0.0，而 leftTurn = cross > 0f 对 +0.0 与 -0.0 都是 false，
+        // 于是左右转的判定退化为"由零的符号决定"，atan2(±0.0, -1) 会把半圆画到内侧
+        // （实测 +x 与 -y 两个方向曾被两段重合的四边形完全盖住，尖端看不见）。
+        // 四个行进方向都必须断言，只测一个方向会漏掉另外两个。
+        float[][] dirs = {{1f, 0f}, {-1f, 0f}, {0f, 1f}, {0f, -1f}};
+        for (float[] d : dirs) {
+            StrokeGenerator g = new StrokeGenerator();
+            g.stroke(new float[]{0f, 0f, d[0] * 10f, d[1] * 10f, 0f, 0f}, 3, false, 4f,
+                    StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.ROUND, 4f, 16);
+            float[] tris = g.triangles();
+            // 投影到行进方向：两段重合的四边形最多到 10，尖端半圆应再伸出半个线宽到 12
+            float maxAlong = -Float.MAX_VALUE;
+            for (int i = 0; i < tris.length; i += 2) {
+                maxAlong = Math.max(maxAlong, tris[i] * d[0] + tris[i + 1] * d[1]);
+            }
+            assertEquals(12f, maxAlong, 1e-2f,
+                    "行进方向 (" + d[0] + "," + d[1] + ") 的圆角尖端应伸出半个线宽，实际=" + maxAlong);
+            assertAllFinite(tris);
+        }
+    }
+
+    @Test
     void 折回180度不产生非有限顶点() {
         // (0,0)→(10,0)→(0,0)：反向共线，两段方向相反。
         // 若在共线反向时仍去求 miter 交点，cross=0 会让 t=-Infinity，
