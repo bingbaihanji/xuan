@@ -61,6 +61,19 @@ class StrokeGeneratorTest {
         return false;
     }
 
+    /**
+     * 断言所有顶点坐标都是有限值。
+     *
+     * <p>NaN/Infinity 会一路带进 VBO 并污染整个批次，而且它在面积断言里往往表现为
+     * 一个"不算大也不算小"的数，不会被察觉，所以必须逐个坐标显式检查。
+     */
+    private static void assertAllFinite(float[] tris) {
+        for (int i = 0; i < tris.length; i++) {
+            assertTrue(Float.isFinite(tris[i]),
+                    "顶点坐标不应出现非有限值：第 " + (i / 2) + " 个顶点 分量 " + (i % 2) + " = " + tris[i]);
+        }
+    }
+
     @Test
     void 水平线段描边面积为长乘宽() {
         StrokeGenerator g = new StrokeGenerator();
@@ -144,14 +157,26 @@ class StrokeGeneratorTest {
     }
 
     @Test
-    void 圆角接头填住外侧拐角() {
+    void 左转圆角接头填住外侧拐角() {
         StrokeGenerator g = new StrokeGenerator();
         g.stroke(new float[]{0f, 0f, 10f, 0f, 10f, 10f}, 3, false, 4f,
                 StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.ROUND, 4f, 16);
-        // 拐点在 (10,0)，半线宽 2，凸侧在 -y 方向：(11.2,-1.2) 距拐点约 1.70，
-        // 落在半径 2 的外侧圆弧内（内接多边形在 45 度处的边界约 1.96），
-        // 但不在任何一段的四边形内。接头若补到凹侧，此点必然无覆盖。
-        assertTrue(covers(g.triangles(), 11.2f, -1.2f), "圆角接头应补在凸侧，填住外侧拐角");
+        // 拐点在 (10,0)，半线宽 2，凸侧在 -y 方向。取该拐角 bevel 三角形
+        // (10,0)-(10,-2)-(12,0) 的内心 (10+2-√2, -(2-√2)) = (10.586,-0.586)：
+        // 到三边距离均为 0.586，是 covers() 容差 1e-6 的约 58 万倍，余量充足。
+        // 注意不要取 (11.2,-1.2) 这类恰好落在扇形三角剖分边上的点——那里余量
+        // 只有浮点 epsilon，一次细分段数改动就会变成 flaky。
+        // 该点也不在任何一段的四边形内，因此只有接头能覆盖它。
+        assertTrue(covers(g.triangles(), 10.586f, -0.586f), "圆角接头应补在凸侧，填住外侧拐角");
+    }
+
+    @Test
+    void 右转圆角接头填住外侧拐角() {
+        StrokeGenerator g = new StrokeGenerator();
+        g.stroke(new float[]{0f, 0f, 10f, 0f, 10f, -10f}, 3, false, 4f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.ROUND, 4f, 16);
+        // 左转用例的镜像：凸侧翻到 +y，取值同为 bevel 三角形的内心 (10.586, 0.586)
+        assertTrue(covers(g.triangles(), 10.586f, 0.586f), "右转时接头同样应补在凸侧");
     }
 
     @Test
@@ -197,5 +222,26 @@ class StrokeGeneratorTest {
         // 重复顶点既不能留下缺口（接头丢失），也不能丢掉端点封口（面积随之变小）
         assertEquals(area(clean.triangles()), area(dup.triangles()), 1e-3f,
                 "重复顶点应与去掉重复点的结果等价");
+    }
+
+    @Test
+    void 折回180度不产生非有限顶点() {
+        // (0,0)→(10,0)→(0,0)：反向共线，两段方向相反。
+        // 若在共线反向时仍去求 miter 交点，cross=0 会让 t=-Infinity，
+        // 而 0 * -Infinity = NaN，miterLength 变成 NaN 后
+        // "NaN > miterLimit*half" 为 false，污染顶点就会被当成尖角发出去。
+        StrokeGenerator g = new StrokeGenerator();
+        g.stroke(new float[]{0f, 0f, 10f, 0f, 0f, 0f}, 3, false, 4f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 4f);
+        assertAllFinite(g.triangles());
+    }
+
+    @Test
+    void 部分折回不产生非有限顶点() {
+        // (0,0)→(10,0)→(5,0)：部分折回，同样反向共线
+        StrokeGenerator g = new StrokeGenerator();
+        g.stroke(new float[]{0f, 0f, 10f, 0f, 5f, 0f}, 3, false, 4f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 4f);
+        assertAllFinite(g.triangles());
     }
 }
