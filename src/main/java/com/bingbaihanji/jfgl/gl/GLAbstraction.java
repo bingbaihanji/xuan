@@ -3,6 +3,8 @@ package com.bingbaihanji.jfgl.gl;
 import com.bingbaihanji.jfgl.util.Color;
 import com.bingbaihanji.jfgl.util.Disposable;
 
+import java.nio.ByteBuffer;
+
 /**
  * OpenGL 抽象层接口。
  * <p>
@@ -73,6 +75,16 @@ public interface GLAbstraction extends Disposable {
      * @param data 要上传的整数数据
      */
     void uploadVboData(int[] data);
+
+    /**
+     * 上传字节数据到当前绑定的 VBO。
+     *
+     * <p>与浮点/整数重载不同，本方法通常用于直接上传已经打包好的顶点字节，
+     * 上传量为 {@code data} 的剩余字节数（{@code data.remaining()}）。
+     *
+     * @param data 要上传的字节数据
+     */
+    void uploadVboBytes(ByteBuffer data);
 
     /**
      * 删除顶点数组对象。
