@@ -1233,6 +1233,15 @@ public final class VertexWriter {
 >
 > 1. **`quad()` 的第二个三角形必须是 `0-2-3`，不是计划正文写的 `2-3-0`。** 两者是同一对三角形、同一绕向（循环轮换），渲染结果一致，但决定第二个三角形从哪个角起始。测试断言顶点 5 是左下角 `(x3,y3,u0,v1)`（`v=1`），而 `2-3-0` 会让顶点 5 变成左上角（`v=0`）。**测试是准绳**，请按 `0-2-3` 实现，并在 Javadoc 中写明实际顺序。
 > 2. **`setState()` 的提前返回必须额外判断"当前是否有进行中的命令"。** 计划的 `reset()` 不重置 `textureId`，因此 `reset()` 之后若以相同状态调用 `setState()`，只比较状态字段会提前返回而不创建命令，随后的 `vertex()` 就会抛 `IllegalStateException`。加一个 `currentFirstVertex != NO_COMMAND` 之类的守卫即可。
+>
+> 3. **贯穿整个类的隐患：JDK 的 `ByteBuffer` 是按 `limit` 而非 `capacity` 校验越界的，而本类的思维模型是 `capacity`。** 这一个根因在实现中爆了三次，每一处都只在特定路径上才崩：
+>    - `buffer()` 把 limit 收窄到本帧已写入的字节数，而 `reset()` 不恢复 —— **第二帧顶点数超过第一帧时**第一次写入即越界。
+>    - `grow()` 扩容时用 `put(int, ByteBuffer, int, int)` 复制旧数据，该方法按**源缓冲的 limit** 校验 `length` —— 若此前调过 `buffer()`，会尝试从只有 24 字节可读的缓冲里拷 192 字节。
+>    - 顶点余量计算里的 `- 1`（见上）。
+>
+>    **因此必须维持这条不变式：除 `buffer()` 调用期间外，`limit == capacity`。**
+>   `reset()` 负责跨帧恢复，`grow()` 负责在复制前恢复源缓冲。`RenderBatch`（Task 10）依赖这条不变式：
+>   它调用 `buffer()` 交给 `glBufferData` 后会回到绘制流程，不能假设 limit 仍是满的。
 
 - [ ] **Step 4: 运行测试确认通过**
 
