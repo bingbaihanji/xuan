@@ -81,10 +81,10 @@ public final class VertexWriter {
     /** 当前状态的纹理 ID。 */
     private int textureId;
 
-    /** 当前状态的裁剪矩形左下角 x。 */
+    /** 当前状态的裁剪矩形左边缘 x。 */
     private int scissorX;
 
-    /** 当前状态的裁剪矩形左下角 y。 */
+    /** 当前状态的裁剪矩形上边缘 y（y 向下，与 Gc 的用户坐标一致；glScissor 的换算见 DrawCommand）。 */
     private int scissorY;
 
     /** 当前状态的裁剪矩形宽度。 */
@@ -122,8 +122,8 @@ public final class VertexWriter {
      * 设置当前状态。与上一条命令状态不同时会结束当前命令。
      *
      * @param textureId     纹理 ID
-     * @param scissorX      裁剪矩形左下角 x
-     * @param scissorY      裁剪矩形左下角 y
+     * @param scissorX      裁剪矩形左边缘 x
+     * @param scissorY      裁剪矩形上边缘 y（y 向下；glScissor 的 y 换算见 {@link DrawCommand}）
      * @param scissorWidth  裁剪矩形宽度
      * @param scissorHeight 裁剪矩形高度
      */

@@ -2669,7 +2669,9 @@ import static org.lwjgl.opengl.GL11.glDrawArrays;
 import static org.lwjgl.opengl.GL11.glEnableVertexAttribArray;
 import static org.lwjgl.opengl.GL11.glVertexAttribPointer;
 import static org.lwjgl.opengl.GL11.glScissor;
-import static org.lwjgl.opengl.GL11.glScissorTest;
+import static org.lwjgl.opengl.GL11.glEnable;
+import static org.lwjgl.opengl.GL11.glDisable;
+import static org.lwjgl.opengl.GL11.GL_SCISSOR_TEST;
 import static org.lwjgl.opengl.GL20.glEnableVertexAttribArray;
 import static org.lwjgl.opengl.GL30.glVertexAttribIPointer;
 import static org.lwjgl.opengl.GL13.glActiveTexture;
@@ -2775,7 +2777,6 @@ public final class RenderBatch implements Disposable {
                 VertexFormat.STRIDE_BYTES, VertexFormat.OFFSET_ID);
         glEnableVertexAttribArray(3);
 
-        vaoConfiguredVboId = vertexBuffer.id();
     }
 
     /** 设置本帧的视口高度，用于裁剪坐标换算。 */
@@ -2812,7 +2813,7 @@ public final class RenderBatch implements Disposable {
         org.lwjgl.opengl.GL11.glBlendFunc(
                 org.lwjgl.opengl.GL11.GL_ONE,
                 org.lwjgl.opengl.GL11.GL_ONE_MINUS_SRC_ALPHA);
-        glScissorTest(true);
+        glEnable(GL_SCISSOR_TEST);
 
         List<DrawCommand> commands = writer.commands();
         for (DrawCommand command : commands) {
@@ -2825,7 +2826,7 @@ public final class RenderBatch implements Disposable {
             glDrawArrays(GL_TRIANGLES, command.firstVertex(), command.vertexCount());
         }
 
-        glScissorTest(false);
+        glDisable(GL_SCISSOR_TEST);
         gl.bindVao(0);
         shader.unuse();
         gl.disableBlend();
@@ -2850,7 +2851,15 @@ public final class RenderBatch implements Disposable {
 }
 ```
 
-> **实现提示**：`glEnableVertexAttribArray` 与 `glVertexAttribPointer` 同时存在于 GL11 和 GL20 静态导入中会产生歧义，实现时只保留 GL20 的导入。上面的 import 列表已标出冲突项，请以能编译通过的最小集合为准。
+> **实现提示（已由实际实现用 `javap` 验证，请照此实现）**：
+>
+> 1. 计划原先假定 `glEnableVertexAttribArray`/`glVertexAttribPointer` 在 GL11 与 GL20 中同时存在而产生歧义 —— **这是错的**。在 `lwjgl-opengl-3.3.6.jar` 中这两个函数**只存在于 GL20**，GL11 里没有，报错是"找不到符号"而非歧义。正确的划分：GL11 负责常量与 `glScissor`/`glBlendFunc`/`glDrawArrays`/`glBindTexture`/`glEnable`/`glDisable`/`glDeleteTextures`；GL20 负责两个属性函数；GL30 负责 `glVertexAttribIPointer`；GL13 负责 `glActiveTexture`/`GL_TEXTURE0`。
+> 2. **LWJGL 3 里没有 `glScissorTest` 这个函数**，计划正文的 `glScissorTest(true/false)` 无法编译，必须改用 `glEnable(GL_SCISSOR_TEST)` / `glDisable(GL_SCISSOR_TEST)`。
+> 3. `configureVaoAttributes()` 末尾不要写 `vaoConfiguredVboId = ...`，该字段已随"无条件重配置"的改动删除。
+>
+> **这段 GL 代码在编写时从未被编译过**，以上三处都是编译级错误。Task 11–14 中尚未执行过的 GL 代码应当以同样的怀疑态度先行编译验证。
+>
+> **另外顺带修掉一个文档矛盾**：`DrawCommand` 与 `VertexWriter` 原先把 `scissorY` 记作"裁剪矩形**左下角** y"，但 `Gc.toDeviceRect` 实际喂进去的是**上边缘**（用户坐标 y 向下）。`glScissor` 原点在帧缓冲左下角，所以 `RenderBatch` 才需要翻转换算。两侧约定不同，改动任一侧都必须同步另一侧 —— 已按"上边缘 + 显式说明换算"修正文档。
 
 - [ ] **Step 2: 编译并修复导入冲突**
 
@@ -3609,6 +3618,19 @@ git commit -m "docs: 更新 CLAUDE.md 以反映单一批处理管线"
 - **子项目 B（SDF 文本）**：字形栅格化、距离场生成、动态图集、描边/阴影/发光 shader、CJK 排版。需要在顶点格式中启用已预留的 `uv` 与纹理切换路径（`Gc.syncState(textureId)` 已支持）。
 - **子项目 C（GPU 拾取）**：ID 通道 FBO、PBO 异步读回、hover/click/drag 状态机。顶点格式中的 `id` 属性（location 3）已就位，只需新增一个输出 ID 的 fragment shader 与读回逻辑。
 - **子项目 D（科学绘图图表）**：标度、刻度算法、坐标轴、系列类型、colormap/热力图/等值线。建立在本计划的 `Gc` 之上。
+
+### 待办：`LwjglGLAbstraction.createTexture` 不做 ARGB→RGBA 转换
+
+`GLAbstraction.createTexture(int width, int height, int[] pixels)` 的 Javadoc 写的是"像素数据（RGBA 格式）"，
+但 `LwjglGLAbstraction` 直接把 `int[]` 交给 `glTexImage2D(..., GL_RGBA, GL_UNSIGNED_BYTE, pixels)` ——
+数组被当作**裸内存**读取，没有任何重排或字节交换。
+
+后果：`0xAARRGGBB` 在小端内存里是 `BB GG RR AA`，GL 按 `(R,G,B,A)` 读出来就是**红蓝互换**。
+本计划里之所以没出事，纯粹是因为 1×1 白色纹理用的 `0xFFFFFFFF` **逐字节对称**，对称性掩盖了这个缺陷。
+
+**这会在 Paint 体系落地时爆掉**：`GradientPaint` 的 1×256 LUT 与 `ImagePaint` 的纹素都是普通 ARGB 打包整数，
+一上屏颜色就整体红蓝颠倒。修法是二选一：在 `createTexture` 里显式做 ARGB→RGBA 重排（旧 `gl/Texture.java`
+就是这么做的），或改用 `GL_BGRA` 作为输入格式。**在实现 Paint 之前必须先定这件事。**
 
 ### 待办：Tessellator 孔洞桥接改用 Eberly 射线法
 
