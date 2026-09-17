@@ -43,8 +43,10 @@ fun main() {
             lineWidth = 4f
             strokeRect(100f, 300f, 250f, 150f, radius = 16f)
 
-            // 深灰凹多边形（耳切三角化的验证：右侧有一个内凹顶点）
-            fill = 0xFF333333.toInt()
+            // 中灰凹多边形（耳切三角化的验证：右侧有一个内凹顶点）。
+            // 不要用 0xFF333333：FXGLTransfer 的 glClearColor 就是 (0.2,0.2,0.2)，
+            // 两者字节完全相同，多边形会整个融进背景里，看起来像"没画出来"。
+            fill = 0xFF6E6E6E.toInt()
             fillPolygon(floatArrayOf(500f, 300f, 700f, 300f, 700f, 450f, 600f, 520f, 500f, 450f))
 
             // 品红贝塞尔曲线

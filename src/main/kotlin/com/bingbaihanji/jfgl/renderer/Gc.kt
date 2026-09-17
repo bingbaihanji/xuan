@@ -246,7 +246,7 @@ class Gc internal constructor(private val batch: RenderBatch) {
      */
     @JvmOverloads
     fun strokeRect(x: Float, y: Float, w: Float, h: Float, radius: Float = 0f) {
-        strokeOutline(rectOutline(x, y, w, h, radius))
+        strokeClosedOutline(rectOutline(x, y, w, h, radius))
     }
 
     /**
@@ -306,7 +306,7 @@ class Gc internal constructor(private val batch: RenderBatch) {
      */
     @JvmOverloads
     fun strokeCircle(cx: Float, cy: Float, radius: Float, segments: Int = 0) {
-        strokeOutline(circleOutline(cx, cy, radius, segments))
+        strokeClosedOutline(circleOutline(cx, cy, radius, segments))
     }
 
     /**
@@ -368,7 +368,7 @@ class Gc internal constructor(private val batch: RenderBatch) {
      */
     @JvmOverloads
     fun strokeEllipse(cx: Float, cy: Float, rx: Float, ry: Float, segments: Int = 0) {
-        strokeOutline(ellipseOutline(cx, cy, rx, ry, segments))
+        strokeClosedOutline(ellipseOutline(cx, cy, rx, ry, segments))
     }
 
     /**
@@ -410,7 +410,7 @@ class Gc internal constructor(private val batch: RenderBatch) {
         scratchPoints[1] = y1
         scratchPoints[2] = x2
         scratchPoints[3] = y2
-        strokeOutline(scratchPoints, 2, false)
+        strokeOpenOutline(scratchPoints, 2)
     }
 
     /**
@@ -430,7 +430,7 @@ class Gc internal constructor(private val batch: RenderBatch) {
      */
     @JvmOverloads
     fun strokePolyline(points: FloatArray, closed: Boolean = false) {
-        strokeOutline(points, points.size / 2, closed)
+        if (closed) strokeClosedOutline(points) else strokeOpenOutline(points)
     }
 
     // ------------------------------------------------------------------
@@ -539,7 +539,16 @@ class Gc internal constructor(private val batch: RenderBatch) {
     }
 
     /**
-     * 用当前 [stroke] 与 [lineWidth] 描边当前路径。闭合子路径会额外加上接头。
+     * 用当前 [stroke] 与 [lineWidth] 描边当前路径。
+     *
+     * <p>**闭合子路径的处理**：`close()` 产生的收尾线段由 [Flattener] 在平坦化时补出
+     * （它会把子路径起点追加为最后一个点），因此**线段本身不缺**；但整条折线仍按开放折线
+     * 描边，闭合顶点处<strong>不会</strong>生成接头，尖角外侧会留下一个小缺口。
+     * 这个缺口在细线宽下几乎不可见，但确实是与 Canvas 的差异。
+     *
+     * <p>之所以不直接改成闭合描边：平坦化已经把起点重复为末点，再按闭合处理会多出一段
+     * 零长度线段。要正确闭合需要在 [Flattener] 侧区分"重复起点"与"真正的末点"，
+     * 属于待办而非此处的一行开关。
      *
      * <p>**已知限制**：所有子路径会被平坦化后当作**一条**折线描边，
      * 因此多条子路径之间会多出一段并不存在的连线。需要多段独立描边时，
@@ -554,7 +563,7 @@ class Gc internal constructor(private val batch: RenderBatch) {
             return
         }
         val count = flattenToScratch()
-        strokeOutline(scratchPoints, count, false)
+        strokeOpenOutline(scratchPoints, count)
     }
 
     // ------------------------------------------------------------------
@@ -610,11 +619,16 @@ class Gc internal constructor(private val batch: RenderBatch) {
      * <p>轮廓在**局部（用户）空间**生成，随后由 [emitTriangles] 按当前变换烘焙——
      * 因此非均匀缩放下线宽会随之变形，与 Canvas 的 `stroke` 一致。
      *
+     * <p>调用方必须经 [strokeOpenOutline] 或 [strokeClosedOutline] 进入，不要直接调用本方法：
+     * 这个 `closed` 布尔量没有默认值，正是为了避免"闭合轮廓忘了传 true"这类静默错误——
+     * 轮廓数组首尾不重复时，漏传会让**整条闭合边凭空消失**（矩形少一条边、圆缺一个楔形），
+     * 而单元测试与编译都不会报错。
+     *
      * @param points 扁平顶点数组 `[x0,y0, x1,y1, ...]`
-     * @param count  顶点个数；默认取整个数组
+     * @param count  顶点个数
      * @param closed 是否闭合
      */
-    private fun strokeOutline(points: FloatArray, count: Int = points.size / 2, closed: Boolean = false) {
+    private fun strokeOutline(points: FloatArray, count: Int, closed: Boolean) {
         if (count < 2) {
             return
         }
@@ -626,6 +640,30 @@ class Gc internal constructor(private val batch: RenderBatch) {
             ROUND_SEGMENTS
         )
         emitTriangles(strokeGenerator.rawTriangles(), strokeGenerator.triangleCount() * 6, stroke)
+    }
+
+    /**
+     * 描边一条**开放**折线：首尾之间不补线段，两端按平头（BUTT）收尾。
+     *
+     * @param points 扁平顶点数组 `[x0,y0, x1,y1, ...]`
+     * @param count  顶点个数；默认取整个数组
+     */
+    private fun strokeOpenOutline(points: FloatArray, count: Int = points.size / 2) {
+        strokeOutline(points, count, closed = false)
+    }
+
+    /**
+     * 描边一条**闭合**轮廓：首尾之间自动补一段并加上接头。
+     *
+     * <p>**约定**：传入的轮廓数组<strong>首尾不重复</strong>（最后一点不等于第一点）。
+     * [rectOutline] / [circleOutline] / [ellipseOutline] 都是这个约定，
+     * 否则闭合处会多出一段零长度线段。
+     *
+     * @param points 扁平顶点数组 `[x0,y0, x1,y1, ...]`
+     * @param count  顶点个数；默认取整个数组
+     */
+    private fun strokeClosedOutline(points: FloatArray, count: Int = points.size / 2) {
+        strokeOutline(points, count, closed = true)
     }
 
     /**
