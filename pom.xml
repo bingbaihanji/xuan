@@ -266,7 +266,7 @@
                         <manifest>
                             <addClasspath>true</addClasspath>
                             <classpathPrefix>libs/</classpathPrefix>
-                            <mainClass>com.bingbaihanji.fxgl3d.AppKt</mainClass>
+                            <mainClass>com.bingbaihanji.jfgl.MainKt</mainClass>
                         </manifest>
                     </archive>
                 </configuration>
