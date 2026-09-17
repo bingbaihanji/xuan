@@ -49,7 +49,17 @@ private const val SCENE_H = 600
 /** 判定用的容差：圆弧用折线逼近，像素数必然略少于解析值。 */
 private const val TOLERANCE = 0.05
 
-fun main() {
+/**
+ * 校验器的启动入口。
+ *
+ * <p>函数名不叫 `main`：同包的 [PipelineExample] 已经有一个顶层 `main()`，两个同名顶层函数
+ * 会让 `import com.bingbaihanji.jfgl.example.main` 报"重载歧义"——而 `Main.kt` 正是这样
+ * 导入示例入口的（同包内无法靠别名区分）。用 `@JvmName("main")` 把 JVM 方法名钉回 `main`，
+ * 上面文档里的 `java -cp %classpath com.bingbaihanji.jfgl.example.PipelineVerifierKt`
+ * 因此照常可用。
+ */
+@JvmName("main")
+fun verifyMain() {
     Application.launch(PipelineVerifierApp::class.java)
 }
 
@@ -161,6 +171,13 @@ class PipelineVerifierApp : Application() {
             report(label, actual.toDouble() in lo..hi,
                 "实际 $actual，期望 ${expected.toInt()} ±${(tol * 100).toInt()}%")
         }
+
+        // Gc.width/height 是用户查询绘制区大小的唯一途径（逻辑窗口尺寸在高 DPI 下不等于它），
+        // 必须与真实帧缓冲一致，否则用户按它铺满会铺歪。
+        println("\n-- 绘制区尺寸 --")
+        val gc = bridge.gc()
+        report("Gc.width 等于帧缓冲宽度", gc?.width == w, "Gc.width=${gc?.width}，帧缓冲宽=$w")
+        report("Gc.height 等于帧缓冲高度", gc?.height == h, "Gc.height=${gc?.height}，帧缓冲高=$h")
 
         println("\n-- 形状：像素数 --")
         approx("红矩形填充 200x120", counts[red] ?: 0, 200.0 * 120)

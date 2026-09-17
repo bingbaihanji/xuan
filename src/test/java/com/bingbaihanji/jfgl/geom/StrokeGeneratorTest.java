@@ -140,6 +140,45 @@ class StrokeGeneratorTest {
         assertTrue(area(closed.triangles()) > area(open.triangles()));
     }
 
+    /**
+     * 末点与起点重复的折线，按闭合描边时应与「去掉重复末点后的同一条折线」等价。
+     *
+     * <p>这条不变量决定了 `Flattener` 的产物能否直接交给闭合描边：Flattener 处理 `CLOSE`
+     * 时会把子路径起点追加为末点，于是末点与起点重复、最后一段长度为零。若零长度段没被跳过，
+     * 闭合处会多出一个退化三角形；若跳过之后接头落点算错，闭合尖角外侧会缺一块。
+     * 两者都逃得过面积断言——面积对「补在哪一侧」是盲的——所以这里查的是覆盖性。
+     */
+    @Test
+    void 末点重复起点时闭合描边与去重后等价() {
+        float[] dedup = {0f, 0f, 10f, 0f, 10f, 10f, 0f, 10f};
+        float[] withDup = {0f, 0f, 10f, 0f, 10f, 10f, 0f, 10f, 0f, 0f};
+
+        StrokeGenerator a = new StrokeGenerator();
+        a.stroke(dedup, 4, true, 2f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 4f);
+
+        StrokeGenerator b = new StrokeGenerator();
+        b.stroke(withDup, 5, true, 2f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 4f);
+
+        assertEquals(a.triangleCount(), b.triangleCount(),
+                "重复的零长度段应被跳过，三角形数量必须与去重后一致");
+        assertEquals(area(a.triangles()), area(b.triangles()), 1e-3f);
+        assertAllFinite(b.triangles());
+
+        // 闭合接头必须仍然补在 (0,0) 角的外侧：线宽 2 时 miter 尖角伸到 (-1,-1)。
+        assertTrue(covers(b.triangles(), -0.9f, -0.9f),
+                "末点重复起点时，闭合处的接头必须仍补在 (0,0) 角外侧");
+
+        // 反证：同一条折线按**开放**描边时，(0,0) 角是收尾处，两端只有平头封口，
+        // 外侧不会补上。这条断言证明上面的覆盖性检查确实有区分力，而不是恒真。
+        StrokeGenerator openSame = new StrokeGenerator();
+        openSame.stroke(withDup, 5, false, 2f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 4f);
+        assertFalse(covers(openSame.triangles(), -0.9f, -0.9f),
+                "开放描边不应覆盖 (0,0) 角外侧——否则上一条断言是恒真的");
+    }
+
     @Test
     void 单点或空输入不产生三角形() {
         StrokeGenerator g = new StrokeGenerator();
