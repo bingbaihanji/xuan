@@ -1,18 +1,18 @@
 # JFGL - JavaFX OpenGL 2D 绘图框架
 
-一个基于 JavaFX + OpenGL 的轻量级 2D 绘图框架，提供简洁的 Kotlin DSL API。
+一个基于 JavaFX + OpenGL 的 2D 绘图框架。API 手感类似 HTML Canvas（立即模式、像素坐标、
+`fillRect` / `strokePath` 这类方法形状），内部走 **GPU 批处理管线**：绘制调用只往顶点缓冲里
+追加数据，每帧一次性提交重放。
 
 ## 特性
 
-- 🎨 **丰富的绘图工具**：圆形、矩形、三角形、线段、椭圆、弧线、多边形
-- 🖱️ **交互支持**：鼠标点击、移动事件处理
-- 📦 **简洁的 DSL**：Kotlin 风格的链式调用 API
-- ⚡ **高性能**：基于 OpenGL 硬件加速渲染
-- 🔧 **易于扩展**：模块化设计，便于添加新功能
+- ⚡ **批处理渲染**：一帧内只做少量 draw call，变换在 CPU 侧烘焙进顶点
+- 🎨 **完整几何**：矩形（圆角）、圆、椭圆、线段、多边形、贝塞尔路径，可填充可描边
+- ✂️ **状态栈与裁剪**：`save` / `restore` / `translate` / `scale` / `rotate` / `clipRect`
+- 🖼️ **嵌入 JavaFX 场景图**：GL 画布就是一个普通 `Node`，与 JavaFX 布局共存
+- 📐 **纯计算几何层**：`geom/` 不依赖 GL 上下文，可脱离 OpenGL 单独测试
 
 ## 快速开始
-
-### 1. 使用 DSL 方式（推荐）
 
 ```kotlin
 import com.bingbaihanji.jfgl.dsl.jfgl
@@ -23,226 +23,168 @@ fun main() {
         width = 800.0
         height = 600.0
 
-        // 初始化回调
-        onInit { draw ->
-            println("初始化完成！")
-        }
-
-        // 渲染回调 - 每帧调用
         onRender {
-            // 绘制红色圆形
-            drawCircle(0f, 0f, 0.5f, r = 1f, g = 0f, b = 0f)
+            // 红色矩形
+            fill = 0xFFFF0000.toInt()
+            fillRect(50f, 50f, 200f, 120f)
 
-            // 绘制绿色矩形
-            drawRect(-0.5f, -0.5f, 0.3f, 0.3f, r = 0f, g = 1f, b = 0f)
+            // 绿色圆（segments 省略时按半径自适应分段）
+            fill = 0xFF00FF00.toInt()
+            fillCircle(500f, 200f, 80f)
 
-            // 绘制蓝色三角形
-            drawTriangle(
-                -0.3f, -0.2f,
-                0.3f, -0.2f,
-                0f, -0.6f,
-                r = 0f, g = 0f, b = 1f
-            )
-        }
+            // 蓝色圆角矩形描边
+            stroke = 0xFF0000FF.toInt()
+            lineWidth = 4f
+            strokeRect(100f, 300f, 250f, 150f, radius = 16f)
 
-        // 鼠标点击回调
-        onClick { x, y, button ->
-            println("点击位置: ($x, $y)")
-        }
-
-        // 鼠标移动回调
-        onMove { x, y ->
-            // 鼠标移动处理
+            // 品红贝塞尔曲线
+            stroke = 0xFFFF00FF.toInt()
+            lineWidth = 3f
+            beginPath()
+            moveTo(50f, 550f)
+            bezierCurveTo(200f, 450f, 300f, 650f, 450f, 550f)
+            strokePath()
         }
     }
 }
 ```
 
-### 2. 使用传统方式
+`onRender` 的接收者是 `Gc`，所以块内可以直接写 `fill = ...`、`fillRect(...)`。
 
-```kotlin
-import com.bingbaihanji.jfgl.glview.FXGLTransfer
-import com.bingbaihanji.jfgl.dsl.DrawDSL
-
-fun main() {
-    val transfer = FXGLTransfer()
-    var draw: DrawDSL? = null
-
-    transfer.onInit {
-        draw = DrawDSL(transfer).apply { init() }
-    }
-
-    transfer.onRender {
-        draw?.drawCircle(0f, 0f, 0.5f)
-    }
-
-    // 启动 JavaFX 应用...
-}
-```
-
-## API 文档
-
-### 绘制方法
-
-#### drawCircle
-绘制圆形
-
-```kotlin
-drawCircle(
-    cx: Float,          // 圆心 x 坐标 (-1 到 1)
-    cy: Float,          // 圆心 y 坐标 (-1 到 1)
-    radius: Float,      // 半径
-    r: Float = 1f,      // 红色分量 (0-1)
-    g: Float = 1f,      // 绿色分量 (0-1)
-    b: Float = 1f,      // 蓝色分量 (0-1)
-    a: Float = 1f,      // alpha 分量 (0-1)
-    segments: Int = 64  // 线段数（越大越平滑）
-)
-```
-
-#### drawRect
-绘制矩形
-
-```kotlin
-drawRect(
-    x: Float,           // 左上角 x 坐标
-    y: Float,           // 左上角 y 坐标
-    width: Float,       // 宽度
-    height: Float,      // 高度
-    r: Float = 1f,      // 红色分量
-    g: Float = 1f,      // 绿色分量
-    b: Float = 1f,      // 蓝色分量
-    a: Float = 1f       // alpha 分量
-)
-```
-
-#### drawLine
-绘制线段
-
-```kotlin
-drawLine(
-    x1: Float,          // 起点 x 坐标
-    y1: Float,          // 起点 y 坐标
-    x2: Float,          // 终点 x 坐标
-    y2: Float,          // 终点 y 坐标
-    r: Float = 1f,      // 红色分量
-    g: Float = 1f,      // 绿色分量
-    b: Float = 1f,      // 蓝色分量
-    a: Float = 1f,      // alpha 分量
-    lineWidth: Float = 1f  // 线宽
-)
-```
-
-#### drawTriangle
-绘制三角形
-
-```kotlin
-drawTriangle(
-    x1: Float, y1: Float,  // 第一个顶点
-    x2: Float, y2: Float,  // 第二个顶点
-    x3: Float, y3: Float,  // 第三个顶点
-    r: Float = 1f,
-    g: Float = 1f,
-    b: Float = 1f,
-    a: Float = 1f
-)
-```
-
-#### drawEllipse
-绘制椭圆
-
-```kotlin
-drawEllipse(
-    cx: Float,          // 中心 x 坐标
-    cy: Float,          // 中心 y 坐标
-    radiusX: Float,     // x 方向半径
-    radiusY: Float,     // y 方向半径
-    r: Float = 1f,
-    g: Float = 1f,
-    b: Float = 1f,
-    a: Float = 1f,
-    segments: Int = 64
-)
-```
-
-#### drawArc
-绘制弧线
-
-```kotlin
-drawArc(
-    cx: Float,          // 中心 x 坐标
-    cy: Float,          // 中心 y 坐标
-    radius: Float,      // 半径
-    startAngle: Float,  // 起始角度（弧度）
-    endAngle: Float,    // 结束角度（弧度）
-    r: Float = 1f,
-    g: Float = 1f,
-    b: Float = 1f,
-    a: Float = 1f,
-    segments: Int = 32
-)
-```
-
-#### drawPolygon
-绘制多边形
-
-```kotlin
-drawPolygon(
-    points: List<Float>,  // 顶点列表 [x1, y1, x2, y2, ...]
-    r: Float = 1f,
-    g: Float = 1f,
-    b: Float = 1f,
-    a: Float = 1f
-)
-```
-
-### 坐标系统
-
-- 坐标范围：-1.0 到 1.0
-- 原点 (0, 0) 在窗口中心
-- x 轴向右为正
-- y 轴向上为正
-
-### 颜色系统
-
-- RGBA 颜色空间
-- 每个分量范围：0.0 到 1.0
-- 默认颜色为白色 (1, 1, 1, 1)
-
-## 运行示例
+## 运行
 
 ```bash
-# 编译项目
+# 编译
 mvn compile
 
-# 运行绘制示例
-mvn exec:java -Dexec.mainClass="com.bingbaihanji.jfgl.example.DrawExampleKt"
+# 运行示例窗口
+mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
+    -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.MainKt"
+
+# 跑像素级端到端校验（自动关窗，退出码 0=通过 / 1=断言失败）
+mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
+    -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.PipelineVerifierKt"
 ```
+
+> **不要用 `mvn exec:java`**：该插件的类加载器会让 openglfx 链接到另一份
+> `com.sun.prism.GraphicsPipeline`（静态字段永远为 null），启动即抛
+> `UnsupportedOperationException: Could not detect pipeline`。
+> 必须用 `exec:exec` fork 出独立 JVM。某些 shell 会吃掉 `-D` 前缀，把每个 `-D...` 加引号可规避。
+
+## API
+
+### 状态
+
+| 成员 | 说明 |
+|------|------|
+| `fill: Int` | 填充色，ARGB（`0xAARRGGBB`），如 `0xFFFF0000.toInt()` |
+| `stroke: Int` | 描边色，ARGB |
+| `lineWidth: Float` | 线宽（用户坐标单位），默认 `1f` |
+| `globalAlpha: Float` | 全局透明度，`0..1` |
+| `width: Int` / `height: Int` | **绘制区设备像素尺寸**（见下方"高 DPI"） |
+
+### 变换与裁剪
+
+```kotlin
+save()                       // 压栈当前变换、裁剪与绘制状态
+restore()                    // 弹栈
+translate(tx: Float, ty: Float)
+scale(sx: Float, sy: Float)
+rotate(degrees: Float)       // 度；正值在屏幕上是顺时针
+clipRect(x: Float, y: Float, w: Float, h: Float)   // 与已有裁剪求交
+```
+
+### 形状
+
+```kotlin
+fillRect(x, y, w, h, radius = 0f)      // radius > 0 即圆角
+strokeRect(x, y, w, h, radius = 0f)
+
+fillCircle(cx, cy, radius, segments = 0)      // segments = 0 表示自适应
+strokeCircle(cx, cy, radius, segments = 0)
+
+fillEllipse(cx, cy, rx, ry, segments = 0)
+strokeEllipse(cx, cy, rx, ry, segments = 0)
+
+drawLine(x1, y1, x2, y2)
+
+fillPolygon(points: FloatArray)                          // [x1,y1,x2,y2,...]，耳切三角化，凹多边形也正确
+strokePolyline(points: FloatArray, closed = false)
+```
+
+### 路径
+
+```kotlin
+beginPath()
+moveTo(x, y)
+lineTo(x, y)
+quadTo(cx, cy, x, y)                                  // 二次贝塞尔
+bezierCurveTo(c1x, c1y, c2x, c2y, x, y)               // 三次贝塞尔
+closePath()
+
+fillPath()
+strokePath()
+```
+
+### 坐标系与颜色
+
+- 坐标单位是**像素**，原点在**左上角**，**y 轴向下**。
+- 旋转单位是**度**，正值顺时针（因为 y 向下，与 HTML Canvas 一致）。
+- 颜色是 `Int` 的 ARGB，与 Java 的 `Color.getRGB()`、`0xAARRGGBB` 字面量一致。
+- Alpha 走**预乘混合**（`GL_ONE` / `GL_ONE_MINUS_SRC_ALPHA`），半透明叠加结果与 CSS 一致。
+
+### ⚠️ 高 DPI
+
+用户坐标 **1:1** 映射到**设备像素**，而设备像素尺寸受系统缩放影响，**不等于**创建窗口时
+声明的逻辑尺寸。125% 缩放下，`width = 800` 的窗口实际帧缓冲是 **988×738** 设备像素，
+画到 `x = 800` 只覆盖约 81% 宽度。
+
+需要铺满整屏时请用 `Gc.width` / `Gc.height`，不要用 `jfgl { width = ... }` 里配的逻辑尺寸。
 
 ## 项目结构
 
 ```
-src/main/
-├── java/com/bingbaihanji/jfgl/
-│   ├── engine/        # 绘图引擎
-│   ├── gl/            # OpenGL 抽象层
-│   ├── math/          # 数学工具（向量、矩阵）
-│   ├── renderer/      # 渲染器
-│   ├── scene/         # 场景图
-│   └── util/          # 工具类
-└── kotlin/com/bingbaihanji/jfgl/
-    ├── dsl/           # Kotlin DSL API
-    ├── example/       # 示例代码
-    ├── glview/        # JavaFX 集成
-    └── view/          # 视图组件
+src/main/java/com/bingbaihanji/jfgl/
+├── geom/        # 纯几何：Path、Flattener（曲线细分）、Tessellator（三角化）、StrokeGenerator
+├── gl/          # OpenGL 抽象：ShaderProgram、Texture、VertexBuffer
+├── gpu/         # 计算着色器
+├── math/        # Vec2、Mat3、Transform
+├── renderer/    # 顶点侧热路径：VertexFormat、VertexWriter、DrawCommand、RenderBatch
+└── util/        # Color、Rect、Disposable
+
+src/main/kotlin/com/bingbaihanji/jfgl/
+├── dsl/         # jfgl { } 应用入口
+├── example/     # 示例与像素校验器
+├── glview/      # FXGLTransfer：JavaFX 与 OpenGL 的桥接
+├── renderer/    # Gc 门面、ViewTransform
+└── view/        # JavaFX 视图组件
 ```
+
+`geom/` 对 `gl/` **零依赖**（由 `GeomPackageIsolationTest` 强制），因为它是纯计算，
+可以脱离 GL 上下文单独测试。
+
+## 测试
+
+```bash
+mvn test                     # 全部测试
+mvn test -Dtest=PathTest     # 单个测试类
+```
+
+`geom/`、`renderer/` 的顶点侧、`math/`、`util/` 都是纯计算，不依赖 GL 上下文。
+
+**改渲染路径后，请跑上面那条 `PipelineVerifier`。** 本管线的多数缺陷属于「静默错误输出」：
+编译通过、单元测试全绿、画面却是错的。校验器把**最终像素**作为口径，回读帧缓冲后断言
+像素数与包围盒，这是唯一拦得住这类缺陷的办法——它曾据此发现描边丢失整条闭合边的 bug，
+而 124 个单元测试没有一个发现。
 
 ## 依赖
 
-- Java 17+
-- JavaFX 17.0.6
-- LWJGL 3.3.6
+- JDK 21+（编译目标 21；本机实测 JDK 25）
+- JavaFX 17.0.6（pom 声明；若 JDK 自带 JavaFX 25，运行时会遮蔽 pom 里的版本）
+- LWJGL 3.3.6 + openglfx-lwjgl
 - Kotlin 2.3.0
+
+当前仅支持 **Windows**（JavaFX 原生库以 `<classifier>win</classifier>` 声明）。
 
 ## 许可证
 
