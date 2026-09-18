@@ -228,6 +228,42 @@ class PickRegistryTest {
         assertSame("c", r.resolve(c));
         assertSame("b", r.resolve(b));
     }
+
+    @Test
+    void clear会清空空闲表不会发出重复ID() {
+        PickRegistry r = new PickRegistry();
+        int a = r.register("a");     // 1
+        r.register("b");             // 2
+        r.unregister(a);             // 1 进入空闲表
+
+        r.clear();
+
+        // 若 clear() 漏掉 freeIds.clear()：空闲表里还留着陈旧的 1，
+        // 而 nextId 也已归 1。下一次 register 弹出陈旧的 1，
+        // 再下一次 nextId 又走回 1 —— 两个对象拿到同一个拾取 ID。
+        // 表现是「拾取到毫不相干的对象」，且只有先 unregister 再 clear 才会出现。
+        int c = r.register("c");
+        int d = r.register("d");
+        assertNotEquals(c, d, "clear() 之后发出的 ID 必须互不相同");
+        assertSame("c", r.resolve(c));
+        assertSame("d", r.resolve(d));
+    }
+
+    @Test
+    void 空闲ID按后进先出复用() {
+        PickRegistry r = new PickRegistry();
+        int a = r.register("a");     // 1
+        int b = r.register("b");     // 2
+        int c = r.register("c");     // 3
+        r.unregister(a);
+        r.unregister(c);
+
+        assertEquals(c, r.register("d"), "应先复用最近注销的那个 ID（LIFO）");
+        assertEquals(a, r.register("e"), "再复用更早注销的那个");
+        assertSame("b", r.resolve(b));
+        assertSame("d", r.resolve(c));
+        assertSame("e", r.resolve(a));
+    }
 }
 ```
 
@@ -396,12 +432,12 @@ public final class PickRegistry {
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `mvn -o test -Dtest=PickRegistryTest`
-Expected: `Tests run: 13, Failures: 0, Errors: 0` — BUILD SUCCESS
+Expected: `Tests run: 15, Failures: 0, Errors: 0` — BUILD SUCCESS
 
 - [ ] **Step 5: 跑全量测试确认没有破坏别的**
 
 Run: `mvn -o test`
-Expected: `Tests run: 138, Failures: 0, Errors: 0, Skipped: 2`
+Expected: `Tests run: 140, Failures: 0, Errors: 0, Skipped: 2`
 
 - [ ] **Step 6: 提交**
 
@@ -697,7 +733,7 @@ Expected: BUILD SUCCESS
 - [ ] **Step 4: 跑全量测试确认没破坏**
 
 Run: `mvn -o test`
-Expected: `Tests run: 137, Failures: 0, Skipped: 2`
+Expected: `Tests run: 140, Failures: 0, Skipped: 2`
 
 - [ ] **Step 5: 提交**
 
@@ -1480,7 +1516,7 @@ git commit -m "feat(pick): VertexWriter 记录本批是否含可拾取顶点
 - [ ] **Step 8: 编译并跑全量测试**
 
 Run: `mvn -o compile && mvn -o test`
-Expected: BUILD SUCCESS；`Tests run: 140, Failures: 0, Skipped: 2`
+Expected: BUILD SUCCESS；`Tests run: 143, Failures: 0, Skipped: 2`
 
 （`beginFrame` 此刻还没有调用方，`Gc` 仍在用 `setViewportHeight`——这是刻意的，
 见 Step 3 的说明。）
@@ -1767,7 +1803,7 @@ ID pass 保持裁剪开启并复用同一套 scissor 换算，被裁掉的部分
 - [ ] **Step 7: 编译并跑全量测试**
 
 Run: `mvn -o compile && mvn -o test`
-Expected: BUILD SUCCESS；`Tests run: 140, Failures: 0, Skipped: 2`
+Expected: BUILD SUCCESS；`Tests run: 143, Failures: 0, Skipped: 2`
 
 - [ ] **Step 8: 提交**
 
@@ -2446,7 +2482,7 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
 mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
     -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.PickVerifierKt"
 ```
-Expected: 测试 140 通过 / 0 失败 / 2 跳过；两个校验器都退出码 0。
+Expected: 测试 143 通过 / 0 失败 / 2 跳过；两个校验器都退出码 0。
 
 - [ ] **Step 6: 提交**
 
@@ -2459,7 +2495,7 @@ git commit -m "docs: 补拾取的使用要点与验证方式"
 
 ## 完成标准
 
-- [ ] `mvn -o test` → 140 通过 / 0 失败 / 2 跳过
+- [ ] `mvn -o test` → 143 通过 / 0 失败 / 2 跳过
 - [ ] `PipelineVerifier` 退出码 0（原有回归网未被破坏）
 - [ ] `PickVerifier` 退出码 0
 - [ ] 三条变异验证都**实际注入并确认失败**过，且已回滚（`git diff` 为空）
