@@ -99,11 +99,14 @@ class PickRegistryTest {
         // 这条专门锁住 unregister 的判据：单看 remove() 的返回值，null 载荷
         // 与「没注册过」无法区分，那个 ID 就再也回收不了（静默泄漏 ID 空间）。
         // 注意 remove() 必须先判后删——先 remove 再 containsKey 同样恒为 false。
-        PickRegistry r = new PickRegistry();
-        int id = r.register(null);
-        r.unregister(id);
-        assertEquals(id, r.register("b"), "空载荷注销后 ID 也应回到空闲表等待复用");
-        assertSame("b", r.resolve(id));
+        PickRegistry r = new PickRegistry(2);   // 两个 ID 用满即到顶
+        int a = r.register(null);               // 1
+        int b = r.register("b");                // 2，此处已到顶
+        r.unregister(a);
+        int c = r.register("c");                // 只能靠回收的 1，否则直接抛异常
+        assertEquals(a, c, "空载荷注销后 ID 也应回到空闲表等待复用");
+        assertSame("c", r.resolve(c));
+        assertSame("b", r.resolve(b));
     }
 
     @Test
@@ -129,5 +132,41 @@ class PickRegistryTest {
         assertEquals(a, c, "到顶后回收的 ID 应当可用，而不是继续抛异常");
         assertSame("c", r.resolve(c));
         assertSame("b", r.resolve(b));
+    }
+
+    @Test
+    void clear会清空空闲表不会发出重复ID() {
+        PickRegistry r = new PickRegistry();
+        int a = r.register("a");     // 1
+        r.register("b");             // 2
+        r.unregister(a);             // 1 进入空闲表
+
+        r.clear();
+
+        // 若 clear() 漏掉 freeIds.clear()：空闲表里还留着陈旧的 1，
+        // 而 nextId 也已归 1。下一次 register 弹出陈旧的 1，
+        // 再下一次 nextId 又走回 1 —— 两个对象拿到同一个拾取 ID。
+        // 表现是「拾取到毫不相干的对象」，且只有先 unregister 再 clear 才会出现。
+        int c = r.register("c");
+        int d = r.register("d");
+        assertNotEquals(c, d, "clear() 之后发出的 ID 必须互不相同");
+        assertSame("c", r.resolve(c));
+        assertSame("d", r.resolve(d));
+    }
+
+    @Test
+    void 空闲ID按后进先出复用() {
+        PickRegistry r = new PickRegistry();
+        int a = r.register("a");     // 1
+        int b = r.register("b");     // 2
+        int c = r.register("c");     // 3
+        r.unregister(a);
+        r.unregister(c);
+
+        assertEquals(c, r.register("d"), "应先复用最近注销的那个 ID（LIFO）");
+        assertEquals(a, r.register("e"), "再复用更早注销的那个");
+        assertSame("b", r.resolve(b));
+        assertSame("d", r.resolve(c));
+        assertSame("e", r.resolve(a));
     }
 }
