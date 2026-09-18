@@ -1,0 +1,145 @@
+package com.bingbaihanji.jfgl.renderer;
+
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * 拾取 ID 的分配器与 {@code id → payload} 映射表。
+ *
+ * <p>纯内存实现，<strong>不做任何 GL 调用</strong>，因此可以脱离窗口单测——
+ * 这也是整个拾取子系统里唯一能被常规单测覆盖的部分。
+ *
+ * <h2>ID 空间的规则</h2>
+ * <ol>
+ *   <li><strong>0 永不分配</strong>，恒定保留给「什么都没命中」。分配从 1 开始。</li>
+ *   <li><strong>绝不环绕</strong>。用尽到 {@link #maxId} 时抛
+ *       {@link IllegalStateException}。环绕意味着新对象复用了一个仍被引用的 ID，
+ *       表现为<strong>拾取到毫不相干的对象</strong>，而且是概率极低的偶发，宁可炸。</li>
+ *   <li><strong>回收复用</strong>：{@link #unregister} 把 ID 放进空闲表（LIFO），
+ *       下次 {@link #register} 优先复用。否则长生命周期应用反复注册/注销会把 ID 空间磨光。</li>
+ * </ol>
+ *
+ * <h2>生命周期由调用方负责</h2>
+ * <p>本类持有 payload 的<strong>强引用</strong>，调用方必须 {@link #unregister} 或
+ * {@link #clear}。不用弱引用：被回收后表现为「什么都拾取不到」，又是一个静默失败。
+ *
+ * <h2>用法约定</h2>
+ * <p>注册发生在<strong>数据变化时，不是每帧</strong>。本表是跨帧稳定的映射，
+ * 每帧重新注册会耗尽 ID 空间并让 {@code unregister} 的语义失效。
+ *
+ * <p>非线程安全；与 {@code Gc} 一样只在 GL 线程使用。
+ */
+public final class PickRegistry {
+
+    /** 默认 ID 上界。取 {@code Integer.MAX_VALUE} 以避免有符号/无符号的转换歧义。 */
+    private static final int DEFAULT_MAX_ID = Integer.MAX_VALUE;
+
+    /** 已分配的 ID → payload。 */
+    private final Map<Integer, Object> payloads = new HashMap<>();
+
+    /** 已回收、可供复用的 ID（LIFO）。 */
+    private final Deque<Integer> freeIds = new ArrayDeque<>();
+
+    /** 下一个待分配的 ID。 */
+    private int nextId = 1;
+
+    /** ID 上界（含）。 */
+    private final int maxId;
+
+    /** 用默认上界创建注册表。 */
+    public PickRegistry() {
+        this(DEFAULT_MAX_ID);
+    }
+
+    /**
+     * 指定 ID 上界创建注册表，仅供测试使用。
+     *
+     * @param maxId ID 上界（含），小于 1 时按 1 处理
+     */
+    PickRegistry(int maxId) {
+        this.maxId = Math.max(1, maxId);
+    }
+
+    /**
+     * 注册一个 payload 并返回它的拾取 ID。
+     *
+     * @param payload 命中时要取回的对象，可为 {@code null}
+     * @return 非零的拾取 ID
+     * @throws IllegalStateException ID 空间耗尽时
+     */
+    public int register(Object payload) {
+        int id;
+        if (!freeIds.isEmpty()) {
+            id = freeIds.pop();
+        } else {
+            if (nextId > maxId) {
+                throw new IllegalStateException(
+                        "拾取 ID 已耗尽（上界 " + maxId + "）：请检查是否在每帧重复注册，"
+                                + "或对不再需要的对象调用 unregister");
+            }
+            id = nextId++;
+        }
+        payloads.put(id, payload);
+        return id;
+    }
+
+    /**
+     * 注销一个 ID 并把它归还到空闲表。注销未注册的 ID 是无副作用的。
+     *
+     * @param id 要注销的 ID
+     */
+    public void unregister(int id) {
+        if (id == 0) {
+            return;
+        }
+        // 必须先判后删：payload 允许为 null，remove() 的返回值无法区分
+        // 「注册过 null」与「没注册过」，所以判据只能是 containsKey。
+        // 若写成 remove() != null || containsKey() 就错了——remove() 已经先把条目删掉，
+        // 后面的 containsKey() 恒为 false，那个 ID 永远回收不了。
+        if (containsKey(id)) {
+            payloads.remove(id);
+            freeIds.push(id);
+        }
+    }
+
+    /**
+     * 解析 ID 对应的 payload。
+     *
+     * @param id 拾取 ID
+     * @return 对应的 payload；未注册时返回 {@code null}
+     */
+    public Object resolve(int id) {
+        return payloads.get(id);
+    }
+
+    /** 清空全部映射与空闲表，并把 ID 计数归零。 */
+    public void clear() {
+        payloads.clear();
+        freeIds.clear();
+        nextId = 1;
+    }
+
+    /**
+     * 返回当前已注册的 ID 数量。
+     *
+     * @return 已注册数量
+     */
+    public int size() {
+        return payloads.size();
+    }
+
+    /**
+     * 判断一个 ID 是否登记在册。
+     *
+     * <p>之所以不能直接用 {@code resolve(id) != null}：payload 允许为 {@code null}，
+     * 那样会把「注册过一个空对象」误判成「没注册」，于是它永远无法被回收。
+     *
+     * @param id 待查的 ID
+     * @return 是否登记在册
+     */
+    private boolean containsKey(int id) {
+        return payloads.containsKey(id);
+    }
+}
