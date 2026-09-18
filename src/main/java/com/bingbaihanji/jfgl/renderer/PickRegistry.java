@@ -33,8 +33,19 @@ import java.util.Map;
  */
 public final class PickRegistry {
 
-    /** 默认 ID 上界。取 {@code Integer.MAX_VALUE} 以避免有符号/无符号的转换歧义。 */
-    private static final int DEFAULT_MAX_ID = Integer.MAX_VALUE;
+    /**
+     * 默认 ID 上界。
+     *
+     * <p>取 {@code Integer.MAX_VALUE - 1} 而不是 {@code MAX_VALUE}：上界是「含」的，
+     * 配 {@code nextId++} 用的话，{@code MAX_VALUE} 那一格自增后会溢出成负数，
+     * 而 {@code nextId > maxId} 对负数为假——本类承诺的「绝不环绕」就破了。
+     * 留一格余量让这条不变式在算术上真的成立。
+     *
+     * <p>顺带一提：这个边界在实际中不可达。每条登记要占一个 {@code HashMap} 条目
+     * 加一个装箱的 {@code Integer}，约 48 字节，2^31 条第 100 GB 量级——
+     * 内存会先炸。但「不可达」和「不成立」是两回事，而修正的代价是一个常量。
+     */
+    private static final int DEFAULT_MAX_ID = Integer.MAX_VALUE - 1;
 
     /** 已分配的 ID → payload。 */
     private final Map<Integer, Object> payloads = new HashMap<>();
