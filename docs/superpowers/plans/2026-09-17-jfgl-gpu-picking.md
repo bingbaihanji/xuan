@@ -194,7 +194,8 @@ class PickRegistryTest {
     @Test
     void ID耗尽时抛异常而不是环绕() {
         // 构造一个只剩 2 个可用 ID 的注册表，验证到顶时的行为。
-        PickRegistry r = new PickRegistry(3);
+        // 上界是「含」的：maxId = 2 → 可用 ID 为 1、2。
+        PickRegistry r = new PickRegistry(2);
         int a = r.register("a");     // 1
         int b = r.register("b");     // 2
         assertThrows(IllegalStateException.class, () -> r.register("c"),
@@ -205,12 +206,25 @@ class PickRegistryTest {
 
     @Test
     void 到顶后注销再注册仍可用() {
-        PickRegistry r = new PickRegistry(3);
+        PickRegistry r = new PickRegistry(2);
         int a = r.register("a");
         int b = r.register("b");
         r.unregister(a);
         int c = r.register("c");
         assertEquals(a, c, "到顶后回收的 ID 应当可用，而不是继续抛异常");
+        assertSame("c", r.resolve(c));
+        assertSame("b", r.resolve(b));
+    }
+
+    @Test
+    void 空payload的ID注销后同样能回收() {
+        PickRegistry r = new PickRegistry(2);
+        int a = r.register(null);    // 1，载荷为 null
+        int b = r.register("b");     // 2
+        r.unregister(a);
+        int c = r.register("c");
+        assertEquals(a, c,
+                "载荷为 null 的 ID 必须同样能回收——否则「注册过一个空对象」的 ID 会被永久占死");
         assertSame("c", r.resolve(c));
         assertSame("b", r.resolve(b));
     }
@@ -262,8 +276,19 @@ import java.util.Map;
  */
 public final class PickRegistry {
 
-    /** 默认 ID 上界。取 {@code Integer.MAX_VALUE} 以避免有符号/无符号的转换歧义。 */
-    private static final int DEFAULT_MAX_ID = Integer.MAX_VALUE;
+    /**
+     * 默认 ID 上界。
+     *
+     * <p>取 {@code Integer.MAX_VALUE - 1} 而不是 {@code MAX_VALUE}：上界是「含」的，
+     * 配 {@code nextId++} 用的话，{@code MAX_VALUE} 那一格自增后会溢出成负数，
+     * 而 {@code nextId > maxId} 对负数为假——本类承诺的「绝不环绕」就破了。
+     * 留一格余量让这条不变式在算术上真的成立。
+     *
+     * <p>顺带一提：这个边界在实际中不可达。每条登记要占一个 {@code HashMap} 条目
+     * 加一个装箱的 {@code Integer}，约 48 字节，2^31 条第 100 GB 量级——
+     * 内存会先炸。但「不可达」和「不成立」是两回事，而修正的代价是一个常量。
+     */
+    private static final int DEFAULT_MAX_ID = Integer.MAX_VALUE - 1;
 
     /** 已分配的 ID → payload。 */
     private final Map<Integer, Object> payloads = new HashMap<>();
@@ -317,13 +342,20 @@ public final class PickRegistry {
     /**
      * 注销一个 ID 并把它归还到空闲表。注销未注册的 ID 是无副作用的。
      *
+     * <p><strong>必须先判后删，不能写成 {@code payloads.remove(id) != null || containsKey(id)}</strong>：
+     * {@code remove} 会先删掉条目，其后的 {@code containsKey} 必然为 false，
+     * 第二个条件恒不成立、整个表达式退化成「只看 remove 的返回值」——
+     * 于是载荷为 {@code null} 的 ID 永远回收不了。这正是要防的那个 bug，
+     * 而且它不报错、不抛异常，只是悄悄占死 ID。
+     *
      * @param id 要注销的 ID
      */
     public void unregister(int id) {
         if (id == 0) {
             return;
         }
-        if (payloads.remove(id) != null || containsKey(id)) {
+        if (payloads.containsKey(id)) {
+            payloads.remove(id);
             freeIds.push(id);
         }
     }
@@ -354,32 +386,22 @@ public final class PickRegistry {
         return payloads.size();
     }
 
-    /**
-     * 判断一个 ID 是否登记在册。
-     *
-     * <p>之所以不能直接用 {@code resolve(id) != null}：payload 允许为 {@code null}，
-     * 那样会把「注册过一个空对象」误判成「没注册」，于是它永远无法被回收。
-     *
-     * @param id 待查的 ID
-     * @return 是否登记在册
-     */
-    private boolean containsKey(int id) {
-        return payloads.containsKey(id);
-    }
 }
 ```
 
-注意 `unregister` 里的写法：`payloads.remove(id) != null || containsKey(id)`。因为 payload 可以为 `null`，单看 `remove` 的返回值会把「注册过一个 null 载荷」误判成「没注册」，那个 ID 就再也回收不了了——所以补一次 `containsKey` 判断。
+`unregister` 用 `payloads.containsKey(id)` 而不是 `resolve(id) != null`：payload 允许为 `null`，
+后者会把「注册过一个空对象」误判成「没注册」，那个 ID 就再也回收不了了。
+先判后删，两步都要——上面的 Javadoc 说了为什么不能合成一步。
 
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `mvn -o test -Dtest=PickRegistryTest`
-Expected: `Tests run: 12, Failures: 0, Errors: 0` — BUILD SUCCESS
+Expected: `Tests run: 13, Failures: 0, Errors: 0` — BUILD SUCCESS
 
 - [ ] **Step 5: 跑全量测试确认没有破坏别的**
 
 Run: `mvn -o test`
-Expected: `Tests run: 137, Failures: 0, Errors: 0, Skipped: 2`
+Expected: `Tests run: 138, Failures: 0, Errors: 0, Skipped: 2`
 
 - [ ] **Step 6: 提交**
 
@@ -392,8 +414,14 @@ git commit -m "feat(pick): PickRegistry —— ID 分配与 id→payload 映射
 复用仍被引用的 ID，拾取到毫不相干的对象）；注销的 ID 进 LIFO 空闲表复用，
 避免长生命周期应用磨光 ID 空间。
 
-unregister 里用 remove()!=null || containsKey() 双判：payload 允许为 null，
-单看 remove 返回值会把「注册过一个空对象」误判成「没注册」而永不回收。"
+unregister 先判后删：payload 允许为 null，若写成 remove()!=null || containsKey(id)，
+remove 已先删掉条目、后面的 containsKey 必然为 false，第二个条件成了死代码，
+等于只看 remove 返回值——载荷为 null 的 ID 就永远回收不了。这条由
+「空payload的ID注销后同样能回收」钉住。
+
+默认上界取 MAX_VALUE-1：上界是「含」的，配 nextId++ 用时 MAX_VALUE 会溢出成
+负数而 nextId > maxId 对负数为假，「绝不环绕」的承诺就破了。边界实际不可达
+（2^31 条登记约 100 GB，内存先炸），但修正代价是一个常量。"
 ```
 
 ---
