@@ -1736,7 +1736,14 @@ class PickBufferTest {
 
         List<PickPixel> hits = pb.readRect(0, 0, 8, 4);
 
-        assertEquals(List.of(3, 5, 9), hits.stream().map(PickPixel::id).toList());
+        // 必须连坐标一起断言，不能只断言 ID 集合：去掉判重之后，
+        // 9 会被后来的 (2, 0) 覆盖成 (2, 0)，但「键 9 存在且只出现一次」
+        // 依然成立，ID 列表分毫不变——只看 ID 就是恒真检查，变异会存活。
+        // 判重保护的是「首次出现的坐标」，断言必须落在坐标上。
+        assertEquals(List.of(new PickPixel(3, 1, 0),
+                        new PickPixel(5, 3, 0),
+                        new PickPixel(9, 0, 0)),
+                hits);
     }
 
     @Test
@@ -1795,7 +1802,11 @@ Expected: `Tests run: 9, Failures: 0, Errors: 0`
 | `readRect` 里 `userY` 改成 `glY + row` | `区域查询的坐标是用户坐标而非上下镜像` |
 | `readRect` 的 `row` 循环改成从 0 递增 | `首次出现按从上到下的行序选取` |
 | `PickBuffer.readRect` 结尾去掉 `gl.bindFramebuffer(previous)` | `读完之后恢复原先的帧缓冲绑定` |
-| `readRect` 去掉 `!firstSeen.containsKey(value)` 判重 | `结果按ID升序且每个ID只出现一次` |
+| `readRect` 去掉 `!firstSeen.containsKey(value)` 判重 | `结果按ID升序且每个ID只出现一次`、`同一行内取最左边的` |
+
+（上面第 4 条原本是橡皮图章：那条测试原来只断言 ID 列表，而判重保护的是
+**首次出现的坐标**——覆盖之后 ID 集合不变，变异会存活。断言已改成整表
+`PickPixel` 比较，覆盖坐标。这正是 G 节说的那条，写在这里做个实证。）
 
 全量测试：`mvn -o test` → 期望 `Tests run: 157, Failures: 0, Errors: 0, Skipped: 2`
 （148 + 9）。
