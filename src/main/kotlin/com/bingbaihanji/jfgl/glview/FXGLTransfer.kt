@@ -2,6 +2,7 @@ package com.bingbaihanji.jfgl.glview
 
 import com.bingbaihanji.jfgl.gl.LwjglGLAbstraction
 import com.bingbaihanji.jfgl.renderer.Gc
+import com.bingbaihanji.jfgl.renderer.PickHit
 import com.bingbaihanji.jfgl.renderer.RenderBatch
 import com.huskerdev.grapl.gl.GLContext
 import com.huskerdev.grapl.gl.GLProfile
@@ -10,6 +11,8 @@ import com.huskerdev.openglfx.canvas.GLCanvas
 import com.huskerdev.openglfx.canvas.events.GLRenderEvent
 import com.huskerdev.openglfx.internal.GLInteropType
 import com.huskerdev.openglfx.lwjgl.LWJGLExecutor.Companion.LWJGL_MODULE
+import java.util.concurrent.atomic.AtomicReference
+import javafx.application.Platform
 import javafx.scene.Node
 import org.lwjgl.opengl.GL11.*
 
@@ -68,6 +71,17 @@ class FXGLTransfer(
     /** 逐帧绘制回调，参数是当前帧的 [Gc]。 */
     private var onFrameCallback: ((Gc) -> Unit)? = null
 
+    /**
+     * 待处理的异步拾取请求。
+     *
+     * <p><strong>「最新覆盖旧的」而不是队列</strong>：鼠标拖拽每秒产生几十个事件，
+     * 而帧率只有 60，排队毫无意义且会累积延迟。
+     *
+     * <p>用 [AtomicReference] 而不是 `@Volatile` 字段：取出与清空必须是原子的，
+     * 否则在「读到旧值」与「置空」之间到达的新请求会被丢掉。
+     */
+    private val pendingPick = AtomicReference<PickRequest?>()
+
     // 创建 GLCanvas 实例（所有参数在构造时确定，不可变）
     private val canvas = GLCanvas(
         executor = executor,
@@ -105,6 +119,9 @@ class FXGLTransfer(
                 context.beginFrame(scaledWidth, scaledHeight)
                 onFrameCallback?.invoke(context)
                 context.endFrame()
+                // 必须在 endFrame 之后：ID pass 是在提交时渲染的，
+                // 提前读会拿到本帧尚未写入的缓冲。
+                resolvePendingPick(context)
             }
             onRenderCallback?.invoke()
         }
@@ -193,6 +210,51 @@ class FXGLTransfer(
      */
     fun onDispose(callback: () -> Unit) {
         onDisposeCallback = callback
+    }
+
+    /**
+     * 异步查询某个点上最上层的可拾取图元。
+     *
+     * <p>这是**给 JavaFX 应用线程用的**入口：组件的鼠标事件都在那个线程上，
+     * 而 [Gc] 只能在 GL 线程使用。本方法把请求记下来，在下一帧渲染完成后于 GL 线程解析，
+     * 再把结果经 `Platform.runLater` **送回 JavaFX 线程**——这样回调里可以安全地
+     * 碰 JavaFX 状态，不需要调用方自己再跳一次。
+     *
+     * <p>同一时刻只保留最新的一次请求；连续调用会覆盖前一次的回调。
+     *
+     * @param x        查询点 x（用户坐标，y 向下）
+     * @param y        查询点 y（用户坐标，y 向下）
+     * @param callback 结果回调，在 JavaFX 应用线程上被调用；未命中时参数为 null
+     */
+    fun pickAsync(x: Float, y: Float, callback: (PickHit?) -> Unit) {
+        pendingPick.set(PickRequest(x, y, callback))
+    }
+
+    /**
+     * 一次待处理的拾取请求。
+     *
+     * @param x        查询点 x
+     * @param y        查询点 y
+     * @param callback 结果回调
+     */
+    private class PickRequest(
+        val x: Float,
+        val y: Float,
+        val callback: (PickHit?) -> Unit
+    )
+
+    /**
+     * 取出待处理的拾取请求并在 GL 线程上解析，结果经 JavaFX 线程送达。
+     *
+     * <p>先 `getAndSet(null)` 再解析：解析期间到达的新请求会被保留下来，
+     * 留给下一帧处理，而不是被这次清空顺手丢掉。
+     *
+     * @param context 当前帧的绘制上下文
+     */
+    private fun resolvePendingPick(context: Gc) {
+        val request = pendingPick.getAndSet(null) ?: return
+        val hit = context.pick(request.x, request.y)
+        Platform.runLater { request.callback(hit) }
     }
 
     companion object {
