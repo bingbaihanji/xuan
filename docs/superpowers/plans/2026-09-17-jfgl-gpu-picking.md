@@ -690,7 +690,7 @@ A 节与 B 节**分两批交付**：A 节不含并发测试，那一批是 17 / 
 | Task 4 | +5 `FramebufferTest` | **148** |
 | Task 5 | +8 `PickBufferTest` | **156**（实跑确认） |
 | Task 6 | +3 `VertexWriterTest`（`hasPickableVertices` 是纯 CPU 标志，能单测） | **159** |
-| Task 6.5 | +6 `PickBufferTest`、+2 `LwjglGLAbstractionTest` | **167** |
+| Task 6.5 | +7 `PickBufferTest`、+2 `LwjglGLAbstractionTest` | **168** |
 | Task 7 | 0（`RenderBatch` 的 ID pass 要真 GL 上下文，由 Task 10 校验器覆盖） | 167 |
 | Task 11 | 终验 | 167 |
 
@@ -2175,7 +2175,12 @@ class LwjglGLAbstractionTest {
     }
 ```
 
-`width()` 与 `height()` 也各加一行 `checkNotDisposed();`。
+`width()`、`height()`、`readRect()` 也各加一行 `checkNotDisposed();`（`readRect` 放在方法开头）。
+
+关于 `readRect`：它内部会调 `framebuffer.width()`，而 `width()` 现在会抛，所以守卫
+**事实上**已经在，只漏了 `w <= 0 || h <= 0` 那个提前返回的分支——在已释放的缓冲上
+返回空列表而不报错。那条分支无害，但"事实上在"和"写着在"是两回事，后者不依赖
+调用链的形状，所以照样显式写一行。
 
 - [ ] **Step 5: 给 `FakeGLAbstraction` 加故障注入开关**
 
@@ -2262,6 +2267,20 @@ F2 必须能在单测里被触发，否则改完还是没人防守。在 `FakeGL
         pb.dispose();
         assertThrows(IllegalStateException.class, () -> pb.readPixel(1, 1));
     }
+
+    @Test
+    void 清空抛错时仍恢复帧缓冲绑定() {
+        // 这条不能靠「读回抛错」那条代替：那条走的是 readRect，根本到不了 clear()。
+        // 而不注入故障的话，直线代码和 try/finally 的恢复行为完全一致，
+        // 「清空之后恢复原先的帧缓冲绑定」区分不了两者——守卫无人防守。
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.boundFramebuffer = 7;
+        gl.throwOnIntegerCall = true;
+        assertThrows(IllegalStateException.class, () -> pb.clear());
+        assertEquals(7, gl.boundFramebuffer,
+                "清空抛错也必须把绑定还回去——否则后续绘制全画进拾取缓冲，且不报错");
+    }
 ```
 
 注意 `构造后缓冲是全零` 里 `setScreenBottomUp` 必须在 `new PickBuffer(...)` **之前**调用
@@ -2270,14 +2289,14 @@ F2 必须能在单测里被触发，否则改完还是没人防守。在 `FakeGL
 - [ ] **Step 7: 跑测试**
 
 Run: `mvn -o test -Dtest='PickBufferTest,LwjglGLAbstractionTest'`
-Expected: `Tests run: 16, Failures: 0, Errors: 0`（PickBuffer 14 + Lwjgl 2）
+Expected: `Tests run: 17, Failures: 0, Errors: 0`（PickBuffer 15 + Lwjgl 2）
 
 - [ ] **Step 8: 变异验证**（每条做完立刻还原）
 
 | 变异 | 应失败的测试 |
 |------|--------------|
 | `allocateReadBuffer` 改回 `stack.mallocInt(pixels)` 的写法 | `区域读回缓冲能装下整个帧缓冲` |
-| `clear()` 去掉 `finally`（恢复语句移出） | `抛错时仍恢复帧缓冲绑定` 或 `清空之后恢复原先的帧缓冲绑定` |
+| `clear()` 去掉 `finally`（恢复语句移出） | `清空抛错时仍恢复帧缓冲绑定` |
 | `readRect` 去掉 `finally` | `抛错时仍恢复帧缓冲绑定` |
 | 构造函数尾部去掉 `clear();` | `构造后缓冲是全零` |
 | `ensureSize` 改回「先 dispose 再 new」 | `重建失败时旧缓冲原封不动` |
@@ -2290,7 +2309,7 @@ Expected: `Tests run: 16, Failures: 0, Errors: 0`（PickBuffer 14 + Lwjgl 2）
 - [ ] **Step 9: 跑全量测试**
 
 Run: `mvn -o test`
-Expected: `Tests run: 167, Failures: 0, Errors: 0, Skipped: 2`（159 + 6 + 2）
+Expected: `Tests run: 168, Failures: 0, Errors: 0, Skipped: 2`（159 + 7 + 2）
 
 - [ ] **Step 10: 提交**
 
@@ -2322,6 +2341,57 @@ F4 ensureSize 先 dispose 再 new，构造抛错时字段停在已释放对象�
 而 0 在 OpenGL 里是默认帧缓冲——此后读的是窗口自己的像素当成 ID，
 clear 则去擦窗口颜色。改成先建后弃，并加 checkNotDisposed 让释放后的调用炸掉
 而不是静默操作默认帧缓冲。
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>
+EOF
+```
+
+---
+
+### Task 6.5 追加：第 7 个测试与 `readRect` 的守卫
+
+上面的 Step 1–10 已落地（提交 `ca35d28`）。执行者报了两件事，**两件都成立**：
+
+**1. 变异表第 2 行写错了，`clear()` 的 `finally` 无人防守**（我独立复现：
+把 `clear()` 的 `finally` 拆成直线代码，`PickBufferTest` **14 个全绿**）。
+两处原因叠加：`抛错时仍恢复帧缓冲绑定` 走的是 `readRect`，**根本到不了 `clear()`**；
+而 `清空之后恢复原先的帧缓冲绑定` 不注入故障，直线代码与 `finally` 的恢复行为
+完全一致，**区分不了两者**。Step 6 已补上第 7 个测试，Step 8 的表行已改。
+
+**2. `readRect` 的守卫是"事实上在"而不是"写着在"**——它内部调 `framebuffer.width()`
+而 `width()` 会抛，所以除了 `w <= 0 || h <= 0` 的提前返回分支之外都被覆盖到了。
+Step 4 已补上显式的一行。
+
+- [ ] **Step 11: 补 `readRect` 的显式守卫与第 7 个测试**
+
+按 Step 4 与 Step 6 的当前版本改（`readRect` 开头加 `checkNotDisposed();`；
+`PickBufferTest` 加 `清空抛错时仍恢复帧缓冲绑定`）。**不要重做其余部分**——
+Step 1–10 已完成且已提交。
+
+- [ ] **Step 12: 验证第 2 行变异现在真的失败**
+
+把 `clear()` 的 `finally` 拆成直线代码 → 跑 `mvn -o test -Dtest=PickBufferTest`
+→ **必须恰好 1 条失败**（`清空抛错时仍恢复帧缓冲绑定`，`expected: <7> but was: <100>`）
+→ 反向 Edit 还原 → `git diff` 确认为空。
+
+- [ ] **Step 13: 跑全量并提交**
+
+Run: `mvn -o test` → `Tests run: 168, Failures: 0, Errors: 0, Skipped: 2`
+
+```bash
+git add src/main/java/com/bingbaihanji/jfgl/renderer/PickBuffer.java \
+        src/test/java/com/bingbaihanji/jfgl/renderer/PickBufferTest.java
+git commit -F - <<'EOF'
+test(pick): 补上 clear() 的绑定恢复守卫
+
+变异表说「clear() 去掉 finally 应当有测试失败」，实测不变异的话两处都抓不到：
+抛错时仍恢复帧缓冲绑定 走的是 readRect，根本到不了 clear()；
+清空之后恢复原先的帧缓冲绑定 不注入故障，直线代码和 try/finally 的恢复
+行为完全一致，区分不了两者。于是 clear() 的 finally 无人防守——把 finally
+拆成直线代码，PickBufferTest 14 个全绿。
+
+补第 7 个测试：注入故障后调 clear()，断言绑定仍被还回去。readRect 也补上
+显式的 checkNotDisposed（原先只靠它内部调 width() 间接生效，写着比靠着好）。
 
 Co-Authored-By: Claude Code <noreply@anthropic.com>
 EOF
@@ -2600,7 +2670,7 @@ EOF
 - [ ] **Step 8: 编译并跑全量测试**
 
 Run: `mvn -o compile && mvn -o test`
-Expected: BUILD SUCCESS；`Tests run: 167, Failures: 0, Skipped: 2`
+Expected: BUILD SUCCESS；`Tests run: 168, Failures: 0, Skipped: 2`
 
 （`beginFrame` 此刻还没有调用方，`Gc` 仍在用 `setViewportHeight`——这是刻意的，
 见 Step 3 的说明。）
@@ -2897,7 +2967,7 @@ ID pass 保持裁剪开启并复用同一套 scissor 换算，被裁掉的部分
 - [ ] **Step 7: 编译并跑全量测试**
 
 Run: `mvn -o compile && mvn -o test`
-Expected: BUILD SUCCESS；`Tests run: 167, Failures: 0, Skipped: 2`
+Expected: BUILD SUCCESS；`Tests run: 168, Failures: 0, Skipped: 2`
 
 - [ ] **Step 8: 提交**
 
@@ -3576,7 +3646,7 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
 mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
     -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.PickVerifierKt"
 ```
-Expected: 测试 167 通过 / 0 失败 / 2 跳过；两个校验器都退出码 0。
+Expected: 测试 168 通过 / 0 失败 / 2 跳过；两个校验器都退出码 0。
 
 - [ ] **Step 6: 提交**
 
@@ -3589,7 +3659,7 @@ git commit -m "docs: 补拾取的使用要点与验证方式"
 
 ## 完成标准
 
-- [ ] `mvn -o test` → 167 通过 / 0 失败 / 2 跳过
+- [ ] `mvn -o test` → 168 通过 / 0 失败 / 2 跳过
 - [ ] `PipelineVerifier` 退出码 0（原有回归网未被破坏）
 - [ ] `PickVerifier` 退出码 0
 - [ ] 三条变异验证都**实际注入并确认失败**过，且已回滚（`git diff` 为空）
