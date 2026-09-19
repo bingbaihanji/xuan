@@ -691,8 +691,10 @@ A 节与 B 节**分两批交付**：A 节不含并发测试，那一批是 17 / 
 | Task 5 | +8 `PickBufferTest` | **156**（实跑确认） |
 | Task 6 | +3 `VertexWriterTest`（`hasPickableVertices` 是纯 CPU 标志，能单测） | **159** |
 | Task 6.5 | +7 `PickBufferTest`、+2 `LwjglGLAbstractionTest` | **168** |
-| Task 7 | 0（`RenderBatch` 的 ID pass 要真 GL 上下文，由 Task 10 校验器覆盖） | 167 |
-| Task 11 | 终验 | 167 |
+| Task 7–9 | 0（要真 GL 上下文，由 Task 10 的校验器覆盖） | 168 |
+| Task 10 | 0（校验器不是单测，跑一次写出 PASS/FAIL） | 168 |
+| Task 10.5 | +2 `PickBufferTest`（scissor 泄漏修复） | **170** |
+| Task 11 | 终验 | 170 |
 
 **数字对不上就停下来查**，不要为了让计数凑上而增删测试——**已经踩过两次**：
 
@@ -3582,6 +3584,274 @@ payload 解析、矩形区域查询（含首次出现坐标、拖到画面外只
 
 ---
 
+## Task 10.5: 修复 `clear()` 的 scissor 泄漏（真缺陷，已实测确认）
+
+**这是 Task 10 之后由「校验器自己抓不到的一类缺陷」引出的修复。** 我（派单的人）用一个临时探针
+实测确认了它，所以下面是**结论**不是猜想。
+
+**缺陷**：`PickBuffer.clear()` 清的不是整个缓冲，而是**当前 scissor 盒子内的那部分**。
+
+机制：`drawPickPass` 在颜色 pass 的循环**之后**、`glDisable(GL_SCISSOR_TEST)` **之前**被调用，
+所以 `pickBuffer.clear()` 执行时 **scissor 测试是开着的，且裁剪盒还是颜色 pass 最后一条命令
+留下的那个**。而 `glClearBufferuiv` **受 scissor 影响**。于是盒外的像素根本没被清，
+**保留着上一帧的 ID**。
+
+**实测证据**（临时探针，让第 5 帧只画那个被裁剪的矩形，其余图元全不画）：
+
+```
+(100,80)   实际=1  期望=0   （帧 4 该处是 idA=1）
+(420,270)  实际=5  期望=5   （裁剪矩形仍在 → ID pass 确实跑了，排除"没跑"这个解释）
+```
+
+`(100,80)` 上这一帧**什么都没有**，却拾取到了上一帧的 `idA`。
+
+**为什么原校验器看不见**：帧 2/3/4 画的是同一个场景，陈旧 ID 与新鲜 ID 恰好相同。
+只有「上一帧有、这一帧没有」的图元才暴露它。
+
+**危害**：用户点到一个**已经消失的对象**。不报错、不崩溃、画面完全正常——本项目最典型的那类缺陷。
+触发条件：某一帧最后一条可拾取命令带裁剪（或任何非全屏 scissor 盒）。
+
+**Files:**
+- Modify: `src/main/java/com/bingbaihanji/jfgl/gl/GLAbstraction.java`
+- Modify: `src/main/java/com/bingbaihanji/jfgl/gl/LwjglGLAbstraction.java`
+- Modify: `src/main/java/com/bingbaihanji/jfgl/renderer/PickBuffer.java`
+- Modify: `src/test/java/com/bingbaihanji/jfgl/gl/FakeGLAbstraction.java`
+- Test: `src/test/java/com/bingbaihanji/jfgl/renderer/PickBufferTest.java`
+- Modify: `src/main/kotlin/com/bingbaihanji/jfgl/example/PickVerifier.kt`
+
+- [ ] **Step 1: 给 `GLAbstraction` 加 scissor 开关的查询与设置**
+
+修法**不是**在 `RenderBatch` 里把清空挪个位置了事——那样 `PickBuffer.clear()`
+仍然是个地雷：它的 Javadoc 承诺「把**整个**缓冲清成 0」，却依赖调用点的 GL 状态。
+`ensureSize` 与构造函数也会调它，将来任何一个新的调用点都会重新踩上。
+**让 `clear()` 自己保证整缓冲，而不是靠调用顺序。**
+
+在 `GLAbstraction` 里（`clearIntegerColor` 附近）加：
+
+```java
+    /**
+     * 返回裁剪测试是否已启用。
+     *
+     * @return 已启用时为 true
+     */
+    boolean isScissorEnabled();
+
+    /**
+     * 启用或关闭裁剪测试。
+     *
+     * @param enabled 是否启用
+     */
+    void setScissorEnabled(boolean enabled);
+```
+
+`LwjglGLAbstraction`：
+
+```java
+    @Override
+    public boolean isScissorEnabled() {
+        return GL11.glIsEnabled(GL11.GL_SCISSOR_TEST);
+    }
+
+    @Override
+    public void setScissorEnabled(boolean enabled) {
+        if (enabled) {
+            GL11.glEnable(GL11.GL_SCISSOR_TEST);
+        } else {
+            GL11.glDisable(GL11.GL_SCISSOR_TEST);
+        }
+    }
+```
+
+`FakeGLAbstraction`：加 `public boolean scissorEnabled = false;` 两个方法读写它；
+并让 `clearIntegerColor` 在 `scissorEnabled` 为真时**抛异常**——
+把「清空时不能开着裁剪」这条不变式变成假 GL 能强制的东西，于是它可被单测。
+
+```java
+    /** 裁剪测试是否启用。默认关。 */
+    public boolean scissorEnabled = false;
+
+    @Override
+    public boolean isScissorEnabled() {
+        return scissorEnabled;
+    }
+
+    @Override
+    public void setScissorEnabled(boolean enabled) {
+        scissorEnabled = enabled;
+    }
+```
+
+在 `clearIntegerColor` 开头（`maybeThrow()` 之后）加：
+
+```java
+        // glClearBufferuiv 受 scissor 影响：开着裁剪清空只会清掉盒内那一块，
+        // 盒外的像素保留上一帧的 ID——拾取到已经消失的对象，且不报错。
+        // 真 GL 上这个错误是静默的，这里把它变成显式的失败。
+        if (scissorEnabled) {
+            throw new AssertionError(
+                    "clearIntegerColor 在裁剪测试开启时被调用：只会清掉裁剪盒内的部分，"
+                            + "盒外保留上一帧的 ID");
+        }
+```
+
+- [ ] **Step 2: 修 `PickBuffer.clear()`**
+
+```java
+    /**
+     * 把整个缓冲清成 0（即「什么都没命中」）。
+     *
+     * <p>走 {@code glClearBufferuiv} 而不是 {@code glClearColor} + {@code glClear}：
+     * 后者对整数附件是未定义行为。帧缓冲绑定在使用前后被恢复。
+     *
+     * <p><strong>裁剪测试在清空期间会被临时关闭</strong>：{@code glClearBufferuiv}
+     * 受 scissor 影响，而本方法的调用点（{@code RenderBatch.drawPickPass}）恰好发生在
+     * 颜色 pass 之后、{@code glDisable(GL_SCISSOR_TEST)} 之前，此时裁剪盒还是
+     * 最后一条颜色命令留下的那个。不关的话清到的只是那个盒子，
+     * <strong>盒外的像素保留上一帧的 ID——拾取到已经消失的对象，且不报错</strong>。
+     *
+     * <p>关掉再恢复、而不是要求调用方先关：本方法承诺的是「整个缓冲」，
+     * 那就不该依赖调用点的 GL 状态。实测确认过（见计划 Task 10.5）。
+     */
+    public void clear() {
+        checkNotDisposed();
+        int previous = gl.currentFramebufferBinding();
+        boolean scissorWasEnabled = gl.isScissorEnabled();
+        gl.setScissorEnabled(false);
+        gl.bindFramebuffer(framebuffer.id());
+        try {
+            gl.clearIntegerColor(0);
+        } finally {
+            // 必须用 finally：任何 GL 调用都可能抛错，一旦抛出去而绑定停在拾取 FBO，
+            // 后续所有绘制都会画进这里——画面全黑或停在上一帧，且不报错。
+            gl.bindFramebuffer(previous);
+            gl.setScissorEnabled(scissorWasEnabled);
+        }
+    }
+```
+
+- [ ] **Step 3: 补两条单测**
+
+在 `PickBufferTest` 末尾加两条（该文件的 `buffer(gl)` 辅助方法已存在）：
+
+```java
+    @Test
+    void 清空会临时关掉裁剪并在之后恢复() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.scissorEnabled = true;
+        // 假 GL 的 clearIntegerColor 在裁剪开启时抛异常，所以这行本身就是断言：
+        // 真 GL 上同样的错误是静默的（只清掉裁剪盒内那一块）。
+        pb.clear();
+        assertTrue(gl.scissorEnabled, "清空结束必须把裁剪状态恢复原样");
+    }
+
+    @Test
+    void 构造与重建清空时也关掉裁剪() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        gl.setScreenBottomUp(8, 4, new int[8 * 4]);
+        gl.scissorEnabled = true;
+        PickBuffer pb = new PickBuffer(gl, 8, 4);   // 构造里会 clear()
+        pb.ensureSize(16, 16);                       // 重建后也会 clear()
+        assertTrue(gl.scissorEnabled, "两处清空都必须恢复裁剪状态");
+    }
+```
+
+- [ ] **Step 4: 给校验器加**永久**的陈旧 ID 断言**
+
+原校验器看不见这个缺陷（帧 2/3/4 场景相同）。加一个**「上一帧有、这一帧没有」**的帧：
+
+`PickVerifierApp` 加一个字段：
+
+```kotlin
+    /** 【陈旧 ID 检查】本帧只画被裁剪的那个矩形，其余图元全不画。 */
+    private val staleIdFrame = 5
+```
+
+`drawScene` 把前四个图元包进 `if (rendered < staleIdFrame) { ... }`
+（被裁剪的那个矩形**照画**，保证 ID pass 仍会跑、且最后一条命令带裁剪盒）。
+
+`verifyOnce` 的结构要改：**帧 4 报告完不退**，把退出挪到帧 5。加一个字段存帧 4 的失败数，
+帧 5 合并退出码。帧 5 的断言：
+
+```kotlin
+        if (justRendered >= staleIdFrame) {
+            val gc = bridge.gc() ?: return
+            println("\n-- 陈旧 ID 检查（上一帧有、这一帧没有） --")
+            val atA = gc.pick(100f, 80f)?.id() ?: 0
+            val atClip = gc.pick(420f, 270f)?.id() ?: 0
+            // (420,270) 证明 ID pass 确实跑了——否则"没命中"可能只是因为它没跑，
+            // 那样这条断言就变成了恒真检查。
+            report("已消失图元的位置不再命中", atA == 0,
+                "(100,80) 实际=$atA 期望=0（帧 4 该处是 idA=$idA）")
+            report("本帧仍在的图元照常命中（证明 ID pass 跑了）", atClip == idClipped,
+                "(420,270) 实际=$atClip 期望=$idClipped")
+        }
+```
+
+**第二条第不可省**：没有它，第一条在「ID pass 根本没跑」时也会通过——那是恒真检查。
+这正是本项目反复栽的那个坑。
+
+- [ ] **Step 5: 跑校验器**
+
+Run:
+```bash
+mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
+    "-Dexec.args=-cp %classpath com.bingbaihanji.jfgl.example.PickVerifierKt"
+```
+Expected: 全部 PASS（原 24 条 + 新 2 条），退出码 0。
+
+- [ ] **Step 6: 变异验证 —— 把 `clear()` 的修复撤掉**
+
+把 Step 2 里那两行（`gl.setScissorEnabled(false);` 与 finally 里的恢复）去掉，**其余不动**。
+
+Run: 重跑校验器
+Expected: **「已消失图元的位置不再命中」必须 FAIL**，实测应为
+`(100,80) 实际=1 期望=0`；而「本帧仍在的图元照常命中」应照常 PASS。
+同时 `PickBufferTest` 的两条新单测也应失败（假 GL 会抛 `AssertionError`）。
+
+确认后**反向 Edit 还原**（不要用 `git checkout --`，改动未提交）。
+
+- [ ] **Step 7: 跑全量测试并提交**
+
+Run: `mvn -o test`
+Expected: `Tests run: 170, Failures: 0, Errors: 0, Skipped: 2`（168 + 2）
+
+```bash
+git add src/main/java/com/bingbaihanji/jfgl/gl/GLAbstraction.java \
+        src/main/java/com/bingbaihanji/jfgl/gl/LwjglGLAbstraction.java \
+        src/main/java/com/bingbaihanji/jfgl/renderer/PickBuffer.java \
+        src/test/java/com/bingbaihanji/jfgl/gl/FakeGLAbstraction.java \
+        src/test/java/com/bingbaihanji/jfgl/renderer/PickBufferTest.java \
+        src/main/kotlin/com/bingbaihanji/jfgl/example/PickVerifier.kt
+git commit -F - <<'EOF'
+fix(pick): clear() 受 scissor 影响，只清掉了裁剪盒内那部分
+
+drawPickPass 在颜色 pass 循环之后、glDisable(GL_SCISSOR_TEST) 之前被调用，
+所以 pickBuffer.clear() 执行时 scissor 是开的、裁剪盒还是颜色 pass 最后一条
+命令留下的那个。glClearBufferuiv 受 scissor 影响，于是盒外的像素根本没被清，
+保留着上一帧的 ID。
+
+实测（临时探针，第 5 帧只画被裁剪的矩形）：
+  (100,80)  实际=1 期望=0   ← 该处这一帧什么都没有，却拾取到上一帧的 idA
+  (420,270) 实际=5 期望=5   ← 证明 ID pass 确实跑了
+
+危害是典型的静默错误输出：用户点到一个已经消失的对象，不报错、画面正常。
+
+原校验器看不见它，因为帧 2/3/4 画的是同一个场景，陈旧 ID 与新鲜 ID 恰好相同。
+本提交给校验器加了「上一帧有、这一帧没有」的帧，并把「本帧仍在的图元照常命中」
+一并断言——没有后者的话，ID pass 没跑时第一条会恒真通过。
+
+修法不是把清空挪个位置了事：PickBuffer.clear() 的契约是「整个缓冲」，
+那就不该依赖调用点的 GL 状态（ensureSize 与构造函数也会调它）。
+改为 clear() 自己临时关掉裁剪再恢复，并给假 GL 加上「裁剪开启时清空即抛异常」
+的强制，把这个静默错误变成可单测的显式失败。
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>
+EOF
+```
+
+---
+
 ## Task 11: 文档更新
 
 **Files:**
@@ -3681,7 +3951,7 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
 mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
     -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.PickVerifierKt"
 ```
-Expected: 测试 168 通过 / 0 失败 / 2 跳过；两个校验器都退出码 0。
+Expected: 测试 170 通过 / 0 失败 / 2 跳过；两个校验器都退出码 0。
 
 - [ ] **Step 6: 提交**
 
@@ -3694,7 +3964,7 @@ git commit -m "docs: 补拾取的使用要点与验证方式"
 
 ## 完成标准
 
-- [ ] `mvn -o test` → 168 通过 / 0 失败 / 2 跳过
+- [ ] `mvn -o test` → 170 通过 / 0 失败 / 2 跳过
 - [ ] `PipelineVerifier` 退出码 0（原有回归网未被破坏）
 - [ ] `PickVerifier` 退出码 0
 - [ ] 三条变异验证都**实际注入并确认失败**过，且已回滚（`git diff` 为空）
