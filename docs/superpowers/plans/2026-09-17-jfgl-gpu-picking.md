@@ -3869,6 +3869,33 @@ EOF
 `FXGLTransfer.pickAsync`
 ```
 
+- [ ] **Step 1.5: 更新 CLAUDE.md 里会被写死的过期事实**
+
+这一步不在原计划里，是补的——CLAUDE.md 的「测试」一节现在写着 **125 个测试**，
+而实际已经是 **170**；测试目录清单也缺了本次新增的两个目录。**留着一个错的总数
+比不写还糟**：下一个人会拿它当基线，然后对着"多出来的 45 个"发懵。
+
+把「测试」一节整段替换为：
+
+```markdown
+```
+src/test/java/com/bingbaihanji/jfgl/geom/       PathTest、FlattenerTest、TessellatorTest、
+                                                TessellatorHoleTest、TessellatorRegressionTest、
+                                                StrokeGeneratorTest、StrokeDashTest、
+                                                GeomPackageIsolationTest
+src/test/java/com/bingbaihanji/jfgl/renderer/   VertexFormatTest、VertexWriterTest、ViewTransformTest、
+                                                PickRegistryTest、PickBufferTest
+src/test/java/com/bingbaihanji/jfgl/gl/         FramebufferTest、LwjglGLAbstractionTest
+```
+
+当前 **170 个测试，0 失败，2 跳过**。单测命令：`mvn test -Dtest=类名`。
+
+`geom/`、`math/`、`util/`、`ViewTransform` 都是纯计算、不依赖 GL 上下文，最适合写单测。
+`gl/Framebuffer` 与 `renderer/PickBuffer` 只依赖 `GLAbstraction` **接口**，
+用 `src/test/.../gl/FakeGLAbstraction` 这个假实现也能零 GL 上下文单测——
+这是拾取子系统里唯一能做到这一点的一层。`RenderBatch` 的颜色/ID pass 与 `Gc` 则必须靠校验器。
+```
+
 - [ ] **Step 2: 在 CLAUDE.md 补一节拾取的使用要点**
 
 在「坐标与单位约定」之后插入：
