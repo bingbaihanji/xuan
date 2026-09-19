@@ -1385,6 +1385,383 @@ readRect 返回 PickPixel（ID + 首次出现坐标）而非裸 ID 数组：区�
 「首次出现」，答案看着合理但位置是错的。"
 ```
 
+- [ ] **Step 4: 用假 GL 单测 Framebuffer 与 PickBuffer**（评审追加）
+
+Task 3 的 `GLAbstraction` 是**接口**，`Framebuffer` 与 `PickBuffer` 只依赖它。
+喂一个假实现，这两处就完全不需要 GL 上下文即可单测——而它们恰好各藏着一处
+**逻辑**（其余是管道），失败方式都是本项目最擅长产生的那一类：
+
+- `PickBuffer.readRect` 的 y 翻转与扫描序 → 错了得到**上下镜像但部分正确**的拾取坐标。
+- `Framebuffer` 构造时恢复原绑定 → 漏了**后续所有绘制都画进拾取缓冲**，
+  画面全黑或全是拾取色，排查方向完全指错。
+
+不测的话这两处只能靠 Task 10 的像素校验器兜底；校验器要 GL 上下文、跑得慢，
+而且覆盖不到裁剪、退化区域、去重顺序这些分支。**这是本期唯一能零 GL 覆盖
+坐标数学的机会，别放过。**
+
+创建 `src/test/java/com/bingbaihanji/jfgl/gl/FakeGLAbstraction.java`：
+
+```java
+package com.bingbaihanji.jfgl.gl;
+
+import com.bingbaihanji.jfgl.util.Color;
+
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * 测试用的 {@link GLAbstraction} 假实现。
+ *
+ * <p>只实现拾取路径真正用到的那几个方法，其余一律抛
+ * {@link UnsupportedOperationException}——测试里真调到了就说明走偏了，
+ * 静默返回 0 反而会让断言看起来通过。
+ *
+ * <p>{@link #setUserPixel} 是给测试用的便捷入口：按<strong>用户坐标</strong>
+ * （原点左上、y 向下）写入虚拟屏幕，内部换算成 GL 行序。这样测试用例可以用
+ * 人思考场景的方式来布置数据，而 {@code PickBuffer} 的翻转一旦写错，
+ * 读回来的坐标就对不上——两者是独立的代码路径，不会互相抵消。
+ */
+final class FakeGLAbstraction implements GLAbstraction {
+
+    /** 分配出的 ID 从这里递增，便于断言「确实拿去用了」而不是默认值 0。 */
+    private int nextId = 100;
+
+    /** 当前绑定的 FBO。初值刻意非 0，模拟 openglfx 渲染到自己的 FBO。 */
+    int boundFramebuffer = 7;
+
+    /** 每次 bindFramebuffer 的入参，用来断言「恢复了原绑定」。 */
+    final List<Integer> bindCalls = new ArrayList<>();
+
+    /** framebufferStatus() 的返回值，测试可改。 */
+    int statusToReturn = FRAMEBUFFER_COMPLETE;
+
+    final List<Integer> deletedFramebuffers = new ArrayList<>();
+    final List<Integer> deletedTextures = new ArrayList<>();
+
+    /** 虚拟屏幕，<strong>GL 行序</strong>：下标 0 对应最下面一行。 */
+    private int[] screen = new int[0];
+    private int screenWidth;
+    private int screenHeight;
+
+    /** 按 GL 行序（自下而上）设置整块虚拟屏幕。 */
+    void setScreenBottomUp(int width, int height, int[] rowsBottomUp) {
+        this.screenWidth = width;
+        this.screenHeight = height;
+        this.screen = rowsBottomUp.clone();
+    }
+
+    /** 按<strong>用户坐标</strong>（原点左上、y 向下）写一个像素。 */
+    void setUserPixel(int x, int y, int value) {
+        screen[(screenHeight - 1 - y) * screenWidth + x] = value;
+    }
+
+    @Override
+    public int createFramebuffer() {
+        return nextId++;
+    }
+
+    @Override
+    public void bindFramebuffer(int framebuffer) {
+        boundFramebuffer = framebuffer;
+        bindCalls.add(framebuffer);
+    }
+
+    @Override
+    public void deleteFramebuffer(int framebuffer) {
+        deletedFramebuffers.add(framebuffer);
+    }
+
+    @Override
+    public int currentFramebufferBinding() {
+        return boundFramebuffer;
+    }
+
+    @Override
+    public int createIntegerTexture(int width, int height) {
+        return nextId++;
+    }
+
+    @Override
+    public void deleteTexture(int texture) {
+        deletedTextures.add(texture);
+    }
+
+    @Override
+    public void attachTextureToColor0(int texture) {
+        // 假实现不做附件检查，完整性由 statusToReturn 单独控制
+    }
+
+    @Override
+    public int framebufferStatus() {
+        return statusToReturn;
+    }
+
+    @Override
+    public void clearIntegerColor(int value) {
+        java.util.Arrays.fill(screen, value);
+    }
+
+    @Override
+    public int readUnsignedIntPixel(int x, int y) {
+        return screen[y * screenWidth + x];
+    }
+
+    @Override
+    public void readUnsignedIntPixels(int x, int y, int width, int height, int[] out) {
+        for (int row = 0; row < height; row++) {
+            for (int col = 0; col < width; col++) {
+                out[row * width + col] = screen[(y + row) * screenWidth + (x + col)];
+            }
+        }
+    }
+
+    // —— 以下与拾取路径无关，真调到了说明走偏了 ——
+
+    @Override public void initialize() { throw new UnsupportedOperationException(); }
+    @Override public void clear(Color color) { throw new UnsupportedOperationException(); }
+    @Override public void setViewport(int x, int y, int w, int h) { throw new UnsupportedOperationException(); }
+    @Override public int createVao() { throw new UnsupportedOperationException(); }
+    @Override public int createVbo() { throw new UnsupportedOperationException(); }
+    @Override public void bindVao(int vao) { throw new UnsupportedOperationException(); }
+    @Override public void bindVbo(int vbo) { throw new UnsupportedOperationException(); }
+    @Override public void uploadVboData(float[] data) { throw new UnsupportedOperationException(); }
+    @Override public void uploadVboData(int[] data) { throw new UnsupportedOperationException(); }
+    @Override public void uploadVboBytes(ByteBuffer data) { throw new UnsupportedOperationException(); }
+    @Override public void deleteVao(int vao) { throw new UnsupportedOperationException(); }
+    @Override public void deleteVbo(int vbo) { throw new UnsupportedOperationException(); }
+    @Override public void drawArrays(int mode, int offset, int count) { throw new UnsupportedOperationException(); }
+    @Override public void drawElements(int mode, int count) { throw new UnsupportedOperationException(); }
+    @Override public void enableBlend() { throw new UnsupportedOperationException(); }
+    @Override public void disableBlend() { throw new UnsupportedOperationException(); }
+    @Override public void setBlendFunc(int s, int d) { throw new UnsupportedOperationException(); }
+    @Override public ShaderProgram createShader(String v, String f) { throw new UnsupportedOperationException(); }
+    @Override public int createTexture(int w, int h, int[] p) { throw new UnsupportedOperationException(); }
+    @Override public void dispose() { /* 无资源可释放 */ }
+}
+```
+
+创建 `src/test/java/com/bingbaihanji/jfgl/gl/FramebufferTest.java`：
+
+```java
+package com.bingbaihanji.jfgl.gl;
+
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+class FramebufferTest {
+
+    @Test
+    void 构造后恢复原先的帧缓冲绑定() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        gl.boundFramebuffer = 7;          // 模拟 openglfx 自己的 FBO
+        new Framebuffer(gl, 16, 16);
+        assertEquals(7, gl.boundFramebuffer,
+                "构造完必须把绑定还给调用方；否则后续所有绘制都画进拾取缓冲");
+        assertEquals(7, gl.bindCalls.get(gl.bindCalls.size() - 1),
+                "最后一次 bindFramebuffer 应当是恢复，而不是又切到自己的 FBO");
+    }
+
+    @Test
+    void 帧缓冲不完整时抛异常并带上状态码() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        gl.statusToReturn = 0x8CD6;       // GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT
+        IllegalStateException e = assertThrows(IllegalStateException.class,
+                () -> new Framebuffer(gl, 16, 16));
+        assertTrue(e.getMessage().contains("8CD6"),
+                "消息必须带上实际状态码——UNSUPPORTED 与 INCOMPLETE_ATTACHMENT 的排查方向完全不同");
+    }
+
+    @Test
+    void 帧缓冲不完整时不泄漏已创建的资源() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        gl.statusToReturn = 0x8CD6;
+        assertThrows(IllegalStateException.class, () -> new Framebuffer(gl, 16, 16));
+        assertEquals(1, gl.deletedFramebuffers.size(), "创建失败也必须回收 FBO");
+        assertEquals(1, gl.deletedTextures.size(), "创建失败也必须回收纹理");
+    }
+
+    @Test
+    void 尺寸非正时抛异常() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        assertThrows(IllegalArgumentException.class, () -> new Framebuffer(gl, 0, 16));
+        assertThrows(IllegalArgumentException.class, () -> new Framebuffer(gl, 16, -1));
+        assertTrue(gl.deletedFramebuffers.isEmpty(), "参数校验应当在创建任何 GL 资源之前");
+    }
+
+    @Test
+    void 释放是幂等的() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        Framebuffer fb = new Framebuffer(gl, 16, 16);
+        fb.dispose();
+        fb.dispose();
+        assertEquals(1, gl.deletedFramebuffers.size(), "重复 dispose 不该重复删除");
+        assertEquals(1, gl.deletedTextures.size());
+    }
+}
+```
+
+创建 `src/test/java/com/bingbaihanji/jfgl/renderer/PickBufferTest.java`：
+
+```java
+package com.bingbaihanji.jfgl.renderer;
+
+import com.bingbaihanji.jfgl.gl.FakeGLAbstraction;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class PickBufferTest {
+
+    /** 造一个 8x4 的拾取缓冲，虚拟屏幕初始全 0。 */
+    private static PickBuffer buffer(FakeGLAbstraction gl) {
+        gl.setScreenBottomUp(8, 4, new int[8 * 4]);
+        return new PickBuffer(gl, 8, 4);
+    }
+
+    @Test
+    void 区域查询的坐标是用户坐标而非上下镜像() {
+        // 安排：用户坐标 (5, 1) 处是 id=42。用户坐标原点在左上、y 向下，
+        // 所以它在 GL 行序里是倒数第二行。读回来若还在 (5, 1) 说明翻转正确；
+        // 若漏翻转会得到 (5, 2)——同样「看起来合理」，所以必须断言精确坐标。
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.setUserPixel(5, 1, 42);
+
+        List<PickPixel> hits = pb.readRect(0, 0, 8, 4);
+
+        assertEquals(1, hits.size());
+        assertEquals(42, hits.get(0).id());
+        assertEquals(5, hits.get(0).x());
+        assertEquals(1, hits.get(0).y(), "翻转写错会得到上下镜像的 y，且不报错");
+    }
+
+    @Test
+    void 首次出现按从上到下的行序选取() {
+        // 同一个 id 出现在更靠下的 (3, 3) 与更靠上的 (3, 0)，
+        // 「按行扫描首次出现」应当取更靠上的那个。
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.setUserPixel(3, 3, 42);
+        gl.setUserPixel(3, 0, 42);
+
+        List<PickPixel> hits = pb.readRect(0, 0, 8, 4);
+
+        assertEquals(1, hits.size());
+        assertEquals(0, hits.get(0).y(),
+                "扫描序反了会取到更靠下的那个——坐标合法但位置是错的");
+    }
+
+    @Test
+    void 同一行内取最左边的() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.setUserPixel(6, 2, 42);
+        gl.setUserPixel(1, 2, 42);
+
+        List<PickPixel> hits = pb.readRect(0, 0, 8, 4);
+
+        assertEquals(1, hits.get(0).x());
+    }
+
+    @Test
+    void 结果按ID升序且每个ID只出现一次() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.setUserPixel(0, 0, 9);
+        gl.setUserPixel(1, 0, 3);
+        gl.setUserPixel(2, 0, 9);   // 9 的第二次出现，应被忽略
+        gl.setUserPixel(3, 0, 5);
+
+        List<PickPixel> hits = pb.readRect(0, 0, 8, 4);
+
+        assertEquals(List.of(3, 5, 9), hits.stream().map(PickPixel::id).toList());
+    }
+
+    @Test
+    void 零号像素被忽略() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.setUserPixel(0, 0, 0);   // 0 = 没命中，不该出现在结果里
+
+        assertTrue(pb.readRect(0, 0, 8, 4).isEmpty());
+    }
+
+    @Test
+    void 退化区域返回空列表() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.setUserPixel(0, 0, 42);
+
+        assertTrue(pb.readRect(0, 0, 0, 4).isEmpty(), "宽度为 0");
+        assertTrue(pb.readRect(0, 0, 4, 0).isEmpty(), "高度为 0");
+        assertTrue(pb.readRect(-100, -100, 1, 1).isEmpty(), "完全在缓冲外");
+    }
+
+    @Test
+    void 越界区域被裁剪到缓冲内且坐标仍正确() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.setUserPixel(7, 3, 42);          // 右下角
+
+        // 从 (5,2) 起查 100x100，应当裁剪到 8x4 的范围内而不是越界读
+        List<PickPixel> hits = pb.readRect(5, 2, 100, 100);
+
+        assertEquals(1, hits.size());
+        assertEquals(7, hits.get(0).x());
+        assertEquals(3, hits.get(0).y());
+    }
+
+    @Test
+    void 读完之后恢复原先的帧缓冲绑定() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        gl.boundFramebuffer = 7;
+        PickBuffer pb = buffer(gl);
+        pb.readRect(0, 0, 8, 4);
+        assertEquals(7, gl.boundFramebuffer,
+                "读回后必须恢复绑定，否则后续绘制会画进拾取缓冲");
+    }
+}
+```
+
+Run: `mvn -o test -Dtest='FramebufferTest,PickBufferTest'`
+Expected: `Tests run: 14, Failures: 0, Errors: 0`（Framebuffer 5 + PickBuffer 9）
+
+**变异验证**（每条做完立刻还原）：
+
+| 变异 | 应失败的测试 |
+|------|--------------|
+| `readRect` 里 `userY` 改成 `glY + row` | `区域查询的坐标是用户坐标而非上下镜像` |
+| `readRect` 的 `row` 循环改成从 0 递增 | `首次出现按从上到下的行序选取` |
+| `Framebuffer` 构造结尾去掉 `gl.bindFramebuffer(previous)` | `构造后恢复原先的帧缓冲绑定` |
+| `PickBuffer.readRect` 结尾去掉 `gl.bindFramebuffer(previous)` | `读完之后恢复原先的帧缓冲绑定` |
+| `Framebuffer` 不完整分支去掉 `dispose()` | `帧缓冲不完整时不泄漏已创建的资源` |
+
+注意 `FakeGLAbstraction` 与两个测试类都在 `src/test` 下，不走 `geom/` 的隔离约束；
+但 `FakeGLAbstraction` 必须放在 `com.bingbaihanji.jfgl.gl` 包内（`PickBufferTest`
+在 `renderer` 包，跨包引用需要它是 `public`——若懒得放开可见性，
+把 `PickBufferTest` 也放进 `gl` 包，或把假实现提到 `public`）。
+
+提交：
+
+```bash
+git add src/test/java/com/bingbaihanji/jfgl/gl/FakeGLAbstraction.java \
+        src/test/java/com/bingbaihanji/jfgl/gl/FramebufferTest.java \
+        src/test/java/com/bingbaihanji/jfgl/renderer/PickBufferTest.java
+git commit -m "test(gl): 用假 GL 单测 Framebuffer 与 PickBuffer 的坐标数学
+
+两者只依赖 GLAbstraction 接口，喂假实现即可零 GL 上下文覆盖，
+这是本期唯一能做到这一点的机会（其余部分都要真上下文）。
+
+覆盖的是两处逻辑而非管道：readRect 的 y 翻转与行扫描序（错了得到上下镜像
+但部分正确的拾取坐标），Framebuffer 构造时恢复原绑定（漏了后续所有绘制
+都画进拾取缓冲，排查方向完全指错）。
+
+五条变异验证：翻转、扫描序、两处绑定恢复、失败时的资源回收。"
+```
+
 ---
 
 ## Task 6: VertexWriter.hasPickableVertices
