@@ -482,7 +482,8 @@ public final class PickRegistry {
 
 Run: `mvn -o test -Dtest=PickRegistryTest`
 Expected: `Tests run: 18, Failures: 0, Errors: 0` — BUILD SUCCESS
-（原计划此处是 15；评审追加了 A 节两个新测试与 B 节并发测试，见下方「Task 1 评审追加」。）
+（原计划此处是 15。评审追加见下方「Task 1 评审追加」：A 节补 2 个新测试 → **17**，
+B 节的并发测试再补 1 个 → **18**。分两批做的，别按第一步就跳到 18。）
 
 - [ ] **Step 5: 跑全量测试确认没有破坏别的**
 
@@ -649,8 +650,10 @@ Task 1 的实现提交之后，代码质量评审跑了变异验证，发现**�
 | 构造函数 `Math.max(1, maxId)` → `maxId` | `上界小于1时被钳到1` |
 | `payloads` 换回 `HashMap` + 去掉 `synchronized` | `并发注册不会发出重复的ID`（如实记录是否稳定失败） |
 
-**E. 计数更新**：`PickRegistryTest` 15 → 18；Task 1 结束时全量 140 → 143。
+**E. 计数更新**：`PickRegistryTest` 15 → **17**（A 节，已完成，提交 `cd8a466`）
+→ **18**（B 节的并发测试落地后）；全量 140 → 142 → **143**。
 下游各任务的全量计数相应 +3（Task 3 → 143、Task 6 → 146、Task 7 → 146）。
+A 节与 B 节**分两批交付**：A 节不含并发测试，那一批是 17 / 142，别按 18 去凑。
 
 **F. 交接纪律**：评审者/实现者在任务边界必须 `git status --porcelain` 确认工作区干净。
 已经发生过一次：被中断的评审者在工作区留下了一个未还原的变异（`unregister` 的守卫被删），
