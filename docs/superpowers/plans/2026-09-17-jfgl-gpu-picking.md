@@ -2977,18 +2977,31 @@ Expected: BUILD SUCCESS；`Tests run: 168, Failures: 0, Skipped: 2`
 
 - [ ] **Step 8: 提交**
 
-```bash
-git add src/main/kotlin/com/bingbaihanji/jfgl/renderer/Gc.kt
-git commit -m "feat(pick): Gc 的 pickId / pickable / pick / pickRect
+**注意暂存清单要含 `RenderBatch.java`** —— Step 4 删掉了它的 `setViewportHeight`，
+漏掉的话提交不完整、工作区留脏。
 
-pickId 作为第七项进 save/restore 栈，于是 pickable 只是一行糖。副作用是
-块内的变换与裁剪改动也会在块尾回滚——与 save/restore 语义一致，块自包含。
+```bash
+git add src/main/kotlin/com/bingbaihanji/jfgl/renderer/Gc.kt \
+        src/main/java/com/bingbaihanji/jfgl/renderer/RenderBatch.java
+git commit -F - <<'EOF'
+feat(pick): Gc 的 pickId / pickable / pick / pickRect
+
+pickId 作为第三项进 save/restore 的整数栈，于是 pickable 只是一行糖。
+副作用是块内的变换与裁剪改动也会在块尾回滚——与 save/restore 语义一致，块自包含。
 
 ensureStyleCapacity 改成两个数组按各自每层宽度独立扩容：此前两者都是 2，
 共用一个 capacityLevels*2 的算法，pickId 进来后那个算法对整数部分就是错的，
-会让深层 save 时栈越界。
+会让相邻两层互相覆盖——restore 之后读到的是上一层的 fill 而不是 pickId，
+不报错，只是拾取到错的对象。
 
-emitTriangles 是全部绘制路径的唯一出口，ID 只需在那里传下去。"
+emitTriangles 是全部绘制路径的唯一出口，ID 只需在那里传下去。
+
+顺带删除 RenderBatch.setViewportHeight：Gc 是它最后一个调用方，本步已切到
+beginFrame（尺寸调整与拾取状态复位必须在同一处发生，分成两个方法迟早会有人
+只调其中一个）。放在本任务删而不是上一个，是为了让每一步的提交都能编译。
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>
+EOF
 ```
 
 ---
