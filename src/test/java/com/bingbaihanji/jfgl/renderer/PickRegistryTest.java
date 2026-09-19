@@ -1,5 +1,10 @@
 package com.bingbaihanji.jfgl.renderer;
 
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -199,5 +204,49 @@ class PickRegistryTest {
         assertSame("b", r.resolve(b));
         assertSame("d", r.resolve(c));
         assertSame("e", r.resolve(a));
+    }
+
+    @Test
+    void 并发注册不会发出重复的ID() throws Exception {
+        // 这是「冒烟探测器」，不是保证：并发缺陷的复现是概率性的。
+        // 它保证的只有「不误报」——正确实现永远通过；它不保证一定抓到错误实现，
+        // 所以下面的变异验证必须真的跑一遍并如实记录结果。
+        // 若把 payloads 换回 HashMap 后它只是偶尔失败，就该明说它抓不住，
+        // 而不是假装这里有了覆盖。
+        PickRegistry r = new PickRegistry();
+        int threads = 8;
+        int perThread = 2000;
+        Set<Integer> seen = Collections.synchronizedSet(new HashSet<>());
+        AtomicReference<String> failure = new AtomicReference<>();
+        CountDownLatch start = new CountDownLatch(1);
+        Thread[] workers = new Thread[threads];
+        for (int t = 0; t < threads; t++) {
+            workers[t] = new Thread(() -> {
+                try {
+                    start.await();   // 尽量让所有线程同时冲进 register，放大竞争窗口
+                    for (int i = 0; i < perThread; i++) {
+                        Object payload = new Object();
+                        int id = r.register(payload);
+                        if (!seen.add(id)) {
+                            failure.compareAndSet(null, "ID 重复发放: " + id);
+                            return;
+                        }
+                        if (r.resolve(id) != payload) {
+                            failure.compareAndSet(null, "ID " + id + " 解析到了别的对象");
+                            return;
+                        }
+                    }
+                } catch (Throwable e) {
+                    failure.compareAndSet(null, String.valueOf(e));
+                }
+            });
+            workers[t].start();
+        }
+        start.countDown();
+        for (Thread w : workers) {
+            w.join();
+        }
+        assertNull(failure.get(), "并发注册失败: " + failure.get());
+        assertEquals(threads * perThread, r.size(), "并发注册不该丢失任何一条映射");
     }
 }
