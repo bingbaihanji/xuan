@@ -232,4 +232,33 @@ class VertexWriterTest {
         w.vertex(1f, 1f, 0f, 0f, WHITE, 0);
         assertEquals(1, w.vertexCount());
     }
+
+    @Test
+    void 无拾取ID时不报告可拾取顶点() {
+        VertexWriter w = new VertexWriter(64);
+        w.setState(1, 0, 0, 10, 10);
+        w.vertex(0f, 0f, 0f, 0f, 0xFFFFFFFF, 0);
+        assertFalse(w.hasPickableVertices(),
+                "全部 ID 为 0 时不该声称有可拾取内容——否则每帧都会白跑一趟 ID pass");
+    }
+
+    @Test
+    void 出现非零ID后报告可拾取顶点() {
+        VertexWriter w = new VertexWriter(64);
+        w.setState(1, 0, 0, 10, 10);
+        w.vertex(0f, 0f, 0f, 0f, 0xFFFFFFFF, 0);
+        w.vertex(1f, 1f, 0f, 0f, 0xFFFFFFFF, 7);
+        assertTrue(w.hasPickableVertices());
+    }
+
+    @Test
+    void reset清掉可拾取标志() {
+        VertexWriter w = new VertexWriter(64);
+        w.setState(1, 0, 0, 10, 10);
+        w.vertex(0f, 0f, 0f, 0f, 0xFFFFFFFF, 9);
+        assertTrue(w.hasPickableVertices());
+        w.reset();
+        assertFalse(w.hasPickableVertices(),
+                "reset 是帧中途 flush 的分批边界，标志必须跟着分批复位");
+    }
 }

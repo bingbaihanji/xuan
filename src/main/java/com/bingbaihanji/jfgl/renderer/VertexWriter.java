@@ -78,6 +78,9 @@ public final class VertexWriter {
     /** 本帧是否已发生过帧中途 flush 请求。 */
     private boolean flushRequested = false;
 
+    /** 当前这批顶点里是否出现过非零的拾取 ID。{@link #reset()} 时复位。 */
+    private boolean hasPickable = false;
+
     /** 当前状态的纹理 ID。 */
     private int textureId;
 
@@ -181,6 +184,9 @@ public final class VertexWriter {
         buffer.putFloat(offset + 12, v);
         buffer.putInt(offset + 16, premultipliedRgba);
         buffer.putInt(offset + 20, id);
+        if (id != 0) {
+            hasPickable = true;
+        }
         vertexCount++;
     }
 
@@ -235,6 +241,7 @@ public final class VertexWriter {
         finishedCommands.clear();
         currentFirstVertex = NO_COMMAND;
         flushRequested = false;
+        hasPickable = false;
     }
 
     /**
@@ -346,6 +353,22 @@ public final class VertexWriter {
      */
     public boolean isFlushRequested() {
         return flushRequested;
+    }
+
+    /**
+     * 返回当前这批顶点里是否出现过非零的拾取 ID。
+     *
+     * <p>供 {@code RenderBatch} 决定是否需要渲染 ID pass：整帧都没用到拾取时
+     * 连清空带重画都省掉，不用拾取的应用因此零开销。
+     *
+     * <p>粒度是<strong>每批</strong>而不是每帧——{@link #reset()} 会清掉它，
+     * 而 {@code reset()} 正是帧中途 flush 的分批边界。这样每批各自贡献自己的 ID，
+     * 谁都不用回放历史。
+     *
+     * @return 本批是否含可拾取顶点
+     */
+    public boolean hasPickableVertices() {
+        return hasPickable;
     }
 
     /**
