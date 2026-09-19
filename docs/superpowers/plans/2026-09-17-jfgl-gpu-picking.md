@@ -689,8 +689,9 @@ A 节与 B 节**分两批交付**：A 节不含并发测试，那一批是 17 / 
 | Task 3 | 0（纯管道，常量已核到字节码，不写橡皮图章测试） | 143 |
 | Task 4 | +5 `FramebufferTest` | **148** |
 | Task 5 | +9 `PickBufferTest` | **157** |
-| Task 6、7 | 0（`RenderBatch`/`Gc` 的改动要真 GL 上下文，由校验器覆盖） | 157 |
-| Task 11 | 终验 | 157 |
+| Task 6 | +3 `VertexWriterTest`（`hasPickableVertices` 是纯 CPU 标志，能单测） | **160** |
+| Task 7 | 0（`RenderBatch` 的 ID pass 要真 GL 上下文，由 Task 10 校验器覆盖） | 160 |
+| Task 11 | 终验 | 160 |
 
 **数字对不上就停下来查**，不要为了让计数凑上而增删测试——已经踩过一次：
 派单时我按「并发测试也算进去」写了 18 / 143，实现者只交了 17 / 142，
@@ -2186,7 +2187,7 @@ git commit -m "feat(pick): VertexWriter 记录本批是否含可拾取顶点
 - [ ] **Step 8: 编译并跑全量测试**
 
 Run: `mvn -o compile && mvn -o test`
-Expected: BUILD SUCCESS；`Tests run: 157, Failures: 0, Skipped: 2`
+Expected: BUILD SUCCESS；`Tests run: 160, Failures: 0, Skipped: 2`
 
 （`beginFrame` 此刻还没有调用方，`Gc` 仍在用 `setViewportHeight`——这是刻意的，
 见 Step 3 的说明。）
@@ -2483,7 +2484,7 @@ ID pass 保持裁剪开启并复用同一套 scissor 换算，被裁掉的部分
 - [ ] **Step 7: 编译并跑全量测试**
 
 Run: `mvn -o compile && mvn -o test`
-Expected: BUILD SUCCESS；`Tests run: 157, Failures: 0, Skipped: 2`
+Expected: BUILD SUCCESS；`Tests run: 160, Failures: 0, Skipped: 2`
 
 - [ ] **Step 8: 提交**
 
@@ -3162,7 +3163,7 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
 mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
     -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.PickVerifierKt"
 ```
-Expected: 测试 157 通过 / 0 失败 / 2 跳过；两个校验器都退出码 0。
+Expected: 测试 160 通过 / 0 失败 / 2 跳过；两个校验器都退出码 0。
 
 - [ ] **Step 6: 提交**
 
@@ -3175,7 +3176,7 @@ git commit -m "docs: 补拾取的使用要点与验证方式"
 
 ## 完成标准
 
-- [ ] `mvn -o test` → 157 通过 / 0 失败 / 2 跳过
+- [ ] `mvn -o test` → 160 通过 / 0 失败 / 2 跳过
 - [ ] `PipelineVerifier` 退出码 0（原有回归网未被破坏）
 - [ ] `PickVerifier` 退出码 0
 - [ ] 三条变异验证都**实际注入并确认失败**过，且已回滚（`git diff` 为空）
