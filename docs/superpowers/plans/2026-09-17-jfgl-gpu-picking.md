@@ -2389,6 +2389,32 @@ EOF
     private int pickPassCount = 0;
 ```
 
+**同时必须改掉 `RenderBatch` 的类级 Javadoc。** 它现在写着（第 48 行）：
+
+> `submit(VertexWriter)` 是幂等的外观操作，**不持有"本帧已提交"之类的状态**
+
+上一句在本步之后就**不成立了**：`pickBufferCleared` 与 `pickBufferValid` 正是跨提交存活的
+每帧状态（`Gc` 一帧内会多次调用 `submit`——`endFrame` 一次 + 每次 `flushIfNeeded` 一次）。
+留着不改，下一个人会照着这行注释推理，而「跳过优化」会**静默失效**：要么每批都重新清空
+拾取缓冲（把前一批的 ID 抹掉，只有最后一批可拾取），要么读到上一帧的陈旧 ID。
+
+把那段改成：
+
+```java
+ * <h2>可以在同一帧内多次调用</h2>
+ * <p>{@link #submit(VertexWriter)} 每次调用都做同样的事，帧中途 flush
+ * （见 {@link VertexWriter#isFlushRequested()} 的消费方契约）与帧末提交走的是同一条路径。
+ * 每次提交结束时都会把 GL 状态收回到中性（解绑 VAO、解绑着色器、关闭混合与裁剪测试），
+ * 因此上一批的残留不会影响下一批。
+ *
+ * <p><strong>但它并非无状态</strong>：拾取相关的一组标志
+ * （{@code pickBufferCleared} / {@code pickBufferValid} / {@code pickPassCount}）
+ * 跨同一帧内的多次提交存活。它们的<strong>唯一</strong>复位点是
+ * {@link #beginFrame(int, int)}——每帧必须恰好调用一次，且要在本帧第一次
+ * {@code submit} 之前。漏调或不调，表现为「只有最后一批可拾取」或
+ * 「拾取到上一帧已消失的对象」，两者都不报错。
+```
+
 - [ ] **Step 2: 构造函数里创建它们**
 
 在构造函数中 `this.whiteTexture = ...` 之后加：
