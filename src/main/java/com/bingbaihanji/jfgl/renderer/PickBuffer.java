@@ -72,6 +72,15 @@ public final class PickBuffer implements Disposable {
     }
 
     /**
+     * 返回底层帧缓冲的 FBO ID，供调用方自行绑定。
+     *
+     * @return FBO 的 ID
+     */
+    public int framebufferId() {
+        return framebuffer.id();
+    }
+
+    /**
      * 把整个缓冲清成 0（即「什么都没命中」）。
      *
      * <p>走 {@code glClearBufferuiv} 而不是 {@code glClearColor} + {@code glClear}：

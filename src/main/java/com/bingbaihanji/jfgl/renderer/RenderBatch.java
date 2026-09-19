@@ -45,10 +45,17 @@ import static org.lwjgl.opengl.GL30.glVertexAttribIPointer;
  * </ol>
  *
  * <h2>可以在同一帧内多次调用</h2>
- * <p>{@link #submit(VertexWriter)} 是幂等的外观操作，不持有"本帧已提交"之类的状态：
- * 帧中途 flush（见 {@link VertexWriter#isFlushRequested()} 的消费方契约）与帧末提交走的是同一条路径。
+ * <p>{@link #submit(VertexWriter)} 每次调用都做同样的事，帧中途 flush
+ * （见 {@link VertexWriter#isFlushRequested()} 的消费方契约）与帧末提交走的是同一条路径。
  * 每次提交结束时都会把 GL 状态收回到中性（解绑 VAO、解绑着色器、关闭混合与裁剪测试），
  * 因此上一批的残留不会影响下一批。
+ *
+ * <p><strong>但它并非无状态</strong>：拾取相关的一组标志
+ * （{@code pickBufferCleared} / {@code pickBufferValid} / {@code pickPassCount}）
+ * 跨同一帧内的多次提交存活。它们的<strong>唯一</strong>复位点是
+ * {@link #beginFrame(int, int)}——每帧必须恰好调用一次，且要在本帧第一次
+ * {@code submit} 之前。漏调或不调，表现为「只有最后一批可拾取」或
+ * 「拾取到上一帧已消失的对象」，两者都不报错。
  *
  * <h2>混合与颜色</h2>
  * <p>颜色由 {@link VertexFormat#packPremultiplied} 打包为<strong>预乘 alpha</strong>，
@@ -92,11 +99,56 @@ public final class RenderBatch implements Disposable {
             }
             """;
 
+    /**
+     * ID pass 的顶点着色器：只把拾取 ID 透传下去，位置同样已在 CPU 端烘焙好。
+     *
+     * <p>与颜色着色器分开、而不是在颜色着色器里多输出一个变量：
+     * 颜色 pass 是热路径，不该为它用不到的东西多背一个 varying。
+     *
+     * <p>{@code flat} 不可省略——ID 是整数，跨三角形插值出来的中间值
+     * 对应不存在的对象。
+     */
+    private static final String PICK_VERTEX_SHADER = """
+            #version 330 core
+            layout(location = 0) in vec2 aPos;
+            layout(location = 3) in uint aId;
+            flat out uint vId;
+            void main() {
+                gl_Position = vec4(aPos, 0.0, 1.0);
+                vId = aId;
+            }
+            """;
+
+    /** ID pass 的片段着色器：直接写出 ID，不看颜色、不看 alpha、不采样纹理。 */
+    private static final String PICK_FRAGMENT_SHADER = """
+            #version 330 core
+            flat in uint vId;
+            out uint fragId;
+            void main() {
+                fragId = vId;
+            }
+            """;
+
     /** GL 抽象层，资源类操作（VAO/VBO/纹理/着色器）都经它转发。 */
     private final GLAbstraction gl;
 
     /** 唯一的着色器程序。 */
     private final ShaderProgram shader;
+
+    /** ID pass 使用的着色器程序。 */
+    private final ShaderProgram pickShader;
+
+    /** 拾取缓冲，与颜色 pass 同尺寸。 */
+    private final PickBuffer pickBuffer;
+
+    /** 本帧的拾取缓冲是否已被清空（每帧最多清一次，懒执行）。 */
+    private boolean pickBufferCleared = false;
+
+    /** 本帧渲染过 ID pass 后为 true；{@link #beginFrame} 时复位。 */
+    private boolean pickBufferValid = false;
+
+    /** 累计执行过的 ID pass 次数，仅供校验器断言「跳过优化」确实生效。 */
+    private int pickPassCount = 0;
 
     /** 可增长的顶点缓冲，每帧整体覆盖上传。 */
     private final VertexBuffer vertexBuffer;
@@ -127,6 +179,9 @@ public final class RenderBatch implements Disposable {
         this.shader = gl.createShader(VERTEX_SHADER, FRAGMENT_SHADER);
         this.vertexBuffer = new VertexBuffer(gl, initialVertexCapacity * VertexFormat.STRIDE_BYTES);
         this.whiteTexture = gl.createTexture(1, 1, new int[]{0xFFFFFFFF});
+        this.pickShader = gl.createShader(PICK_VERTEX_SHADER, PICK_FRAGMENT_SHADER);
+        // 尺寸先给 1x1 占位，第一帧 beginFrame 时会按真实尺寸重建。
+        this.pickBuffer = new PickBuffer(gl, 1, 1);
         createVao();
     }
 
@@ -210,6 +265,28 @@ public final class RenderBatch implements Disposable {
     }
 
     /**
+     * 开始一帧：设置视口高度、把拾取缓冲调整到帧缓冲尺寸、复位本帧的拾取状态。
+     *
+     * <p>取代了早先的 {@code setViewportHeight}：尺寸调整与状态复位必须在同一处发生，
+     * 分成两个方法迟早会有人只调其中一个。
+     *
+     * <p>拾取缓冲的尺寸检查放在这里而不是 reshape 回调里，是为了让任何来源的尺寸变化
+     * 都被覆盖到——多一条路径就多一次漏掉的机会，而这里的开销只是一次整数比较。
+     *
+     * @param width  帧缓冲宽度（像素），必须为正
+     * @param height 帧缓冲高度（像素），必须为正
+     */
+    public void beginFrame(int width, int height) {
+        this.viewportHeight = height;
+        pickBuffer.ensureSize(width, height);
+        pickBufferCleared = false;
+        // 本帧还没渲染 ID pass 之前，缓冲里装的是上一帧的结果。标为无效，
+        // 这样 pick() 会诚实地返回「没命中」，而不是拿陈旧的 ID 去注册表里查——
+        // 那会拾取到早已消失的对象，而画面完全正常。
+        pickBufferValid = false;
+    }
+
+    /**
      * 返回 1×1 白色纹理的 ID，纯色绘制时绑定它。
      *
      * <p>该纹理是 {@code 0xFFFFFFFF} 的一个像素，即 RGBA 全为 255 的不透明白色；
@@ -277,6 +354,13 @@ public final class RenderBatch implements Disposable {
             glDrawArrays(GL_TRIANGLES, command.firstVertex(), command.vertexCount());
         }
 
+        // 颜色 pass 画完后再走 ID pass：复用同一份 VBO、同一张命令表，只换程序。
+        // 放在这里而不是另起一趟，是因为此刻 VAO/VBO/属性指针与 scissor 都正好是
+        // 绘制所需的状态。
+        if (writer.hasPickableVertices()) {
+            drawPickPass(commands);
+        }
+
         glDisable(GL_SCISSOR_TEST);
         gl.bindVao(0);
         shader.unuse();
@@ -301,6 +385,103 @@ public final class RenderBatch implements Disposable {
     }
 
     /**
+     * 用 ID 着色器把同一批命令重画进拾取缓冲。
+     *
+     * <p><strong>前置条件</strong>：调用方已绑定 VAO/VBO、已配置属性指针、
+     * 已启用裁剪测试，且颜色 pass 的绘制循环刚刚结束。
+     *
+     * <p><strong>混合必须关闭</strong>：对整数附件开混合是无效操作。
+     *
+     * <p><strong>裁剪必须保持开启</strong>：ID pass 复用同一套 scissor 换算，
+     * 因此被裁掉的部分不可拾取。否则用户点了看不见的地方却命中，
+     * 而画面完全正常——典型的静默错误。
+     *
+     * @param commands 本批的绘制命令
+     */
+    private void drawPickPass(List<DrawCommand> commands) {
+        if (!pickBufferCleared) {
+            pickBuffer.clear();
+            pickBufferCleared = true;
+        }
+
+        int previousFramebuffer = gl.currentFramebufferBinding();
+        gl.bindFramebuffer(pickBufferId());
+
+        // 整数附件不能开混合；ID 被插值成「零点几个对象」也没有意义。
+        gl.disableBlend();
+        pickShader.use();
+
+        for (DrawCommand command : commands) {
+            if (command.vertexCount() == 0) {
+                continue;
+            }
+            applyScissor(command);
+            glDrawArrays(GL_TRIANGLES, command.firstVertex(), command.vertexCount());
+        }
+
+        pickShader.unuse();
+        // 必须恢复：openglfx 渲染到它自己的 FBO，不恢复的话下一帧会画进拾取缓冲。
+        gl.bindFramebuffer(previousFramebuffer);
+
+        pickPassCount++;
+        pickBufferValid = true;
+    }
+
+    /**
+     * 返回拾取缓冲的 FBO ID。
+     *
+     * @return FBO 的 ID
+     */
+    private int pickBufferId() {
+        return pickBuffer.framebufferId();
+    }
+
+    /**
+     * 读回一个像素的拾取 ID。
+     *
+     * <p>本帧没有渲染过 ID pass 时返回 0（「未命中」）而不做读回：
+     * 此时缓冲里是上一帧的陈旧数据，读出来会拾取到早已消失的对象。
+     *
+     * @param x 用户坐标 x
+     * @param y 用户坐标 y
+     * @return 命中的 ID，未命中或本帧无拾取内容时为 0
+     */
+    public int readPickPixel(int x, int y) {
+        if (!pickBufferValid) {
+            return 0;
+        }
+        return pickBuffer.readPixel(x, y);
+    }
+
+    /**
+     * 读回一块区域内的拾取命中（按 ID 升序，每个附带首次出现坐标）。
+     *
+     * @param x 用户坐标左边缘
+     * @param y 用户坐标上边缘
+     * @param w 宽度
+     * @param h 高度
+     * @return 区域内出现过的命中，按 ID 升序；本帧无拾取内容时为空列表
+     */
+    public List<PickPixel> readPickRect(int x, int y, int w, int h) {
+        if (!pickBufferValid) {
+            return List.of();
+        }
+        return pickBuffer.readRect(x, y, w, h);
+    }
+
+    /**
+     * 返回累计执行过的 ID pass 次数。
+     *
+     * <p>仅供校验器断言「无拾取对象时整趟跳过」确实生效。没有它，
+     * 那条优化就只是注释里的一句承诺。
+     *
+     * @return ID pass 执行次数
+     */
+    public int pickPassCount() {
+        return pickPassCount;
+    }
+
+    /**
      * 释放本类创建的全部 GL 资源：着色器程序、VBO、VAO、白色纹理。
      *
      * <p>幂等：重复调用无副作用。释放后本对象不可再用于绘制
@@ -312,6 +493,8 @@ public final class RenderBatch implements Disposable {
             return;
         }
         shader.dispose();
+        pickShader.dispose();
+        pickBuffer.dispose();
         vertexBuffer.dispose();
         gl.deleteVao(vao);
         glDeleteTextures(whiteTexture);
