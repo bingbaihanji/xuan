@@ -9,7 +9,10 @@ import java.util.Map;
  * 拾取 ID 的分配器与 {@code id → payload} 映射表。
  *
  * <p>纯内存实现，<strong>不做任何 GL 调用</strong>，因此可以脱离窗口单测——
- * 这也是整个拾取子系统里唯一能被常规单测覆盖的部分。
+ * 这是拾取子系统里<strong>本期唯一</strong>能被常规单测覆盖的部分。
+ * 这句话只描述现状，不构成「其余部分不必写单测」的许可：后续的
+ * {@code Framebuffer} / {@code PickBuffer} 只依赖 {@code GLAbstraction} 这个
+ * <strong>接口</strong>，用假实现就能做到零 GL 上下文的单测。
  *
  * <h2>ID 空间的规则</h2>
  * <ol>
@@ -103,13 +106,21 @@ public final class PickRegistry {
      */
     public void unregister(int id) {
         if (id == 0) {
+            // 双保险，不是唯一防线：0 从不会被 register 分配，所以下面那道
+            // containsKey 守卫本身就让 unregister(0) 成了 no-op。
+            // 留着这行是为了把「0 是保留值」的意图写在方法开头。
             return;
         }
-        // 必须先判后删：payload 允许为 null，remove() 的返回值无法区分
-        // 「注册过 null」与「没注册过」，所以判据只能是 containsKey。
-        // 若写成 remove() != null || containsKey() 就错了——remove() 已经先把条目删掉，
-        // 后面的 containsKey() 恒为 false，那个 ID 永远回收不了。
-        if (containsKey(id)) {
+        // 守卫是承重的，不能省：没有它，unregister(999) 会把一个从未分配过的 ID
+        // 塞进空闲表，重复注销同一个 ID 会把它压入两次——此后两次 register 弹出
+        // 同一个 ID，两个活对象共用一个拾取 ID，payloads.put 静默覆盖前者。
+        //
+        // 判据只能是 containsKey，且必须「先判后删」：payload 允许为 null，
+        // 单看 remove() 的返回值（或 resolve(id) != null）无法区分「注册过一个空对象」
+        // 与「根本没注册过」，那个 ID 就永远回收不了。也不能写成
+        // remove() != null || containsKey()——remove() 已经先把条目删掉，
+        // 后面的 containsKey() 恒为 false。
+        if (payloads.containsKey(id)) {
             payloads.remove(id);
             freeIds.push(id);
         }
@@ -125,7 +136,19 @@ public final class PickRegistry {
         return payloads.get(id);
     }
 
-    /** 清空全部映射与空闲表，并把 ID 计数归零。 */
+    /**
+     * 清空全部映射与空闲表，并把 ID 计数归零。
+     *
+     * <p><strong>警告：此前发出的所有 ID 立刻失效，并且会被重新发给别的 payload。</strong>
+     * 计数器归 1 之后，下一次 {@link #register} 就会发出 1——那很可能正是调用方
+     * 手里缓存着的某个旧 ID。它现在指向一个毫不相干的对象，而且 {@code resolve}
+     * 不会报错，只会安静地返回错的对象。
+     *
+     * <p>这与「绝不环绕」的承诺并不矛盾：环绕是分配器<em>自己</em>把仍活着的 ID
+     * 复用出去，而 {@code clear} 是调用方主动宣告旧映射整体作废。因此调用方在
+     * {@code clear()} 之后<strong>必须丢弃手上缓存的每一个 ID</strong>，
+     * 不能拿旧 ID 去 {@link #resolve}，也不能拿它去 {@link #unregister}。
+     */
     public void clear() {
         payloads.clear();
         freeIds.clear();
@@ -139,18 +162,5 @@ public final class PickRegistry {
      */
     public int size() {
         return payloads.size();
-    }
-
-    /**
-     * 判断一个 ID 是否登记在册。
-     *
-     * <p>之所以不能直接用 {@code resolve(id) != null}：payload 允许为 {@code null}，
-     * 那样会把「注册过一个空对象」误判成「没注册」，于是它永远无法被回收。
-     *
-     * @param id 待查的 ID
-     * @return 是否登记在册
-     */
-    private boolean containsKey(int id) {
-        return payloads.containsKey(id);
     }
 }

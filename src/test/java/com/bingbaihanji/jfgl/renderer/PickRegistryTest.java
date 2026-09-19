@@ -70,6 +70,16 @@ class PickRegistryTest {
         r.unregister(id);
         r.unregister(id);   // 重复注销同样无害
         assertNull(r.resolve(id));
+
+        // 上面两次注销各自都可能往空闲表里灌一条脏数据：unregister(999) 灌入
+        // 从未分配过的 999，重复注销把 id 推入两次。脏数据的表现不是报错，
+        // 而是后续两次 register 弹出同一个 ID，两个对象共用一个拾取 ID
+        // （payloads.put 静默覆盖前者），代价是「拾取到毫不相干的对象」。
+        int x = r.register("x");
+        int y = r.register("y");
+        assertNotEquals(x, y, "注销的副作用不该泄漏到后续分配：两次 register 必须拿到不同的 ID");
+        assertSame("x", r.resolve(x));
+        assertSame("y", r.resolve(y));
     }
 
     @Test
@@ -123,6 +133,14 @@ class PickRegistryTest {
     }
 
     @Test
+    void 上界小于1时被钳到1() {
+        PickRegistry r = new PickRegistry(0);
+        assertEquals(1, r.register("a"), "上界被钳到 1，仍能发出恰好一个 ID");
+        assertThrows(IllegalStateException.class, () -> r.register("b"),
+                "钳位后上界是 1，第二个 ID 就该到顶");
+    }
+
+    @Test
     void 到顶后注销再注册仍可用() {
         PickRegistry r = new PickRegistry(2);   // 同上：1、2 用满即到顶
         int a = r.register("a");
@@ -152,6 +170,19 @@ class PickRegistryTest {
         assertNotEquals(c, d, "clear() 之后发出的 ID 必须互不相同");
         assertSame("c", r.resolve(c));
         assertSame("d", r.resolve(d));
+    }
+
+    @Test
+    void clear之后ID从1重新发放旧ID会指向新对象() {
+        PickRegistry r = new PickRegistry();
+        int stale = r.register("a");           // 1，调用方把它缓存了起来
+        r.clear();
+        int fresh = r.register("b");
+        assertEquals(1, fresh, "clear() 必须把计数器归 1，否则这个逃生口不归还任何 ID 空间");
+        assertEquals(stale, fresh, "重发是规格要求的：同一个 ID 现在指向另一个对象");
+        assertSame("b", r.resolve(stale),
+                "拿 clear() 之前缓存的 ID 去 resolve，会拿到毫不相干的对象——"
+                        + "调用方必须在 clear() 后丢弃所有缓存的 ID");
     }
 
     @Test
