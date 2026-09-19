@@ -281,14 +281,17 @@ package com.bingbaihanji.jfgl.renderer;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 拾取 ID 的分配器与 {@code id → payload} 映射表。
  *
  * <p>纯内存实现，<strong>不做任何 GL 调用</strong>，因此可以脱离窗口单测——
- * 这也是整个拾取子系统里唯一能被常规单测覆盖的部分。
+ * 这也是整个拾取子系统里<strong>本期唯一</strong>能被常规单测覆盖的部分。
+ * 说「本期」是有意的：后续的 {@code Framebuffer} / {@code PickBuffer} 只依赖
+ * {@code GLAbstraction} 这个<em>接口</em>，喂一个假实现就能零 GL 上下文单测，
+ * 别把这句话读成「那些部分不用写单测」的许可证。
  *
  * <h2>ID 空间的规则</h2>
  * <ol>
@@ -308,7 +311,20 @@ import java.util.Map;
  * <p>注册发生在<strong>数据变化时，不是每帧</strong>。本表是跨帧稳定的映射，
  * 每帧重新注册会耗尽 ID 空间并让 {@code unregister} 的语义失效。
  *
- * <p>非线程安全；与 {@code Gc} 一样只在 GL 线程使用。
+ * <h2>线程安全</h2>
+ * <p>注册（随数据变化，通常发生在 JavaFX 线程）与解析（拾取查询，在 GL 线程）
+ * 天然分处两个线程，所以本类<strong>必须</strong>线程安全，而不是把「只能在 GL 线程
+ * 调用」写进文档了事——那条约束与自然用法相悖，迟早被违反，而违反的表现是
+ * {@link #resolve} 静默返回 {@code null}（表现为「什么都没拾取到」），
+ * 又是一个不崩的静默失败。
+ *
+ * <p>分工：{@code payloads} 用 {@link ConcurrentHashMap}，使 {@link #resolve}
+ * 保持<strong>无锁</strong>——{@code pickRect} 要逐像素解析，这是查询热路径；
+ * ID 分配状态（{@code freeIds} / {@code nextId}）由 {@code lock} 护住，
+ * 整个 {@link #register} / {@link #unregister} / {@link #clear} 在同一把锁内完成
+ * （分配是「取空闲表 → 递增计数器 → 写入映射」的复合操作，
+ * 单靠并发容器不足以保证原子性）。按上面的用法约定，注册不是热路径，
+ * 锁的开销无关紧要。
  */
 public final class PickRegistry {
 
@@ -326,17 +342,31 @@ public final class PickRegistry {
      */
     private static final int DEFAULT_MAX_ID = Integer.MAX_VALUE - 1;
 
-    /** 已分配的 ID → payload。 */
-    private final Map<Integer, Object> payloads = new HashMap<>();
+    /**
+     * 已分配的 ID → payload。
+     *
+     * <p>用 {@link ConcurrentHashMap} 而不是 {@code HashMap}：{@link #resolve}
+     * 是查询热路径（{@code pickRect} 逐像素解析），必须无锁且不被撕裂。
+     * 分配侧的原子性由 {@link #lock} 负责，不靠这个容器。
+     */
+    private final Map<Integer, Object> payloads = new ConcurrentHashMap<>();
 
-    /** 已回收、可供复用的 ID（LIFO）。 */
+    /** 已回收、可供复用的 ID（LIFO）。由 {@link #lock} 护住。 */
     private final Deque<Integer> freeIds = new ArrayDeque<>();
 
-    /** 下一个待分配的 ID。 */
+    /** 下一个待分配的 ID。由 {@link #lock} 护住。 */
     private int nextId = 1;
 
     /** ID 上界（含）。 */
     private final int maxId;
+
+    /**
+     * 护住 ID 分配状态的锁。
+     *
+     * <p>只锁「取空闲表 → 递增计数器 → 写入映射」这个复合操作。
+     * 不加在 {@link #resolve} 上——那是热路径，靠 {@link ConcurrentHashMap} 本身就够。
+     */
+    private final Object lock = new Object();
 
     /** 用默认上界创建注册表。 */
     public PickRegistry() {
@@ -360,19 +390,21 @@ public final class PickRegistry {
      * @throws IllegalStateException ID 空间耗尽时
      */
     public int register(Object payload) {
-        int id;
-        if (!freeIds.isEmpty()) {
-            id = freeIds.pop();
-        } else {
-            if (nextId > maxId) {
-                throw new IllegalStateException(
-                        "拾取 ID 已耗尽（上界 " + maxId + "）：请检查是否在每帧重复注册，"
-                                + "或对不再需要的对象调用 unregister");
+        synchronized (lock) {
+            int id;
+            if (!freeIds.isEmpty()) {
+                id = freeIds.pop();
+            } else {
+                if (nextId > maxId) {
+                    throw new IllegalStateException(
+                            "拾取 ID 已耗尽（上界 " + maxId + "）：请检查是否在每帧重复注册，"
+                                    + "或对不再需要的对象调用 unregister");
+                }
+                id = nextId++;
             }
-            id = nextId++;
+            payloads.put(id, payload);
+            return id;
         }
-        payloads.put(id, payload);
-        return id;
     }
 
     /**
@@ -388,11 +420,16 @@ public final class PickRegistry {
      */
     public void unregister(int id) {
         if (id == 0) {
+            // 双保险，不是唯一防线：0 永远不会出现在 payloads 里（register 从 1 开始），
+            // 下面那个 containsKey 守卫本来就会挡掉它。留着是为了让「0 是保留值」这条
+            // 规则在代码里看得见——别把这行当成这里唯一的保护。
             return;
         }
-        if (payloads.containsKey(id)) {
-            payloads.remove(id);
-            freeIds.push(id);
+        synchronized (lock) {
+            if (payloads.containsKey(id)) {
+                payloads.remove(id);
+                freeIds.push(id);
+            }
         }
     }
 
@@ -406,11 +443,23 @@ public final class PickRegistry {
         return payloads.get(id);
     }
 
-    /** 清空全部映射与空闲表，并把 ID 计数归零。 */
+    /**
+     * 清空全部映射与空闲表，并把 ID 计数归零。
+     *
+     * <p><strong>此前发出的所有 ID 立即失效。</strong>计数器归 1 之后，那些 ID 会被
+     * 重新发给<em>别的</em> payload——拿 {@code clear()} 之前缓存的 ID 去
+     * {@link #resolve}，会拿到一个毫不相干的对象，而且不报错。
+     * 调用方必须丢弃手上每一个缓存的 ID。
+     *
+     * <p>重发是有意的：{@code clear()} 是生命周期逃生口，若不归还 ID 空间，
+     * 它就退化回「{@code maxId} 耗尽」的原样，失去存在的意义。
+     */
     public void clear() {
-        payloads.clear();
-        freeIds.clear();
-        nextId = 1;
+        synchronized (lock) {
+            payloads.clear();
+            freeIds.clear();
+            nextId = 1;
+        }
     }
 
     /**
@@ -432,12 +481,13 @@ public final class PickRegistry {
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `mvn -o test -Dtest=PickRegistryTest`
-Expected: `Tests run: 15, Failures: 0, Errors: 0` — BUILD SUCCESS
+Expected: `Tests run: 18, Failures: 0, Errors: 0` — BUILD SUCCESS
+（原计划此处是 15；评审追加了 A 节两个新测试与 B 节并发测试，见下方「Task 1 评审追加」。）
 
 - [ ] **Step 5: 跑全量测试确认没有破坏别的**
 
 Run: `mvn -o test`
-Expected: `Tests run: 140, Failures: 0, Errors: 0, Skipped: 2`
+Expected: `Tests run: 143, Failures: 0, Errors: 0, Skipped: 2`
 
 - [ ] **Step 6: 提交**
 
@@ -459,6 +509,152 @@ remove 已先删掉条目、后面的 containsKey 必然为 false，第二个条
 负数而 nextId > maxId 对负数为假，「绝不环绕」的承诺就破了。边界实际不可达
 （2^31 条登记约 100 GB，内存先炸），但修正代价是一个常量。"
 ```
+
+---
+
+### Task 1 评审追加（实现完成后由代码质量评审发现）
+
+Task 1 的实现提交之后，代码质量评审跑了变异验证，发现**三处行为正确但没有任何测试防守**——
+把实现改错，15 个测试依然全绿。本项目的缺陷多是「静默错误输出」，这类缺口是最危险的一类：
+测试读起来像覆盖了，实际没有，失败表现是「拾取到毫不相干的对象」而不是报错。
+
+还有两处是**规格层面的决定**，写进 `docs/superpowers/specs/2026-09-17-jfgl-gpu-picking-design.md`：
+
+- §5 规则 2 原本写「计数到 `0xFFFFFFFF` 时抛异常」，与实现的 `Integer.MAX_VALUE - 1`
+  矛盾（读规格的人会以为 ID 空间是实际的两倍）。已改为说明**有意只用正半区**
+  （`Int` 对 `uint` 顶点属性的问题），以及为什么还要再留一格。
+- §5 新增规则 5 与 §7 新增「注册侧」一段：**注册表必须线程安全**。
+  `pickAsync` 只解决了查询的跨线程，注册侧没有交代；而注册的自然位置是
+  JavaFX 线程（数据变化时），解析在 GL 线程——普通 `HashMap` 在这两边的竞争下
+  会丢条目，表现为 `resolve` 静默返回 `null`（「什么都没拾取到」），不崩。
+  这不属于「文档约束一下就行」：那条约束与自然用法相悖，迟早被违反。
+
+**A. 补三条防守测试**（放在 `PickRegistryTest.java` 末尾）
+
+```java
+    @Test
+    void 上界小于1时被钳到1() {
+        PickRegistry r = new PickRegistry(0);
+        assertEquals(1, r.register("a"), "上界被钳到 1，仍能发出恰好一个 ID");
+        assertThrows(IllegalStateException.class, () -> r.register("b"),
+                "钳位后上界是 1，第二个 ID 就该到顶");
+    }
+
+    @Test
+    void clear之后ID从1重新发放旧ID会指向新对象() {
+        PickRegistry r = new PickRegistry();
+        int stale = r.register("a");           // 1，调用方把它缓存了起来
+        r.clear();
+        int fresh = r.register("b");
+        assertEquals(1, fresh, "clear() 必须把计数器归 1，否则这个逃生口不归还任何 ID 空间");
+        assertEquals(stale, fresh, "重发是规格要求的：同一个 ID 现在指向另一个对象");
+        assertSame("b", r.resolve(stale),
+                "拿 clear() 之前缓存的 ID 去 resolve，会拿到毫不相干的对象——"
+                        + "调用方必须在 clear() 后丢弃所有缓存的 ID");
+    }
+```
+
+同时把 `注销不存在的ID是无副作用的` **延伸**（不新增方法）到两次注销之后——这是三条里最重要的一条：
+
+```java
+        // 上面两次注销各自都可能往空闲表里灌一条脏数据：unregister(999) 灌入
+        // 从未分配过的 999，重复注销把 id 推入两次。脏数据的表现不是报错，
+        // 而是后续两次 register 弹出同一个 ID，两个对象共用一个拾取 ID。
+        int x = r.register("x");
+        int y = r.register("y");
+        assertNotEquals(x, y, "注销的副作用不该泄漏到后续分配：两次 register 必须拿到不同的 ID");
+        assertSame("x", r.resolve(x));
+        assertSame("y", r.resolve(y));
+```
+
+**B. 改成线程安全**（规格 §5 规则 5）
+
+- `payloads`：`HashMap` → `ConcurrentHashMap`，让 `resolve` 保持无锁
+  （`pickRect` 逐像素解析，是查询热路径）。
+- 新增 `private final Object lock = new Object();`，**整个** `register` / `unregister` /
+  `clear` 都在锁内完成。分配是「取空闲表 → 递增计数器 → 写入映射」的复合操作，
+  单靠并发容器不足以保证原子性（两个线程会读到同一个 `nextId`）。
+- `unregister` 的 `id == 0` 早返回保留，但补注释说明它是**双保险、不是唯一防线**
+  （真正的防线是 `containsKey` 守卫），否则它会让这个方法**看起来**覆盖了
+  「0 是保留值」那条规则。
+- `clear()` 的 Javadoc 必须写明：**此前发出的所有 ID 立即失效，可能被重发给别的
+  payload，调用方必须丢弃每一个缓存的 ID**。类的 Javadoc 花了 12 行论证「环绕不可接受」
+  用的就是这个 hazard，却在 `clear()` 上用一行带过。
+
+配套测试（`PickRegistryTest.java` 末尾）：
+
+```java
+    @Test
+    void 并发注册不会发出重复的ID() throws Exception {
+        // 这是「冒烟探测器」，不是保证：并发缺陷的复现是概率性的。
+        // 它能保证的只有「不误报」——正确实现永远通过；它不能保证一定抓到错误实现，
+        // 所以变异验证必须真的跑一遍并如实记录结果。若换成 HashMap 后它只是偶尔失败，
+        // 就该在报告里明说它抓不住，而不是假装有覆盖。
+        PickRegistry r = new PickRegistry();
+        int threads = 8;
+        int perThread = 2000;
+        Set<Integer> seen = Collections.synchronizedSet(new HashSet<>());
+        AtomicReference<String> failure = new AtomicReference<>();
+        CountDownLatch start = new CountDownLatch(1);
+        Thread[] workers = new Thread[threads];
+        for (int t = 0; t < threads; t++) {
+            workers[t] = new Thread(() -> {
+                try {
+                    start.await();
+                    for (int i = 0; i < perThread; i++) {
+                        Object payload = new Object();
+                        int id = r.register(payload);
+                        if (!seen.add(id)) {
+                            failure.compareAndSet(null, "ID 重复发放: " + id);
+                            return;
+                        }
+                        if (r.resolve(id) != payload) {
+                            failure.compareAndSet(null, "ID " + id + " 解析到了别的对象");
+                            return;
+                        }
+                    }
+                } catch (Throwable e) {
+                    failure.compareAndSet(null, String.valueOf(e));
+                }
+            });
+            workers[t].start();
+        }
+        start.countDown();
+        for (Thread w : workers) {
+            w.join();
+        }
+        assertNull(failure.get(), "并发注册失败: " + failure.get());
+        assertEquals(threads * perThread, r.size(), "并发注册不该丢失任何一条映射");
+    }
+```
+
+需要补的 import：`java.util.Collections`、`java.util.HashSet`、`java.util.Set`、
+`java.util.concurrent.CountDownLatch`、`java.util.concurrent.atomic.AtomicReference`。
+
+**C. 清理**（评审的 Minor）
+
+- 内联一次性的私有 `containsKey(int)` 辅助方法：它只被调用一次，名字与 `Map.containsKey`
+  同名，还把「为什么单看 `remove()` 返回值不行」的解释拆到了两处。
+  内联回 `if (payloads.containsKey(id))`，那段解释**只保留一份**。
+- 类 Javadoc 的「唯一能被常规单测覆盖的部分」软化为「**本期唯一**」，
+  并说明 `Framebuffer` / `PickBuffer` 只依赖 `GLAbstraction` 接口、喂假实现即可单测——
+  否则这句话会被下一个任务读成「那些部分不用写单测」的许可证。
+
+**D. 变异验证**（每条都要做，做完立刻 `git checkout --` 还原）
+
+| 变异 | 应失败的测试 |
+|------|--------------|
+| `unregister` 守卫换成无条件 `remove` + `push` | `注销不存在的ID是无副作用的` |
+| `clear()` 删掉 `nextId = 1;` | `clear之后ID从1重新发放旧ID会指向新对象` |
+| 构造函数 `Math.max(1, maxId)` → `maxId` | `上界小于1时被钳到1` |
+| `payloads` 换回 `HashMap` + 去掉 `synchronized` | `并发注册不会发出重复的ID`（如实记录是否稳定失败） |
+
+**E. 计数更新**：`PickRegistryTest` 15 → 18；Task 1 结束时全量 140 → 143。
+下游各任务的全量计数相应 +3（Task 3 → 143、Task 6 → 146、Task 7 → 146）。
+
+**F. 交接纪律**：评审者/实现者在任务边界必须 `git status --porcelain` 确认工作区干净。
+已经发生过一次：被中断的评审者在工作区留下了一个未还原的变异（`unregister` 的守卫被删），
+差一点被下一个任务的 `git add` 扫进提交。
 
 ---
 
@@ -733,7 +929,7 @@ Expected: BUILD SUCCESS
 - [ ] **Step 4: 跑全量测试确认没破坏**
 
 Run: `mvn -o test`
-Expected: `Tests run: 140, Failures: 0, Skipped: 2`
+Expected: `Tests run: 143, Failures: 0, Skipped: 2`
 
 - [ ] **Step 5: 提交**
 
@@ -1516,7 +1712,7 @@ git commit -m "feat(pick): VertexWriter 记录本批是否含可拾取顶点
 - [ ] **Step 8: 编译并跑全量测试**
 
 Run: `mvn -o compile && mvn -o test`
-Expected: BUILD SUCCESS；`Tests run: 143, Failures: 0, Skipped: 2`
+Expected: BUILD SUCCESS；`Tests run: 146, Failures: 0, Skipped: 2`
 
 （`beginFrame` 此刻还没有调用方，`Gc` 仍在用 `setViewportHeight`——这是刻意的，
 见 Step 3 的说明。）
@@ -1568,6 +1764,16 @@ ID pass 保持裁剪开启并复用同一套 scissor 换算，被裁掉的部分
      * <p>命中时 [pick] 会用它把 ID 解析回注册时给的对象，组件因此不必各自维护映射表。
      * 注册发生在**数据变化时**而非每帧；不再需要的对象必须 `unregister`，否则会一直
      * 被强引用着。
+     *
+     * <p>**`pickRegistry` 本身是线程安全的**（见 [PickRegistry] 的类文档），
+     * 所以可以、也应当在 JavaFX 线程上随数据变化直接调 `register` / `unregister`，
+     * 不必像 [pick] 那样跳线程——把注册也塞进 `onFrame` 是过度设计。
+     * 注意 `Gc` 的**其余部分**仍然只能在 GL 线程用，这个 `val` 是刻意的例外。
+     *
+     * <p>由此产生的两个可见后果都是规格内的，**不是缺陷**，消费方别当 bug 去"修"：
+     * 刚注册的对象当帧可能还没被画出来（差一帧）；刚注销的对象当帧可能仍被画着，
+     * 于是命中 `PickHit(id, null, ...)`——这正是 [PickHit] 文档里
+     * 「ID 已注册但载荷为 null，与 ID 未注册，都表现为 null」那一条。
      */
     val pickRegistry = PickRegistry()
 ```
@@ -1803,7 +2009,7 @@ ID pass 保持裁剪开启并复用同一套 scissor 换算，被裁掉的部分
 - [ ] **Step 7: 编译并跑全量测试**
 
 Run: `mvn -o compile && mvn -o test`
-Expected: BUILD SUCCESS；`Tests run: 143, Failures: 0, Skipped: 2`
+Expected: BUILD SUCCESS；`Tests run: 146, Failures: 0, Skipped: 2`
 
 - [ ] **Step 8: 提交**
 
