@@ -343,6 +343,22 @@ public final class PickRegistry {
     private static final int DEFAULT_MAX_ID = Integer.MAX_VALUE - 1;
 
     /**
+     * {@code null} payload 的占位符。
+     *
+     * <p>{@link ConcurrentHashMap} <strong>不接受 {@code null} 值</strong>——这是它与
+     * {@code HashMap} 的一处语义差异，{@code put(id, null)} 会直接抛
+     * {@link NullPointerException}。而本类承诺 payload 可为 {@code null}
+     * （见 {@link #register}），且 {@link #unregister} 的判据是「条目在不在」
+     * 而不是「值是不是 null」。两者一冲突，用私有哨兵占位：入口把 {@code null}
+     * 换成它，出口再翻译回 {@code null}。
+     *
+     * <p>哨兵不出本类，调用方永远看不到它。<strong>不能</strong>改用
+     * {@code Collections.synchronizedMap} 绕开——那会把锁加回 {@link #resolve}，
+     * 而 {@link #resolve} 是 {@code pickRect} 逐像素解析的热路径，无锁正是本类的要求。
+     */
+    private static final Object NULL_PAYLOAD = new Object();
+
+    /**
      * 已分配的 ID → payload。
      *
      * <p>用 {@link ConcurrentHashMap} 而不是 {@code HashMap}：{@link #resolve}
@@ -402,7 +418,7 @@ public final class PickRegistry {
                 }
                 id = nextId++;
             }
-            payloads.put(id, payload);
+            payloads.put(id, payload == null ? NULL_PAYLOAD : payload);
             return id;
         }
     }
@@ -440,7 +456,8 @@ public final class PickRegistry {
      * @return 对应的 payload；未注册时返回 {@code null}
      */
     public Object resolve(int id) {
-        return payloads.get(id);
+        Object payload = payloads.get(id);
+        return payload == NULL_PAYLOAD ? null : payload;
     }
 
     /**
@@ -572,6 +589,15 @@ Task 1 的实现提交之后，代码质量评审跑了变异验证，发现**�
 
 - `payloads`：`HashMap` → `ConcurrentHashMap`，让 `resolve` 保持无锁
   （`pickRect` 逐像素解析，是查询热路径）。
+- **`ConcurrentHashMap` 不接受 `null` 值**，而本类契约允许 `null` payload
+  （`允许空payload注册`、`空payload的ID注销后同样能回收` 两条测试钉着它）。
+  照字面换容器会直接炸在 `允许空payload注册` 上（`NullPointerException`
+  于 `ConcurrentHashMap.putVal`）。解法是**私有哨兵** `NULL_PAYLOAD`：
+  `register` 入口 `payload == null ? NULL_PAYLOAD : payload`，
+  `resolve` 出口 `payload == NULL_PAYLOAD ? null : payload`。
+  哨兵不出本类。**不要**改用 `Collections.synchronizedMap` 绕开——
+  那会把锁加回 `resolve` 这个热路径，正是本节要避免的。
+  （此处由实现者发现并向规格/计划反哺；原计划的字段代码是错的。）
 - 新增 `private final Object lock = new Object();`，**整个** `register` / `unregister` /
   `clear` 都在锁内完成。分配是「取空闲表 → 递增计数器 → 写入映射」的复合操作，
   单靠并发容器不足以保证原子性（两个线程会读到同一个 `nextId`）。

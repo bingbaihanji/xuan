@@ -57,7 +57,7 @@ public final class PickRegistry {
      * 而 {@code nextId > maxId} 对负数为假——本类承诺的「绝不环绕」就破了。
      * 留一格余量让这条不变式在算术上真的成立。
      *
-     * <p>顺带一提：这个边界在实际中不可达。每条登记要占一个 {@code HashMap} 条目
+     * <p>顺带一提：这个边界在实际中不可达。每条登记要占一个 {@code ConcurrentHashMap} 条目
      * 加一个装箱的 {@code Integer}，约 48 字节，2^31 条第 100 GB 量级——
      * 内存会先炸。但「不可达」和「不成立」是两回事，而修正的代价是一个常量。
      */
