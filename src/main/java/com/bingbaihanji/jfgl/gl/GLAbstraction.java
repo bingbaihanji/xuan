@@ -153,4 +153,111 @@ public interface GLAbstraction extends Disposable {
      * @return 纹理的 ID
      */
     int createTexture(int width, int height, int[] pixels);
+
+    /**
+     * {@code GL_FRAMEBUFFER_COMPLETE} 的枚举值。
+     *
+     * <p>放在接口上是为了让调用方不必为了比较一个状态码而引入 LWJGL 的常量。
+     */
+    int FRAMEBUFFER_COMPLETE = 0x8CD5;
+
+    /**
+     * 创建帧缓冲对象（FBO）。
+     *
+     * @return FBO 的 ID
+     */
+    int createFramebuffer();
+
+    /**
+     * 绑定帧缓冲。0 表示默认帧缓冲。
+     *
+     * @param framebuffer FBO 的 ID
+     */
+    void bindFramebuffer(int framebuffer);
+
+    /**
+     * 删除帧缓冲对象。
+     *
+     * @param framebuffer FBO 的 ID
+     */
+    void deleteFramebuffer(int framebuffer);
+
+    /**
+     * 返回当前绑定的帧缓冲 ID。
+     *
+     * <p>openglfx 渲染到它<strong>自己的</strong> FBO，因此正常运行时这个值通常<strong>非 0</strong>。
+     * 任何临时切换帧缓冲的操作都必须先取这个值、事后再恢复回去。
+     *
+     * @return 当前绑定的帧缓冲 ID
+     */
+    int currentFramebufferBinding();
+
+    /**
+     * 创建一张 {@code R32UI} 整数纹理。
+     *
+     * <p>整数纹理的过滤器<strong>必须</strong>是 {@code GL_NEAREST}：{@code GL_LINEAR}
+     * 对整数纹理非法。
+     *
+     * @param width  纹理宽度
+     * @param height 纹理高度
+     * @return 纹理的 ID
+     */
+    int createIntegerTexture(int width, int height);
+
+    /**
+     * 删除纹理。
+     *
+     * @param texture 纹理的 ID
+     */
+    void deleteTexture(int texture);
+
+    /**
+     * 把一张 2D 纹理挂到<strong>当前绑定的</strong>帧缓冲的 0 号颜色附件上。
+     *
+     * @param texture 纹理的 ID
+     */
+    void attachTextureToColor0(int texture);
+
+    /**
+     * 返回当前绑定的帧缓冲的完整性状态，等于 {@link #FRAMEBUFFER_COMPLETE} 表示可用。
+     *
+     * @return 帧缓冲状态码
+     */
+    int framebufferStatus();
+
+    /**
+     * 用一个整数清除值清空当前绑定的帧缓冲的 0 号颜色附件。
+     *
+     * <p>整数附件<strong>不能</strong>用 {@code glClearColor} + {@code glClear}：
+     * 那对整数附件是未定义行为。本方法内部走 {@code glClearBufferuiv}。
+     *
+     * @param value 清除值（写进 R 通道，其余通道为 0）
+     */
+    void clearIntegerColor(int value);
+
+    /**
+     * 读回一个无符号整数像素。
+     *
+     * <p>坐标是 <strong>GL 约定</strong>：原点在帧缓冲左下角、y 向上。
+     * 调用方负责从「原点左上、y 向下」的用户坐标换算过来。
+     *
+     * @param x 像素 x（GL 约定）
+     * @param y 像素 y（GL 约定）
+     * @return 该像素的整数值
+     */
+    int readUnsignedIntPixel(int x, int y);
+
+    /**
+     * 读回一块无符号整数像素。
+     *
+     * <p>坐标同样是 GL 约定。读回的行序<strong>自下而上</strong>，
+     * 即 {@code out} 的第 0 行对应 GL 坐标系里最下面那一行。
+     *
+     * @param x      左上角 x（GL 约定）
+     * @param y      左上角 y（GL 约定）
+     * @param width  宽度
+     * @param height 高度
+     * @param out    结果数组，长度至少为 {@code width * height}
+     */
+    void readUnsignedIntPixels(int x, int y, int width, int height, int[] out);
 }

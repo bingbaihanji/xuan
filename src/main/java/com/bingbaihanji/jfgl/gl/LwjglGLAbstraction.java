@@ -4,8 +4,10 @@ import com.bingbaihanji.jfgl.util.Color;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL30;
+import org.lwjgl.system.MemoryStack;
 
 import java.nio.ByteBuffer;
+import java.nio.IntBuffer;
 
 /**
  * LWJGL-based implementation of {@link GLAbstraction} that delegates
@@ -121,6 +123,85 @@ public class LwjglGLAbstraction implements GLAbstraction {
         );
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
         return texture;
+    }
+
+    @Override
+    public int createFramebuffer() {
+        return GL30.glGenFramebuffers();
+    }
+
+    @Override
+    public void bindFramebuffer(int framebuffer) {
+        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, framebuffer);
+    }
+
+    @Override
+    public void deleteFramebuffer(int framebuffer) {
+        GL30.glDeleteFramebuffers(framebuffer);
+    }
+
+    @Override
+    public int currentFramebufferBinding() {
+        return GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
+    }
+
+    @Override
+    public int createIntegerTexture(int width, int height) {
+        int texture = GL11.glGenTextures();
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+        // 整数纹理的过滤器必须是 GL_NEAREST。GL_LINEAR 对整数纹理非法
+        // （会生成 GL_INVALID_OPERATION，且采样结果未定义）。默认的
+        // GL_NEAREST_MIPMAP_LINEAR 在没有 mipmap 时同样是不完整的。
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
+        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_R32UI,
+                width, height, 0, GL30.GL_RED_INTEGER, GL11.GL_UNSIGNED_INT,
+                (ByteBuffer) null);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+        return texture;
+    }
+
+    @Override
+    public void deleteTexture(int texture) {
+        GL11.glDeleteTextures(texture);
+    }
+
+    @Override
+    public void attachTextureToColor0(int texture) {
+        GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0,
+                GL11.GL_TEXTURE_2D, texture, 0);
+    }
+
+    @Override
+    public int framebufferStatus() {
+        return GL30.glCheckFramebufferStatus(GL30.GL_FRAMEBUFFER);
+    }
+
+    @Override
+    public void clearIntegerColor(int value) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            IntBuffer buffer = stack.ints(value, 0, 0, 0);
+            GL30.glClearBufferuiv(GL30.GL_COLOR, 0, buffer);
+        }
+    }
+
+    @Override
+    public int readUnsignedIntPixel(int x, int y) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            IntBuffer buffer = stack.mallocInt(1);
+            GL11.glReadPixels(x, y, 1, 1, GL30.GL_RED_INTEGER, GL11.GL_UNSIGNED_INT, buffer);
+            return buffer.get(0);
+        }
+    }
+
+    @Override
+    public void readUnsignedIntPixels(int x, int y, int width, int height, int[] out) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            IntBuffer buffer = stack.mallocInt(width * height);
+            GL11.glReadPixels(x, y, width, height,
+                    GL30.GL_RED_INTEGER, GL11.GL_UNSIGNED_INT, buffer);
+            buffer.get(out, 0, width * height);
+        }
     }
 
     @Override
