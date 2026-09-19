@@ -3127,14 +3127,21 @@ Expected: BUILD SUCCESS
 
 ```bash
 git add src/main/kotlin/com/bingbaihanji/jfgl/glview/FXGLTransfer.kt
-git commit -m "feat(pick): FXGLTransfer.pickAsync 线程安全入口
+git commit -F - <<'EOF'
+feat(pick): FXGLTransfer.pickAsync 线程安全入口
 
 组件的鼠标事件在 JavaFX 线程，而 Gc 只能在 GL 线程。让每个组件自己写这个
 跳转迟早有人写错——直接调用就是跨线程 GL 调用，崩得毫无规律。
 
 请求用「最新覆盖旧的」槽位而非队列（拖拽每秒几十个事件、帧率只有 60）；
 用 AtomicReference 的 getAndSet 而非 volatile 字段，否则读到旧值与置空之间
-到达的新请求会被丢掉。回调经 Platform.runLater 送回 JavaFX 线程。"
+到达的新请求会被丢掉。回调经 Platform.runLater 送回 JavaFX 线程。
+
+解析放在 endFrame 之后：ID pass 是在提交时渲染的，提前读会拿到本帧尚未
+写入的缓冲。
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>
+EOF
 ```
 
 ---
