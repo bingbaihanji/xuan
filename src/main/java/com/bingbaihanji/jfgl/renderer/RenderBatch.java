@@ -258,18 +258,6 @@ public final class RenderBatch implements Disposable {
     }
 
     /**
-     * 设置本帧的视口高度，用于裁剪坐标换算。
-     *
-     * <p>必须在 {@link #submit(VertexWriter)} 之前调用（{@code Gc.beginFrame} 负责）。
-     * 未设置时高度为 0，裁剪矩形会被翻转到帧缓冲之外，表现为整帧空白。
-     *
-     * @param height 帧缓冲高度（像素）
-     */
-    public void setViewportHeight(int height) {
-        this.viewportHeight = height;
-    }
-
-    /**
      * 开始一帧：设置视口高度、把拾取缓冲调整到帧缓冲尺寸、复位本帧的拾取状态。
      *
      * <p>取代了早先的 {@code setViewportHeight}：尺寸调整与状态复位必须在同一处发生，

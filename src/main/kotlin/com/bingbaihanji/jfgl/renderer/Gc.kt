@@ -67,11 +67,38 @@ class Gc internal constructor(private val batch: RenderBatch) {
     /** 全局不透明度（0-1），与样式颜色相乘。 */
     var globalAlpha: Float = 1f
 
-    /** 样式栈的整数部分：每层 2 个值（fill、stroke）。 */
-    private var styleInts = IntArray(INITIAL_STACK_LEVELS * 2)
+    /**
+     * 当前拾取 ID。**0 表示不参与拾取**（默认）。
+     *
+     * <p>取值来自 [pickRegistry] 的分配结果，或由调用方自行指定的任意非零整数。
+     * 与 [fill]、[stroke] 一样属于绘制状态，会被 [save] / [restore] 存取。
+     */
+    var pickId: Int = 0
 
-    /** 样式栈的浮点部分：每层 2 个值（lineWidth、globalAlpha）。 */
-    private var styleFloats = FloatArray(INITIAL_STACK_LEVELS * 2)
+    /**
+     * 拾取 ID 的分配器与 `id → 对象` 映射表。
+     *
+     * <p>命中时 [pick] 会用它把 ID 解析回注册时给的对象，组件因此不必各自维护映射表。
+     * 注册发生在**数据变化时**而非每帧；不再需要的对象必须 `unregister`，否则会一直
+     * 被强引用着。
+     *
+     * <p>**`pickRegistry` 本身是线程安全的**（见 [PickRegistry] 的类文档），
+     * 所以可以、也应当在 JavaFX 线程上随数据变化直接调 `register` / `unregister`，
+     * 不必像 [pick] 那样跳线程——把注册也塞进 `onFrame` 是过度设计。
+     * 注意 `Gc` 的**其余部分**仍然只能在 GL 线程用，这个 `val` 是刻意的例外。
+     *
+     * <p>由此产生的两个可见后果都是规格内的，**不是缺陷**，消费方别当 bug 去"修"：
+     * 刚注册的对象当帧可能还没被画出来（差一帧）；刚注销的对象当帧可能仍被画着，
+     * 于是命中 `PickHit(id, null, ...)`——这正是 [PickHit] 文档里
+     * 「ID 已注册但载荷为 null，与 ID 未注册，都表现为 null」那一条。
+     */
+    val pickRegistry = PickRegistry()
+
+    /** 样式栈的整数部分：每层 [INTS_PER_STYLE_LEVEL] 个值（fill、stroke、pickId）。 */
+    private var styleInts = IntArray(INITIAL_STACK_LEVELS * INTS_PER_STYLE_LEVEL)
+
+    /** 样式栈的浮点部分：每层 [FLOATS_PER_STYLE_LEVEL] 个值（lineWidth、globalAlpha）。 */
+    private var styleFloats = FloatArray(INITIAL_STACK_LEVELS * FLOATS_PER_STYLE_LEVEL)
 
     /**
      * 样式栈层数。
@@ -102,7 +129,7 @@ class Gc internal constructor(private val batch: RenderBatch) {
         state.beginFrame(width, height)
         styleDepth = 0
         writer.reset()
-        batch.setViewportHeight(height)
+        batch.beginFrame(width, height)
         frameActive = true
     }
 
@@ -124,6 +151,84 @@ class Gc internal constructor(private val batch: RenderBatch) {
         val unbalanced = state.clearStack()
         styleDepth = 0
         check(unbalanced == 0) { "save() 与 restore() 不配对：本帧结束时仍残留 $unbalanced 层 save()" }
+    }
+
+    // ------------------------------------------------------------------
+    // 拾取
+    // ------------------------------------------------------------------
+
+    /**
+     * 在给定的拾取 ID 下执行一段绘制。
+     *
+     * <p>等价于 `save(); pickId = id; block(); restore()`，因此**块内的变换与裁剪改动
+     * 也会在块结束时回滚**——与 `save/restore` 的语义完全一致，块是自包含的。
+     *
+     * <p>相比手工设 [pickId]，本方法不会因为忘记复位而让后续图元错误地继承 ID——
+     * 那是这类 API 最常见的 bug。
+     *
+     * @param id    本块内所有图元的拾取 ID，0 表示不参与拾取
+     * @param block 绘制块
+     */
+    fun pickable(id: Int, block: () -> Unit) {
+        save()
+        pickId = id
+        try {
+            block()
+        } finally {
+            restore()
+        }
+    }
+
+    /**
+     * 查询某个点上最上层的可拾取图元。
+     *
+     * <p>命中的是**像素**而不是包围盒：判定用的是 GPU 实际光栅化的结果，
+     * 与画面所见完全一致。
+     *
+     * <p>**必须在 GL 线程上调用。** 组件响应 JavaFX 鼠标事件时请用
+     * `FXGLTransfer.pickAsync`，它会把请求调度到 GL 线程并把结果送回 JavaFX 线程。
+     *
+     * <p>拾取只由几何决定，**与颜色和透明度无关**——`globalAlpha = 0` 的图元照样能命中。
+     * 图表的「隐形热区」正是靠这个行为实现的。
+     *
+     * @param x 查询点 x（用户坐标，y 向下）
+     * @param y 查询点 y（用户坐标，y 向下）
+     * @return 命中结果；未命中、坐标越界、或本帧没有任何可拾取图元时返回 null
+     */
+    fun pick(x: Float, y: Float): PickHit? {
+        val id = batch.readPickPixel(x.toInt(), y.toInt())
+        if (id == 0) {
+            return null
+        }
+        return PickHit(id, pickRegistry.resolve(id), x, y)
+    }
+
+    /**
+     * 查询一个矩形区域内出现过的全部可拾取图元，按 ID 升序去重返回。
+     *
+     * <p>区域会与绘制区求交；完全在绘制区之外返回空列表（不抛异常——
+     * 刷选拖到窗口外是正常操作）。代价与区域面积成正比（`w×h×4` 字节的读回）。
+     *
+     * @param x 区域左边缘（用户坐标）
+     * @param y 区域上边缘（用户坐标，y 向下）
+     * @param w 区域宽度
+     * @param h 区域高度
+     * @return 命中的结果列表，按 ID 升序；每个元素的 x/y 是该 ID 在区域内按行扫描
+     *         **首次出现的像素坐标**，不是图元的几何代表点
+     */
+    fun pickRect(x: Float, y: Float, w: Float, h: Float): List<PickHit> {
+        val pixels = batch.readPickRect(x.toInt(), y.toInt(), w.toInt(), h.toInt())
+        if (pixels.isEmpty()) {
+            return emptyList()
+        }
+        val result = ArrayList<PickHit>(pixels.size)
+        for (pixel in pixels) {
+            result.add(
+                PickHit(pixel.id(), pickRegistry.resolve(pixel.id()),
+                    pixel.x().toFloat(), pixel.y().toFloat())
+            )
+        }
+        return result
     }
 
     /**
@@ -150,7 +255,7 @@ class Gc internal constructor(private val batch: RenderBatch) {
     // ------------------------------------------------------------------
 
     /**
-     * 压入当前的**全部绘制状态**：变换、裁剪、填充色、描边色、线宽、全局不透明度。
+     * 压入当前的**全部绘制状态**：变换、裁剪、填充色、描边色、线宽、全局不透明度、拾取 ID。
      *
      * <p>与 HTML Canvas / JavaFX 的 `save()` 语义一致——用户改完样式再 [restore] 就能回到原样，
      * 不必手工记下每一个字段。每次 [save] 在稳态下不产生任何分配：
@@ -160,11 +265,13 @@ class Gc internal constructor(private val batch: RenderBatch) {
     fun save() {
         state.save()
         ensureStyleCapacity(styleDepth + 1)
-        val base = styleDepth * 2
-        styleInts[base] = fill
-        styleInts[base + 1] = stroke
-        styleFloats[base] = lineWidth
-        styleFloats[base + 1] = globalAlpha
+        val intBase = styleDepth * INTS_PER_STYLE_LEVEL
+        styleInts[intBase] = fill
+        styleInts[intBase + 1] = stroke
+        styleInts[intBase + 2] = pickId
+        val floatBase = styleDepth * FLOATS_PER_STYLE_LEVEL
+        styleFloats[floatBase] = lineWidth
+        styleFloats[floatBase + 1] = globalAlpha
         styleDepth++
     }
 
@@ -177,11 +284,13 @@ class Gc internal constructor(private val batch: RenderBatch) {
         check(styleDepth > 0) { "restore() 与 save() 不配对：当前栈为空，没有可恢复的状态" }
         state.restore()
         styleDepth--
-        val base = styleDepth * 2
-        fill = styleInts[base]
-        stroke = styleInts[base + 1]
-        lineWidth = styleFloats[base]
-        globalAlpha = styleFloats[base + 1]
+        val intBase = styleDepth * INTS_PER_STYLE_LEVEL
+        fill = styleInts[intBase]
+        stroke = styleInts[intBase + 1]
+        pickId = styleInts[intBase + 2]
+        val floatBase = styleDepth * FLOATS_PER_STYLE_LEVEL
+        lineWidth = styleFloats[floatBase]
+        globalAlpha = styleFloats[floatBase + 1]
     }
 
     // ------------------------------------------------------------------
@@ -713,6 +822,9 @@ class Gc internal constructor(private val batch: RenderBatch) {
      * <p>纯色绘制绑定 1×1 白色纹理，于是片段着色器的 `texture(uTex, vUV) * vColor`
      * 恰好退化成顶点色本身。
      *
+     * <p>这是**全部绘制路径的唯一出口**：填充走 [emitShape]、描边走 [strokeOutline]、
+     * 路径填充直接调用本方法。因此拾取 ID 只需在这里传下去，就覆盖了每一个图元。
+     *
      * @param triangles 扁平三角形数组，每 6 个 float 一个三角形
      * @param floatCount 有效 float 个数（**不是**数组长度：`rawTriangles()` 的数组通常更长）
      * @param argb       ARGB 颜色（会先乘以 [globalAlpha] 再预乘）
@@ -733,7 +845,7 @@ class Gc internal constructor(private val batch: RenderBatch) {
                 // 直接走 ViewTransform 的标量变换，避免每个顶点分配一个 Vec2
                 writer().vertex(
                     state.transformX(wx, wy), state.transformY(wx, wy),
-                    0f, 0f, packed, 0
+                    0f, 0f, packed, pickId
                 )
                 i += 2
                 k++
@@ -797,21 +909,32 @@ class Gc internal constructor(private val batch: RenderBatch) {
     // ------------------------------------------------------------------
 
     /**
-     * 保证样式栈能容纳 `capacityLevels` 层。只在扩容时分配。
+     * 确保样式栈能容纳给定的层数。
+     *
+     * <p>两个数组按**各自的每层宽度**独立扩容：整数部分每层 3 个（fill、stroke、pickId），
+     * 浮点部分每层 2 个（lineWidth、globalAlpha）。此前两者都是 2，
+     * 所以共用了一个 `capacityLevels * 2` 的算法——`pickId` 进来以后那个算法对整数部分就是错的，
+     * 会让栈在深层 [save] 时越界。
      *
      * @param capacityLevels 需要的层数
      */
     private fun ensureStyleCapacity(capacityLevels: Int) {
-        val needed = capacityLevels * 2
-        if (needed <= styleInts.size) {
-            return
+        val neededInts = capacityLevels * INTS_PER_STYLE_LEVEL
+        if (neededInts > styleInts.size) {
+            var size = styleInts.size * 2
+            while (size < neededInts) {
+                size *= 2
+            }
+            styleInts = styleInts.copyOf(size)
         }
-        var size = styleInts.size * 2
-        while (size < needed) {
-            size *= 2
+        val neededFloats = capacityLevels * FLOATS_PER_STYLE_LEVEL
+        if (neededFloats > styleFloats.size) {
+            var size = styleFloats.size * 2
+            while (size < neededFloats) {
+                size *= 2
+            }
+            styleFloats = styleFloats.copyOf(size)
         }
-        styleInts = styleInts.copyOf(size)
-        styleFloats = styleFloats.copyOf(size)
     }
 
     companion object {
@@ -846,5 +969,11 @@ class Gc internal constructor(private val batch: RenderBatch) {
          * <p>与 [ViewTransform] 的裁剪栈互相独立，各自按需翻倍扩容，取值相同只是巧合而非约束。
          */
         private const val INITIAL_STACK_LEVELS = 8
+
+        /** 样式栈每层占用的 int 个数：fill、stroke、pickId。 */
+        private const val INTS_PER_STYLE_LEVEL = 3
+
+        /** 样式栈每层占用的 float 个数：lineWidth、globalAlpha。 */
+        private const val FLOATS_PER_STYLE_LEVEL = 2
     }
 }
