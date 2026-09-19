@@ -50,12 +50,17 @@ import static org.lwjgl.opengl.GL30.glVertexAttribIPointer;
  * 每次提交结束时都会把 GL 状态收回到中性（解绑 VAO、解绑着色器、关闭混合与裁剪测试），
  * 因此上一批的残留不会影响下一批。
  *
- * <p><strong>但它并非无状态</strong>：拾取相关的一组标志
- * （{@code pickBufferCleared} / {@code pickBufferValid} / {@code pickPassCount}）
- * 跨同一帧内的多次提交存活。它们的<strong>唯一</strong>复位点是
+ * <p><strong>但它并非无状态</strong>：{@code pickBufferCleared} 与 {@code pickBufferValid}
+ * 跨同一帧内的多次提交存活（{@code Gc} 一帧内会多次调用本方法——帧末一次 +
+ * 每次 {@code flushIfNeeded} 一次）。这两个标志的<strong>唯一</strong>复位点是
  * {@link #beginFrame(int, int)}——每帧必须恰好调用一次，且要在本帧第一次
  * {@code submit} 之前。漏调或不调，表现为「只有最后一批可拾取」或
  * 「拾取到上一帧已消失的对象」，两者都不报错。
+ *
+ * <p><strong>{@code pickPassCount} 不在此列，它跨帧累计、从不复位。</strong>
+ * 它是给校验器用的计数器（断言「若干帧恰好各跑了一趟 ID pass」），
+ * <strong>不要</strong>往 {@link #beginFrame(int, int)} 里加复位——加了之后计数最多到 1，
+ * 那条校验永远不可能通过，而症状是断言失败，排查方向会指向 ID pass 本身。
  *
  * <h2>混合与颜色</h2>
  * <p>颜色由 {@link VertexFormat#packPremultiplied} 打包为<strong>预乘 alpha</strong>，
@@ -281,8 +286,8 @@ public final class RenderBatch implements Disposable {
         pickBuffer.ensureSize(width, height);
         pickBufferCleared = false;
         // 本帧还没渲染 ID pass 之前，缓冲里装的是上一帧的结果。标为无效，
-        // 这样 pick() 会诚实地返回「没命中」，而不是拿陈旧的 ID 去注册表里查——
-        // 那会拾取到早已消失的对象，而画面完全正常。
+        // 这样上层的拾取查询（Gc.pick / Gc.pickRect）会诚实地返回「没命中」，
+        // 而不是拿陈旧的 ID 去注册表里查——那会拾取到早已消失的对象，而画面完全正常。
         pickBufferValid = false;
     }
 
