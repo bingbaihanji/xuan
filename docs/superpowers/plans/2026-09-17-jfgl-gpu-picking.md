@@ -3335,6 +3335,15 @@ class PickVerifierApp : Application() {
         println("\n-- 跳过优化 --")
         // 帧 0、1 无 ID（已在第 1 帧处断言过为 0），帧 2、3、4 各跑一趟 → 恰好 3。
         // 这个数字与 drawScene 的帧划分是一对的：改动任何一边都要同步另一边。
+        // 注意这个数字把两件事混在一起了：①帧 0、1 没有可拾取顶点，跳过优化生效；
+        // ②帧 2、3、4 期间没有发生帧中途 flush。drawPickPass 是每个 submit 调一次
+        // （不是每帧），任何一次 flushIfNeeded 都会让计数 +1。
+        //
+        // 所以若实测不是 3，**不要改这个数字**——先查是哪种原因：
+        //   - 优化失效（每帧都跑）→ 5 或更多，那是真缺陷，去查 hasPickableVertices 那条链；
+        //   - pickPassCount 被误加了复位 → 1，见 RenderBatch 类注释里那条警告；
+        //   - 帧中途 flush → 多出来的那部分，属良性，但仍要如实记录实际值。
+        // 直接改成实测值会让这条断言失去意义：它对「数字是多少」不敏感，对「为什么」才敏感。
         report("有拾取对象时每帧恰好一趟 ID pass", bridge.pickPassCountForTest() == 3,
             "ID pass 执行次数=${bridge.pickPassCountForTest()}，期望 3（帧 2、3、4）")
 
