@@ -1,6 +1,7 @@
 package com.bingbaihanji.jfgl.gl;
 
 import com.bingbaihanji.jfgl.util.Color;
+import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL30;
@@ -188,20 +189,41 @@ public class LwjglGLAbstraction implements GLAbstraction {
     @Override
     public int readUnsignedIntPixel(int x, int y) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            IntBuffer buffer = stack.mallocInt(1);
+            // 必须是 callocInt 而不是 mallocInt：mallocInt 不清零，若 glReadPixels
+            // 因 GL 错误没写入，读回的就是栈上的残留值——非确定的拾取结果。
+            IntBuffer buffer = stack.callocInt(1);
             GL11.glReadPixels(x, y, 1, 1, GL30.GL_RED_INTEGER, GL11.GL_UNSIGNED_INT, buffer);
             return buffer.get(0);
         }
     }
 
+    /**
+     * 为区域读回分配缓冲。
+     *
+     * <p><strong>不能用 {@link MemoryStack}</strong>：它默认只有 64 KB
+     * （{@code Configuration.STACK_SIZE} 默认 64），而这里需要
+     * {@code pixels * 4} 字节。128×128 恰好是临界点，再大一点就抛
+     * {@link OutOfMemoryError}——框选稍大一点即废，且抛的是 {@code Error}。
+     *
+     * <p>返回直接缓冲交给 GC：{@code pickRect} 是用户触发的低频查询（框选），
+     * 不是每帧路径，为此维护可复用缓冲池是不必要的复杂度。
+     *
+     * <p>包级可见且不碰 GL，<strong>专为可测</strong>：真正的方法需要 GL 上下文，
+     * 在单测里调用会让 JVM 直接 abort。
+     *
+     * @param pixels 像素个数，必须非负
+     * @return 容量为 {@code pixels} 的直接 IntBuffer
+     */
+    static IntBuffer allocateReadBuffer(int pixels) {
+        return BufferUtils.createIntBuffer(pixels);
+    }
+
     @Override
     public void readUnsignedIntPixels(int x, int y, int width, int height, int[] out) {
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            IntBuffer buffer = stack.mallocInt(width * height);
-            GL11.glReadPixels(x, y, width, height,
-                    GL30.GL_RED_INTEGER, GL11.GL_UNSIGNED_INT, buffer);
-            buffer.get(out, 0, width * height);
-        }
+        IntBuffer buffer = allocateReadBuffer(width * height);
+        GL11.glReadPixels(x, y, width, height,
+                GL30.GL_RED_INTEGER, GL11.GL_UNSIGNED_INT, buffer);
+        buffer.get(out, 0, width * height);
     }
 
     @Override

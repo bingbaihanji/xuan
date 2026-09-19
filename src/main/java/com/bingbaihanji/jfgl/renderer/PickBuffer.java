@@ -44,6 +44,9 @@ public final class PickBuffer implements Disposable {
     public PickBuffer(GLAbstraction gl, int width, int height) {
         this.gl = gl;
         this.framebuffer = new Framebuffer(gl, width, height);
+        // 新建的纹理内容是规范定义的未定义值（多数驱动恰好给 0）。不在这里清一次，
+        // 「从未渲染过拾取 pass」读回的就是驱动的恩赐，而不是代码保证的「什么都没命中」。
+        clear();
     }
 
     /**
@@ -55,11 +58,17 @@ public final class PickBuffer implements Disposable {
      * @param height 期望高度
      */
     public void ensureSize(int width, int height) {
+        checkNotDisposed();
         if (framebuffer.width() == width && framebuffer.height() == height) {
             return;
         }
+        // 先建后弃：构造函数抛错时旧缓冲必须原封不动。反过来写（先 dispose 再 new）
+        // 一旦 new 抛错，字段就停在已释放对象上，而它的 id() 是 0——在 OpenGL 里
+        // 0 是默认帧缓冲，此后读的是窗口自己的像素当成 ID，clear 则去擦窗口的颜色。
+        Framebuffer next = new Framebuffer(gl, width, height);
         framebuffer.dispose();
-        framebuffer = new Framebuffer(gl, width, height);
+        framebuffer = next;
+        clear();
     }
 
     /**
@@ -69,10 +78,16 @@ public final class PickBuffer implements Disposable {
      * 后者对整数附件是未定义行为。绑定在使用前后被恢复。
      */
     public void clear() {
+        checkNotDisposed();
         int previous = gl.currentFramebufferBinding();
         gl.bindFramebuffer(framebuffer.id());
-        gl.clearIntegerColor(0);
-        gl.bindFramebuffer(previous);
+        try {
+            gl.clearIntegerColor(0);
+        } finally {
+            // 必须用 finally：任何 GL 调用都可能抛错，一旦抛出去而绑定停在拾取 FBO，
+            // 后续所有绘制都会画进这里——画面全黑或停在上一帧，且不报错。
+            gl.bindFramebuffer(previous);
+        }
     }
 
     /**
@@ -83,6 +98,7 @@ public final class PickBuffer implements Disposable {
      * @return 该像素的 ID；坐标越界时返回 0
      */
     public int readPixel(int x, int y) {
+        checkNotDisposed();
         if (x < 0 || y < 0 || x >= framebuffer.width() || y >= framebuffer.height()) {
             // 越界读 glReadPixels 是未定义行为，必须在这里挡掉。
             return 0;
@@ -90,9 +106,11 @@ public final class PickBuffer implements Disposable {
         int glY = framebuffer.height() - 1 - y;
         int previous = gl.currentFramebufferBinding();
         gl.bindFramebuffer(framebuffer.id());
-        int id = gl.readUnsignedIntPixel(x, glY);
-        gl.bindFramebuffer(previous);
-        return id;
+        try {
+            return gl.readUnsignedIntPixel(x, glY);
+        } finally {
+            gl.bindFramebuffer(previous);
+        }
     }
 
     /**
@@ -136,8 +154,13 @@ public final class PickBuffer implements Disposable {
         int[] raw = new int[readWidth * readHeight];
         int previous = gl.currentFramebufferBinding();
         gl.bindFramebuffer(framebuffer.id());
-        gl.readUnsignedIntPixels(x0, glY, readWidth, readHeight, raw);
-        gl.bindFramebuffer(previous);
+        try {
+            gl.readUnsignedIntPixels(x0, glY, readWidth, readHeight, raw);
+        } finally {
+            // 必须用 finally：读回抛错（区域过大时 F1 那条路径必然可达）而绑定停在
+            // 拾取 FBO 上，下一帧的颜色会全画进拾取缓冲——画面全黑或停在上一帧，不报错。
+            gl.bindFramebuffer(previous);
+        }
 
         // 这是一次按需查询（刷选），不是每帧路径，为了清晰起见接受这点装箱开销。
         TreeMap<Integer, PickPixel> firstSeen = new TreeMap<>();
@@ -161,6 +184,7 @@ public final class PickBuffer implements Disposable {
      * @return 宽度
      */
     public int width() {
+        checkNotDisposed();
         return framebuffer.width();
     }
 
@@ -170,7 +194,25 @@ public final class PickBuffer implements Disposable {
      * @return 高度
      */
     public int height() {
+        checkNotDisposed();
         return framebuffer.height();
+    }
+
+    /**
+     * 断言尚未被释放。
+     *
+     * <p>释放之后底层 FBO 的 id 变成 0，而 0 在 OpenGL 里是<strong>默认帧缓冲</strong>。
+     * 不挡的话，读回拿的是窗口自己的像素（当成拾取 ID），清空擦的是窗口画面——
+     * 两个都是不崩溃、只是结果悄悄错了的失败。宁可在这里炸。
+     *
+     * @throws IllegalStateException 已释放时
+     */
+    private void checkNotDisposed() {
+        if (disposed) {
+            throw new IllegalStateException(
+                    "PickBuffer 已释放：底层 FBO id 已是 0，而 0 在 OpenGL 里是默认帧缓冲；"
+                            + "继续读会拿到窗口像素当成拾取 ID，继续清会擦掉窗口画面");
+        }
     }
 
     /** 释放底层帧缓冲。重复调用无副作用。 */

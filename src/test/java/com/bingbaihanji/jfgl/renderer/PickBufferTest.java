@@ -124,4 +124,67 @@ class PickBufferTest {
         assertEquals(7, gl.boundFramebuffer,
                 "读回后必须恢复绑定，否则后续绘制会画进拾取缓冲");
     }
+
+    @Test
+    void 清空之后恢复原先的帧缓冲绑定() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        gl.boundFramebuffer = 7;
+        PickBuffer pb = buffer(gl);
+        gl.boundFramebuffer = 7;          // 构造内部的清空会把绑定还回来，这里重申一次
+        pb.clear();
+        assertEquals(7, gl.boundFramebuffer,
+                "清空后必须恢复绑定，否则后续绘制会画进拾取缓冲");
+    }
+
+    @Test
+    void 读点之后恢复原先的帧缓冲绑定() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.boundFramebuffer = 7;
+        pb.readPixel(1, 1);
+        assertEquals(7, gl.boundFramebuffer);
+    }
+
+    @Test
+    void 抛错时仍恢复帧缓冲绑定() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.boundFramebuffer = 7;
+        gl.throwOnIntegerCall = true;
+        assertThrows(IllegalStateException.class, () -> pb.readRect(0, 0, 8, 4));
+        assertEquals(7, gl.boundFramebuffer,
+                "读回抛错也必须把绑定还回去——否则下一帧颜色全画进拾取缓冲，且不报错");
+    }
+
+    @Test
+    void 构造后缓冲是全零() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        // 预置非零，模拟「新纹理内容是未定义值」的驱动行为
+        gl.setScreenBottomUp(8, 4, new int[]{-1, -1, -1, -1, -1, -1, -1, -1,
+                -1, -1, -1, -1, -1, -1, -1, -1,
+                -1, -1, -1, -1, -1, -1, -1, -1,
+                -1, -1, -1, -1, -1, -1, -1, -1});
+        PickBuffer pb = new PickBuffer(gl, 8, 4);
+        assertTrue(pb.readRect(0, 0, 8, 4).isEmpty(),
+                "构造时必须清一次；不清就是「在多数驱动上看起来能跑」");
+    }
+
+    @Test
+    void 重建失败时旧缓冲原封不动() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.setUserPixel(1, 1, 42);
+        assertThrows(IllegalArgumentException.class, () -> pb.ensureSize(0, 0));
+        assertTrue(gl.deletedFramebuffers.isEmpty(),
+                "先建后弃：新缓冲建失败时旧缓冲不该被释放");
+        assertEquals(42, pb.readPixel(1, 1), "旧缓冲应当仍然可用");
+    }
+
+    @Test
+    void 释放后读点抛异常而不是操作默认帧缓冲() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        pb.dispose();
+        assertThrows(IllegalStateException.class, () -> pb.readPixel(1, 1));
+    }
 }

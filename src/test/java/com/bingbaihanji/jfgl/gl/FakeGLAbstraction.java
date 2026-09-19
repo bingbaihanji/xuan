@@ -46,6 +46,15 @@ public final class FakeGLAbstraction implements GLAbstraction {
     public final List<Integer> createdFramebuffers = new ArrayList<>();
     public final List<Integer> createdTextures = new ArrayList<>();
 
+    /** 置为 true 后，所有整数读回与整数清空都抛异常，用于验证「抛错时仍恢复绑定」。 */
+    public boolean throwOnIntegerCall = false;
+
+    private void maybeThrow() {
+        if (throwOnIntegerCall) {
+            throw new IllegalStateException("注入的 GL 故障");
+        }
+    }
+
     /** 虚拟屏幕，<strong>GL 行序</strong>：下标 0 对应最下面一行。 */
     private int[] screen = new int[0];
     private int screenWidth;
@@ -110,16 +119,19 @@ public final class FakeGLAbstraction implements GLAbstraction {
 
     @Override
     public void clearIntegerColor(int value) {
+        maybeThrow();
         java.util.Arrays.fill(screen, value);
     }
 
     @Override
     public int readUnsignedIntPixel(int x, int y) {
+        maybeThrow();
         return screen[y * screenWidth + x];
     }
 
     @Override
     public void readUnsignedIntPixels(int x, int y, int width, int height, int[] out) {
+        maybeThrow();
         for (int row = 0; row < height; row++) {
             for (int col = 0; col < width; col++) {
                 out[row * width + col] = screen[(y + row) * screenWidth + (x + col)];
