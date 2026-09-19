@@ -690,8 +690,9 @@ A 节与 B 节**分两批交付**：A 节不含并发测试，那一批是 17 / 
 | Task 4 | +5 `FramebufferTest` | **148** |
 | Task 5 | +8 `PickBufferTest` | **156**（实跑确认） |
 | Task 6 | +3 `VertexWriterTest`（`hasPickableVertices` 是纯 CPU 标志，能单测） | **159** |
-| Task 7 | 0（`RenderBatch` 的 ID pass 要真 GL 上下文，由 Task 10 校验器覆盖） | 159 |
-| Task 11 | 终验 | 159 |
+| Task 6.5 | +6 `PickBufferTest`、+2 `LwjglGLAbstractionTest` | **167** |
+| Task 7 | 0（`RenderBatch` 的 ID pass 要真 GL 上下文，由 Task 10 校验器覆盖） | 167 |
+| Task 11 | 终验 | 167 |
 
 **数字对不上就停下来查**，不要为了让计数凑上而增删测试——**已经踩过两次**：
 
@@ -1965,6 +1966,369 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 
 ---
 
+## Task 6.5: 修复 GL 边界层评审发现的缺陷（F1–F4 + R1）
+
+**为什么插在这里**：Task 3–6 落地后做了一次合并代码评审，在 GL 边界层找出 4 条**真缺陷**。
+Task 7 要建的正是 `PickBuffer`/`Framebuffer` 之上的 ID pass，而其中两条会让 `pickRect`
+一用就抛错、抛完还把渲染画面弄坏。**先修再往下走。**
+
+**Files:**
+- Modify: `src/main/java/com/bingbaihanji/jfgl/gl/LwjglGLAbstraction.java`
+- Modify: `src/main/java/com/bingbaihanji/jfgl/renderer/PickBuffer.java`
+- Modify: `src/test/java/com/bingbaihanji/jfgl/gl/FakeGLAbstraction.java`
+- Test: `src/test/java/com/bingbaihanji/jfgl/renderer/PickBufferTest.java`
+- Create: `src/test/java/com/bingbaihanji/jfgl/gl/LwjglGLAbstractionTest.java`
+
+- [ ] **Step 1: F1 —— 区域读回不能用 `MemoryStack`**
+
+**缺陷**：`LwjglGLAbstraction.java:200` 的 `stack.mallocInt(width * height)`。
+LWJGL 的 `MemoryStack` 默认只有 **64 KB**（`Configuration.STACK_SIZE` 默认 64），
+`mallocInt` 超了就抛 `java.lang.OutOfMemoryError: Out of stack space.`。
+实测：16384 像素（128×128）刚好能过，**20000 像素起必抛**。
+后果：`pickRect` 的框选稍大一点就整个不可用——而规格 §6 正是按 `w×h×4` 字节为大片刷选设计的。
+抛的是 `Error` 不是 `Exception`，直接引出 F2。
+
+把它切成一个**不碰 GL 的静态分配函数**，这样回归能被单测掐住（真方法无 GL 上下文会让 JVM abort，永远测不了）：
+
+```java
+    /**
+     * 为区域读回分配缓冲。
+     *
+     * <p><strong>不能用 {@link MemoryStack}</strong>：它默认只有 64 KB
+     * （{@code Configuration.STACK_SIZE} 默认 64），而这里需要
+     * {@code pixels * 4} 字节。128×128 恰好是临界点，再大一点就抛
+     * {@link OutOfMemoryError}——框选稍大一点即废，且抛的是 {@code Error}。
+     *
+     * <p>返回直接缓冲交给 GC：{@code pickRect} 是用户触发的低频查询（框选），
+     * 不是每帧路径，为此维护可复用缓冲池是不必要的复杂度。
+     *
+     * <p>包级可见且不碰 GL，<strong>专为可测</strong>：真正的方法需要 GL 上下文，
+     * 在单测里调用会让 JVM 直接 abort。
+     *
+     * @param pixels 像素个数，必须非负
+     * @return 容量为 {@code pixels} 的直接 IntBuffer
+     */
+    static IntBuffer allocateReadBuffer(int pixels) {
+        return BufferUtils.createIntBuffer(pixels);
+    }
+```
+
+`readUnsignedIntPixels` 改成：
+
+```java
+        IntBuffer buffer = allocateReadBuffer(width * height);
+        GL11.glReadPixels(x, y, width, height,
+                GL30.GL_RED_INTEGER, GL11.GL_UNSIGNED_INT, buffer);
+        buffer.get(out, 0, width * height);
+```
+
+（不再有 `try (MemoryStack ...)`。若 `MemoryStack` 在本文件不再被使用，**删掉那条 import**。）
+
+同时修 R4：`readUnsignedIntPixel` 里的 `stack.mallocInt(1)` 改成 `stack.callocInt(1)`。
+`mallocInt` 不清零，若 `glReadPixels` 因 GL 错误没写入，读回的是栈上残留值——
+非确定的拾取结果。
+
+新增 `BufferUtils` 的 import：`import org.lwjgl.BufferUtils;`
+
+创建 `src/test/java/com/bingbaihanji/jfgl/gl/LwjglGLAbstractionTest.java`：
+
+```java
+package com.bingbaihanji.jfgl.gl;
+
+import org.junit.jupiter.api.Test;
+
+import java.nio.IntBuffer;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class LwjglGLAbstractionTest {
+
+    @Test
+    void 区域读回缓冲能装下整个帧缓冲() {
+        // 988x738 是 125% 缩放下 800x600 窗口的真实设备像素数（见 CLAUDE.md）。
+        // 用 MemoryStack 的话这里必抛 OutOfMemoryError: Out of stack space.。
+        int pixels = 988 * 738;
+        IntBuffer buffer = LwjglGLAbstraction.allocateReadBuffer(pixels);
+        assertEquals(pixels, buffer.capacity());
+    }
+
+    @Test
+    void 区域读回缓冲能装下远大于64KB的区域() {
+        // 64 KB / 4 = 16384 像素，正是 MemoryStack 的临界点。
+        IntBuffer buffer = LwjglGLAbstraction.allocateReadBuffer(16384 * 4);
+        assertEquals(16384 * 4, buffer.capacity());
+    }
+}
+```
+
+- [ ] **Step 2: F2 —— 三条读写路径的绑定恢复必须走 `finally`**
+
+`PickBuffer` 的 `clear()` / `readPixel()` / `readRect()` 都是「绑定 → 操作 → 恢复」的
+直线代码，**中间任何一步抛错，绑定就停在拾取 FBO 上**。F1 让这条路径必然可达。
+
+后果正是本项目最擅长产生的那类静默失败：openglfx 渲染到它自己的 FBO，
+绑定没还回去，下一帧的颜色会画进拾取缓冲——**画面全黑或停在上一帧，且没有任何报错**。
+
+`clear()`：
+
+```java
+    public void clear() {
+        checkNotDisposed();
+        int previous = gl.currentFramebufferBinding();
+        gl.bindFramebuffer(framebuffer.id());
+        try {
+            gl.clearIntegerColor(0);
+        } finally {
+            // 必须用 finally：任何 GL 调用都可能抛错，一旦抛出去而绑定停在拾取 FBO，
+            // 后续所有绘制都会画进这里——画面全黑或停在上一帧，且不报错。
+            gl.bindFramebuffer(previous);
+        }
+    }
+```
+
+`readPixel()`（`checkNotDisposed()` 加在方法开头，越界判断之前）：
+
+```java
+        int previous = gl.currentFramebufferBinding();
+        gl.bindFramebuffer(framebuffer.id());
+        try {
+            return gl.readUnsignedIntPixel(x, glY);
+        } finally {
+            gl.bindFramebuffer(previous);
+        }
+```
+
+`readRect()` 里那段：
+
+```java
+        int[] raw = new int[readWidth * readHeight];
+        int previous = gl.currentFramebufferBinding();
+        gl.bindFramebuffer(framebuffer.id());
+        try {
+            gl.readUnsignedIntPixels(x0, glY, readWidth, readHeight, raw);
+        } finally {
+            gl.bindFramebuffer(previous);
+        }
+```
+
+- [ ] **Step 3: F3 —— 构造与重建后各清空一次**
+
+规格 §6.2 明文承诺「从未渲染过拾取 pass → `pick` 返回 `null`、`pickRect` 返回空列表」。
+但唯一的清空是懒清空（每批 `submit` 时按 `hasPickableVertices` 触发）。
+`glTexImage2D(..., null)` 之后纹理内容是**规范定义的未定义值**，重建后同理——
+多数驱动恰好给 0，所以看起来一切正常，正是本项目最警惕的「在多数驱动上看起来能跑」。
+
+构造函数尾部加 `clear();`，`ensureSize` 重建之后加 `clear();`（见 Step 4 的完整代码）。
+
+- [ ] **Step 4: F4 + R5 —— 先建后弃，并且释放后要炸而不是静默操作默认帧缓冲**
+
+**缺陷**：`ensureSize` 是先 `dispose()` 再 `new`。构造函数抛错（FBO 不完整
+`IllegalStateException`，或尺寸非正 `IllegalArgumentException`）时字段不会被替换，
+仍指向**已释放**的 `Framebuffer`，其 `id()` 已是 **0——在 OpenGL 里 0 是默认帧缓冲**。
+此后 `readPixel`/`readRect` 读的是**窗口自己的像素**当成 ID（「拾取到毫不相干的对象」），
+`clear()` 则去擦窗口的颜色缓冲。`width()/height()` 还返回旧尺寸。全程无信号。
+
+`ensureSize` 与构造函数改成：
+
+```java
+    public PickBuffer(GLAbstraction gl, int width, int height) {
+        this.gl = gl;
+        this.framebuffer = new Framebuffer(gl, width, height);
+        // 新建的纹理内容是规范定义的未定义值（多数驱动恰好给 0）。不在这里清一次，
+        // 「从未渲染过拾取 pass」读回的就是驱动的恩赐，而不是代码保证的「什么都没命中」。
+        clear();
+    }
+
+    public void ensureSize(int width, int height) {
+        checkNotDisposed();
+        if (framebuffer.width() == width && framebuffer.height() == height) {
+            return;
+        }
+        // 先建后弃：构造函数抛错时旧缓冲必须原封不动。反过来写（先 dispose 再 new）
+        // 一旦 new 抛错，字段就停在已释放对象上，而它的 id() 是 0——在 OpenGL 里
+        // 0 是默认帧缓冲，此后读的是窗口自己的像素当成 ID，clear 则去擦窗口的颜色。
+        Framebuffer next = new Framebuffer(gl, width, height);
+        framebuffer.dispose();
+        framebuffer = next;
+        clear();
+    }
+```
+
+新增私有方法（放在 `dispose()` 之前）：
+
+```java
+    /**
+     * 断言尚未被释放。
+     *
+     * <p>释放之后底层 FBO 的 id 变成 0，而 0 在 OpenGL 里是<strong>默认帧缓冲</strong>。
+     * 不挡的话，读回拿的是窗口自己的像素（当成拾取 ID），清空擦的是窗口画面——
+     * 两个都是不崩溃、只是结果悄悄错了的失败。宁可在这里炸。
+     *
+     * @throws IllegalStateException 已释放时
+     */
+    private void checkNotDisposed() {
+        if (disposed) {
+            throw new IllegalStateException(
+                    "PickBuffer 已释放：底层 FBO id 已是 0，而 0 在 OpenGL 里是默认帧缓冲；"
+                            + "继续读会拿到窗口像素当成拾取 ID，继续清会擦掉窗口画面");
+        }
+    }
+```
+
+`width()` 与 `height()` 也各加一行 `checkNotDisposed();`。
+
+- [ ] **Step 5: 给 `FakeGLAbstraction` 加故障注入开关**
+
+F2 必须能在单测里被触发，否则改完还是没人防守。在 `FakeGLAbstraction` 里加：
+
+```java
+    /** 置为 true 后，所有整数读回与整数清空都抛异常，用于验证「抛错时仍恢复绑定」。 */
+    public boolean throwOnIntegerCall = false;
+
+    private void maybeThrow() {
+        if (throwOnIntegerCall) {
+            throw new IllegalStateException("注入的 GL 故障");
+        }
+    }
+```
+
+在 `clearIntegerColor`、`readUnsignedIntPixel`、`readUnsignedIntPixels`
+三个方法体**开头**各调一次 `maybeThrow();`。
+
+- [ ] **Step 6: 补测试**
+
+在 `PickBufferTest` 里加 6 条（文件已有 `buffer(gl)` 辅助方法与 `assertNotNull` 类 import）：
+
+```java
+    @Test
+    void 清空之后恢复原先的帧缓冲绑定() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        gl.boundFramebuffer = 7;
+        PickBuffer pb = buffer(gl);
+        gl.boundFramebuffer = 7;          // 构造内部的清空会把绑定还回来，这里重申一次
+        pb.clear();
+        assertEquals(7, gl.boundFramebuffer,
+                "清空后必须恢复绑定，否则后续绘制会画进拾取缓冲");
+    }
+
+    @Test
+    void 读点之后恢复原先的帧缓冲绑定() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.boundFramebuffer = 7;
+        pb.readPixel(1, 1);
+        assertEquals(7, gl.boundFramebuffer);
+    }
+
+    @Test
+    void 抛错时仍恢复帧缓冲绑定() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.boundFramebuffer = 7;
+        gl.throwOnIntegerCall = true;
+        assertThrows(IllegalStateException.class, () -> pb.readRect(0, 0, 8, 4));
+        assertEquals(7, gl.boundFramebuffer,
+                "读回抛错也必须把绑定还回去——否则下一帧颜色全画进拾取缓冲，且不报错");
+    }
+
+    @Test
+    void 构造后缓冲是全零() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        // 预置非零，模拟「新纹理内容是未定义值」的驱动行为
+        gl.setScreenBottomUp(8, 4, new int[]{-1, -1, -1, -1, -1, -1, -1, -1,
+                -1, -1, -1, -1, -1, -1, -1, -1,
+                -1, -1, -1, -1, -1, -1, -1, -1,
+                -1, -1, -1, -1, -1, -1, -1, -1});
+        PickBuffer pb = new PickBuffer(gl, 8, 4);
+        assertTrue(pb.readRect(0, 0, 8, 4).isEmpty(),
+                "构造时必须清一次；不清就是「在多数驱动上看起来能跑」");
+    }
+
+    @Test
+    void 重建失败时旧缓冲原封不动() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.setUserPixel(1, 1, 42);
+        assertThrows(IllegalArgumentException.class, () -> pb.ensureSize(0, 0));
+        assertTrue(gl.deletedFramebuffers.isEmpty(),
+                "先建后弃：新缓冲建失败时旧缓冲不该被释放");
+        assertEquals(42, pb.readPixel(1, 1), "旧缓冲应当仍然可用");
+    }
+
+    @Test
+    void 释放后读点抛异常而不是操作默认帧缓冲() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        pb.dispose();
+        assertThrows(IllegalStateException.class, () -> pb.readPixel(1, 1));
+    }
+```
+
+注意 `构造后缓冲是全零` 里 `setScreenBottomUp` 必须在 `new PickBuffer(...)` **之前**调用
+（构造里的清空会把屏幕填 0）——这正是该测试要验的。
+
+- [ ] **Step 7: 跑测试**
+
+Run: `mvn -o test -Dtest='PickBufferTest,LwjglGLAbstractionTest'`
+Expected: `Tests run: 16, Failures: 0, Errors: 0`（PickBuffer 14 + Lwjgl 2）
+
+- [ ] **Step 8: 变异验证**（每条做完立刻还原）
+
+| 变异 | 应失败的测试 |
+|------|--------------|
+| `allocateReadBuffer` 改回 `stack.mallocInt(pixels)` 的写法 | `区域读回缓冲能装下整个帧缓冲` |
+| `clear()` 去掉 `finally`（恢复语句移出） | `抛错时仍恢复帧缓冲绑定` 或 `清空之后恢复原先的帧缓冲绑定` |
+| `readRect` 去掉 `finally` | `抛错时仍恢复帧缓冲绑定` |
+| 构造函数尾部去掉 `clear();` | `构造后缓冲是全零` |
+| `ensureSize` 改回「先 dispose 再 new」 | `重建失败时旧缓冲原封不动` |
+| `checkNotDisposed()` 改成直接 `return;` | `释放后读点抛异常而不是操作默认帧缓冲` |
+
+**第 1 条要特别小心**：`allocateReadBuffer` 是静态方法，若改成用 `MemoryStack`，
+需要 `stackPush()`/`close()`，写法会变。请如实记录你实际注入了什么以及是否失败——
+**若某条存活，先怀疑检查、再怀疑代码，然后如实上报**（见 G 节）。
+
+- [ ] **Step 9: 跑全量测试**
+
+Run: `mvn -o test`
+Expected: `Tests run: 167, Failures: 0, Errors: 0, Skipped: 2`（159 + 6 + 2）
+
+- [ ] **Step 10: 提交**
+
+```bash
+git add src/main/java/com/bingbaihanji/jfgl/gl/LwjglGLAbstraction.java \
+        src/main/java/com/bingbaihanji/jfgl/renderer/PickBuffer.java \
+        src/test/java/com/bingbaihanji/jfgl/gl/FakeGLAbstraction.java \
+        src/test/java/com/bingbaihanji/jfgl/gl/LwjglGLAbstractionTest.java \
+        src/test/java/com/bingbaihanji/jfgl/renderer/PickBufferTest.java
+git commit -F - <<'EOF'
+fix(pick): 修 GL 边界层评审发现的 4 条缺陷
+
+F1 区域读回用 MemoryStack 装缓冲，而它默认只有 64 KB：128x128 是临界点，
+再大就抛 OutOfMemoryError: Out of stack space.，框选稍大一点整个不可用。
+实测 20000 像素起必抛。改用 BufferUtils.createIntBuffer，并把分配切成一个
+不碰 GL 的静态方法，让这条回归能被单测掐住（真方法无 GL 上下文会让 JVM abort）。
+顺带把 readUnsignedIntPixel 的 mallocInt 改成 callocInt——不清零的话，
+glReadPixels 没写入时读回的是栈上残留值。
+
+F2 clear/readPixel/readRect 的绑定恢复走的是直线代码，中间抛错就不恢复，
+绑定停在拾取 FBO 上，下一帧颜色全画进拾取缓冲。F1 让这条路径必然可达。
+三处都改成 try/finally。此前这两条路径的绑定恢复零测试覆盖，
+变异（同时删掉两处恢复）全量 159 仍全绿——本轮补上。
+
+F3 构造与重建都不清空附件，读回的是规范定义的未定义内容，多数驱动恰好给 0，
+属于「在多数驱动上看起来能跑」。构造与 ensureSize 之后各清一次。
+
+F4 ensureSize 先 dispose 再 new，构造抛错时字段停在已释放对象上，其 id() 是 0，
+而 0 在 OpenGL 里是默认帧缓冲——此后读的是窗口自己的像素当成 ID，
+clear 则去擦窗口颜色。改成先建后弃，并加 checkNotDisposed 让释放后的调用炸掉
+而不是静默操作默认帧缓冲。
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>
+EOF
+```
+
+---
+
 ## Task 7: RenderBatch —— ID 着色器与拾取 pass
 
 **Files:**
@@ -2210,7 +2574,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 - [ ] **Step 8: 编译并跑全量测试**
 
 Run: `mvn -o compile && mvn -o test`
-Expected: BUILD SUCCESS；`Tests run: 159, Failures: 0, Skipped: 2`
+Expected: BUILD SUCCESS；`Tests run: 167, Failures: 0, Skipped: 2`
 
 （`beginFrame` 此刻还没有调用方，`Gc` 仍在用 `setViewportHeight`——这是刻意的，
 见 Step 3 的说明。）
@@ -2507,7 +2871,7 @@ ID pass 保持裁剪开启并复用同一套 scissor 换算，被裁掉的部分
 - [ ] **Step 7: 编译并跑全量测试**
 
 Run: `mvn -o compile && mvn -o test`
-Expected: BUILD SUCCESS；`Tests run: 159, Failures: 0, Skipped: 2`
+Expected: BUILD SUCCESS；`Tests run: 167, Failures: 0, Skipped: 2`
 
 - [ ] **Step 8: 提交**
 
@@ -3186,7 +3550,7 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
 mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
     -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.PickVerifierKt"
 ```
-Expected: 测试 159 通过 / 0 失败 / 2 跳过；两个校验器都退出码 0。
+Expected: 测试 167 通过 / 0 失败 / 2 跳过；两个校验器都退出码 0。
 
 - [ ] **Step 6: 提交**
 
@@ -3199,7 +3563,7 @@ git commit -m "docs: 补拾取的使用要点与验证方式"
 
 ## 完成标准
 
-- [ ] `mvn -o test` → 159 通过 / 0 失败 / 2 跳过
+- [ ] `mvn -o test` → 167 通过 / 0 失败 / 2 跳过
 - [ ] `PipelineVerifier` 退出码 0（原有回归网未被破坏）
 - [ ] `PickVerifier` 退出码 0
 - [ ] 三条变异验证都**实际注入并确认失败**过，且已回滚（`git diff` 为空）
