@@ -1941,7 +1941,7 @@ Expected: `Tests run: 18, Failures: 0, Errors: 0`
 | 变异 | 应失败的测试 |
 |------|--------------|
 | `vertex` 里去掉 `if (id != 0) { hasPickable = true; }` | `出现非零ID后报告可拾取顶点`、`reset清掉可拾取标志` |
-| `vertex` 改成无条件 `hasPickable = true;` | `全部ID为0时不报告可拾取顶点` |
+| `vertex` 改成无条件 `hasPickable = true;` | `无拾取ID时不报告可拾取顶点` |
 | `reset()` 里去掉 `hasPickable = false;` | `reset清掉可拾取标志` |
 
 三条都是可区分的：变异 1 让标志恒假（前两条断言 `assertFalse`，看着照样过，
