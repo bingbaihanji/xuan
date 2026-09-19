@@ -135,6 +135,9 @@ public final class PickBuffer implements Disposable {
      * @return 区域内出现过的非零 ID 及其首次出现坐标，按 ID 升序
      */
     public List<PickPixel> readRect(int x, int y, int w, int h) {
+        // 显式写出来，而不是靠内部调 framebuffer.width() 间接生效：后者漏掉
+        // w <= 0 || h <= 0 的提前返回分支，缺了守卫会在已释放的缓冲上静默返回空列表。
+        checkNotDisposed();
         if (w <= 0 || h <= 0) {
             return List.of();
         }

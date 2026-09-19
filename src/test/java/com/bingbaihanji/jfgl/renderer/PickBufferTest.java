@@ -187,4 +187,18 @@ class PickBufferTest {
         pb.dispose();
         assertThrows(IllegalStateException.class, () -> pb.readPixel(1, 1));
     }
+
+    @Test
+    void 清空抛错时仍恢复帧缓冲绑定() {
+        // 这条不能靠「读回抛错」那条代替：那条走的是 readRect，根本到不了 clear()。
+        // 而不注入故障的话，直线代码和 try/finally 的恢复行为完全一致，
+        // 「清空之后恢复原先的帧缓冲绑定」区分不了两者——守卫无人防守。
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.boundFramebuffer = 7;
+        gl.throwOnIntegerCall = true;
+        assertThrows(IllegalStateException.class, () -> pb.clear());
+        assertEquals(7, gl.boundFramebuffer,
+                "清空抛错也必须把绑定还回去——否则后续绘制全画进拾取缓冲，且不报错");
+    }
 }
