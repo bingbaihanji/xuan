@@ -1936,7 +1936,19 @@ Expected: 编译失败 — `找不到符号: 方法 hasPickableVertices()`
 Run: `mvn -o test -Dtest=VertexWriterTest`
 Expected: `Tests run: 18, Failures: 0, Errors: 0`
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: 变异验证**（每条做完立刻还原，共 3 条）
+
+| 变异 | 应失败的测试 |
+|------|--------------|
+| `vertex` 里去掉 `if (id != 0) { hasPickable = true; }` | `出现非零ID后报告可拾取顶点`、`reset清掉可拾取标志` |
+| `vertex` 改成无条件 `hasPickable = true;` | `全部ID为0时不报告可拾取顶点` |
+| `reset()` 里去掉 `hasPickable = false;` | `reset清掉可拾取标志` |
+
+三条都是可区分的：变异 1 让标志恒假（前两条断言 `assertFalse`，看着照样过，
+真正抓到它的是两条 `assertTrue`），变异 2 让标志恒真，变异 3 只破坏复位。
+**若哪条实测存活，先怀疑断言、再怀疑代码，然后如实上报**（见 G 节）。
+
+- [ ] **Step 6: 提交**
 
 ```bash
 git add src/main/java/com/bingbaihanji/jfgl/renderer/VertexWriter.java \
@@ -1944,7 +1956,11 @@ git add src/main/java/com/bingbaihanji/jfgl/renderer/VertexWriter.java \
 git commit -m "feat(pick): VertexWriter 记录本批是否含可拾取顶点
 
 粒度是每批而非每帧：reset() 清掉标志，而它正是帧中途 flush 的分批边界。
-这样每批各自贡献自己的 ID，无需回放历史，天然兼容 flush。"
+这样每批各自贡献自己的 ID，无需回放历史，天然兼容 flush。
+
+三条变异验证：标志恒假、标志恒真、复位漏掉。
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>"
 ```
 
 ---
