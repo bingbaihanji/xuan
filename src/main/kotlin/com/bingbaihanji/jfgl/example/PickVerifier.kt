@@ -57,6 +57,18 @@ class PickVerifierApp : Application() {
      */
     private var rendered = 0
 
+    /**
+     * **陈旧 ID 检查帧**：本帧只画被裁剪的那个矩形，其余图元全不画。
+     *
+     * <p>存在的理由：前几帧画的是同一个场景，上一帧留下的陈旧 ID 与这一帧的新鲜 ID
+     * 恰好相同，`clear()` 的 scissor 泄漏因此完全不可见。只有「上一帧有、这一帧没有」
+     * 的图元才暴露它——而那个缺陷的危害正是「用户点到一个已经消失的对象」。
+     */
+    private val staleIdFrame = 5
+
+    /** 帧 4 的失败数。帧 4 报告完不退（退出挪到帧 5），先存着，帧 5 合并进退出码。 */
+    private var frameFourFailures = 0
+
     // 每个图形一个 ID。0 号不在此列——它恒定表示「什么都没命中」。
     private val idA = 1
     private val idB = 2
@@ -104,32 +116,38 @@ class PickVerifierApp : Application() {
      *
      * <p>帧 0 与帧 1 **不带任何拾取 ID**，用来验证「整帧无拾取对象时 ID pass 被跳过」。
      * 帧 2 起才带上 ID。这个划分与 [verifyOnce] 里的两处计数断言是一对的。
+     *
+     * <p>帧 [staleIdFrame] 起，前四个图元**全不画**——它们是「上一帧有、这一帧没有」
+     * 的那批，用来暴露 `clear()` 的 scissor 泄漏。被裁剪的那个矩形照画，
+     * 保证 ID pass 仍会跑、且最后一条命令仍带裁剪盒（泄漏的触发条件）。
      */
     private fun drawScene(gc: Gc) {
         val withIds = rendered >= 2
 
-        // A：只被 B 覆盖一部分
-        gc.pickId = if (withIds) idA else 0
-        gc.fill = 0xFFCC0000.toInt()
-        gc.fillRect(aX, aY, aW, aH)
+        if (rendered < staleIdFrame) {
+            // A：只被 B 覆盖一部分
+            gc.pickId = if (withIds) idA else 0
+            gc.fill = 0xFFCC0000.toInt()
+            gc.fillRect(aX, aY, aW, aH)
 
-        // B：后画，压在 A 上面 → 重叠处 B 赢
-        gc.pickId = if (withIds) idB else 0
-        gc.fill = 0xFF00CC00.toInt()
-        gc.fillRect(bX, bY, bW, bH)
+            // B：后画，压在 A 上面 → 重叠处 B 赢
+            gc.pickId = if (withIds) idB else 0
+            gc.fill = 0xFF00CC00.toInt()
+            gc.fillRect(bX, bY, bW, bH)
 
-        // 纯描边：只有边可拾取，内部不可
-        gc.pickId = if (withIds) idStroke else 0
-        gc.stroke = 0xFF0000FF.toInt()
-        gc.lineWidth = 6f
-        gc.strokeRect(sX, sY, sW, sH)
+            // 纯描边：只有边可拾取，内部不可
+            gc.pickId = if (withIds) idStroke else 0
+            gc.stroke = 0xFF0000FF.toInt()
+            gc.lineWidth = 6f
+            gc.strokeRect(sX, sY, sW, sH)
 
-        // 全透明填充：肉眼看不见，但必须仍可拾取（隐形热区）
-        gc.pickId = if (withIds) idTransparent else 0
-        gc.fill = 0xFF00CCCC.toInt()
-        gc.globalAlpha = 0f
-        gc.fillRect(tX, tY, tW, tH)
-        gc.globalAlpha = 1f
+            // 全透明填充：肉眼看不见，但必须仍可拾取（隐形热区）
+            gc.pickId = if (withIds) idTransparent else 0
+            gc.fill = 0xFF00CCCC.toInt()
+            gc.globalAlpha = 0f
+            gc.fillRect(tX, tY, tW, tH)
+            gc.globalAlpha = 1f
+        }
 
         // 被裁剪：大矩形只画出与裁剪区的交集，因此也只有交集可拾取
         gc.pickId = if (withIds) idClipped else 0
@@ -157,6 +175,44 @@ class PickVerifierApp : Application() {
         if (justRendered < 4) return
 
         val gc = bridge.gc() ?: return
+
+        // 【陈旧 ID 检查】帧 5 只画被裁剪的那个矩形，其余图元全不画，所以
+        // (100,80) 这一帧什么都没有——那里必须不再命中。这一段必须在帧 4 的
+        // 完整校验**之前**返回：否则帧 5 会把帧 4 那一整套断言（含 ID pass 计数）
+        // 再跑一遍，而那套断言是按帧 4 的场景写死的。
+        if (justRendered >= staleIdFrame) {
+            println("\n-- 陈旧 ID 检查（上一帧有、这一帧没有） --")
+            val staleFailures = ArrayList<String>()
+
+            fun reportStale(label: String, ok: Boolean, detail: String) {
+                println("  [${if (ok) "PASS" else "FAIL"}] $label — $detail")
+                if (!ok) staleFailures.add(label)
+            }
+
+            val atA = gc.pick(100f, 80f)?.id() ?: 0
+            val atClip = gc.pick(420f, 270f)?.id() ?: 0
+            // (420,270) 证明 ID pass 确实跑了——否则"没命中"可能只是因为它没跑，
+            // 那样这条断言就变成了恒真检查。
+            reportStale("已消失图元的位置不再命中", atA == 0,
+                "(100,80) 实际=$atA 期望=0（帧 4 该处是 idA=$idA）")
+            reportStale("本帧仍在的图元照常命中（证明 ID pass 跑了）", atClip == idClipped,
+                "(420,270) 实际=$atClip 期望=$idClipped")
+
+            // 帧 4 与帧 5 的失败合并成同一个退出码：帧 4 不退是为了让帧 5 能取样，
+            // 那它的失败就必须记到这里来，不能被帧 5 的「全部通过」盖掉。
+            val total = frameFourFailures + staleFailures.size
+            println()
+            if (total == 0) {
+                println("=== 全部通过 ===")
+            } else {
+                println("=== 失败 $total 项（帧 4 共 $frameFourFailures 项，" +
+                        "帧 5 共 ${staleFailures.size} 项）：" +
+                        "${staleFailures.joinToString("；")} ===")
+            }
+
+            Platform.exit()
+            exitProcess(if (total == 0) 0 else 1)
+        }
 
         val failures = ArrayList<String>()
 
@@ -249,15 +305,12 @@ class PickVerifierApp : Application() {
         gc.restore()
         report("restore 后 ID 回到 save 时的值（0）", gc.pickId == 0, "pickId=${gc.pickId}")
 
+        // 帧 4 报告完**不退**：帧 5 才是「上一帧有、这一帧没有」的场景，
+        // 那条断言只能在帧 5 取样。失败数先存着，退出码留到帧 5 一起算。
+        frameFourFailures = failures.size
         println()
-        if (failures.isEmpty()) {
-            println("=== 全部通过 ===")
-        } else {
-            println("=== 失败 ${failures.size} 项：${failures.joinToString("；")} ===")
-        }
-
-        Platform.exit()
-        exitProcess(if (failures.isEmpty()) 0 else 1)
+        println(if (failures.isEmpty()) "=== 帧 4 校验全部通过，继续等帧 $staleIdFrame ==="
+        else "=== 帧 $justRendered 失败 ${failures.size} 项：${failures.joinToString("；")} ===")
     }
 
     /**

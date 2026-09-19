@@ -84,11 +84,22 @@ public final class PickBuffer implements Disposable {
      * 把整个缓冲清成 0（即「什么都没命中」）。
      *
      * <p>走 {@code glClearBufferuiv} 而不是 {@code glClearColor} + {@code glClear}：
-     * 后者对整数附件是未定义行为。绑定在使用前后被恢复。
+     * 后者对整数附件是未定义行为。帧缓冲绑定在使用前后被恢复。
+     *
+     * <p><strong>裁剪测试在清空期间会被临时关闭</strong>：{@code glClearBufferuiv}
+     * 受 scissor 影响，而本方法的调用点（{@code RenderBatch.drawPickPass}）恰好发生在
+     * 颜色 pass 之后、{@code glDisable(GL_SCISSOR_TEST)} 之前，此时裁剪盒还是
+     * 最后一条颜色命令留下的那个。不关的话清到的只是那个盒子，
+     * <strong>盒外的像素保留上一帧的 ID——拾取到已经消失的对象，且不报错</strong>。
+     *
+     * <p>关掉再恢复、而不是要求调用方先关：本方法承诺的是「整个缓冲」，
+     * 那就不该依赖调用点的 GL 状态。实测确认过（见计划 Task 10.5）。
      */
     public void clear() {
         checkNotDisposed();
         int previous = gl.currentFramebufferBinding();
+        boolean scissorWasEnabled = gl.isScissorEnabled();
+        gl.setScissorEnabled(false);
         gl.bindFramebuffer(framebuffer.id());
         try {
             gl.clearIntegerColor(0);
@@ -96,6 +107,7 @@ public final class PickBuffer implements Disposable {
             // 必须用 finally：任何 GL 调用都可能抛错，一旦抛出去而绑定停在拾取 FBO，
             // 后续所有绘制都会画进这里——画面全黑或停在上一帧，且不报错。
             gl.bindFramebuffer(previous);
+            gl.setScissorEnabled(scissorWasEnabled);
         }
     }
 

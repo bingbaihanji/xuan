@@ -236,6 +236,20 @@ public interface GLAbstraction extends Disposable {
     void clearIntegerColor(int value);
 
     /**
+     * 返回裁剪测试是否已启用。
+     *
+     * @return 已启用时为 true
+     */
+    boolean isScissorEnabled();
+
+    /**
+     * 启用或关闭裁剪测试。
+     *
+     * @param enabled 是否启用
+     */
+    void setScissorEnabled(boolean enabled);
+
+    /**
      * 读回一个无符号整数像素。
      *
      * <p>坐标是 <strong>GL 约定</strong>：原点在帧缓冲左下角、y 向上。

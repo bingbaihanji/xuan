@@ -201,4 +201,25 @@ class PickBufferTest {
         assertEquals(7, gl.boundFramebuffer,
                 "清空抛错也必须把绑定还回去——否则后续绘制全画进拾取缓冲，且不报错");
     }
+
+    @Test
+    void 清空会临时关掉裁剪并在之后恢复() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        PickBuffer pb = buffer(gl);
+        gl.scissorEnabled = true;
+        // 假 GL 的 clearIntegerColor 在裁剪开启时抛异常，所以这行本身就是断言：
+        // 真 GL 上同样的错误是静默的（只清掉裁剪盒内那一块）。
+        pb.clear();
+        assertTrue(gl.scissorEnabled, "清空结束必须把裁剪状态恢复原样");
+    }
+
+    @Test
+    void 构造与重建清空时也关掉裁剪() {
+        FakeGLAbstraction gl = new FakeGLAbstraction();
+        gl.setScreenBottomUp(8, 4, new int[8 * 4]);
+        gl.scissorEnabled = true;
+        PickBuffer pb = new PickBuffer(gl, 8, 4);   // 构造里会 clear()
+        pb.ensureSize(16, 16);                       // 重建后也会 clear()
+        assertTrue(gl.scissorEnabled, "两处清空都必须恢复裁剪状态");
+    }
 }

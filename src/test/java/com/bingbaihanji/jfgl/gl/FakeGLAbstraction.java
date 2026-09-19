@@ -49,6 +49,9 @@ public final class FakeGLAbstraction implements GLAbstraction {
     /** 置为 true 后，所有整数读回与整数清空都抛异常，用于验证「抛错时仍恢复绑定」。 */
     public boolean throwOnIntegerCall = false;
 
+    /** 裁剪测试是否启用。默认关。 */
+    public boolean scissorEnabled = false;
+
     private void maybeThrow() {
         if (throwOnIntegerCall) {
             throw new IllegalStateException("注入的 GL 故障");
@@ -120,7 +123,25 @@ public final class FakeGLAbstraction implements GLAbstraction {
     @Override
     public void clearIntegerColor(int value) {
         maybeThrow();
+        // glClearBufferuiv 受 scissor 影响：开着裁剪清空只会清掉盒内那一块，
+        // 盒外的像素保留上一帧的 ID——拾取到已经消失的对象，且不报错。
+        // 真 GL 上这个错误是静默的，这里把它变成显式的失败。
+        if (scissorEnabled) {
+            throw new AssertionError(
+                    "clearIntegerColor 在裁剪测试开启时被调用：只会清掉裁剪盒内的部分，"
+                            + "盒外保留上一帧的 ID");
+        }
         java.util.Arrays.fill(screen, value);
+    }
+
+    @Override
+    public boolean isScissorEnabled() {
+        return scissorEnabled;
+    }
+
+    @Override
+    public void setScissorEnabled(boolean enabled) {
+        scissorEnabled = enabled;
     }
 
     @Override

@@ -187,6 +187,20 @@ public class LwjglGLAbstraction implements GLAbstraction {
     }
 
     @Override
+    public boolean isScissorEnabled() {
+        return GL11.glIsEnabled(GL11.GL_SCISSOR_TEST);
+    }
+
+    @Override
+    public void setScissorEnabled(boolean enabled) {
+        if (enabled) {
+            GL11.glEnable(GL11.GL_SCISSOR_TEST);
+        } else {
+            GL11.glDisable(GL11.GL_SCISSOR_TEST);
+        }
+    }
+
+    @Override
     public int readUnsignedIntPixel(int x, int y) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             // 必须是 callocInt 而不是 mallocInt：mallocInt 不清零，若 glReadPixels
