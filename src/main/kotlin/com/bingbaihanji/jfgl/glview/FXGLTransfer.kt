@@ -182,6 +182,16 @@ class FXGLTransfer(
     fun gc(): Gc? = gc
 
     /**
+     * 返回累计执行过的 ID pass 次数，**仅供校验器断言「跳过优化」确实生效**。
+     *
+     * <p>没有它，那条优化就只是注释里的一句承诺——而「优化悄悄失效」
+     * 正是本项目最该防的那类问题。生产代码不应依赖它。
+     *
+     * @return ID pass 执行次数；GL 未初始化时为 0
+     */
+    fun pickPassCountForTest(): Int = renderBatch?.pickPassCount() ?: 0
+
+    /**
      * 设置逐帧绘制回调。**帧已经开好**，回调里直接画即可，不要自己调用
      * `beginFrame`/`endFrame`（它们由本类配对调用）。
      *
