@@ -57,12 +57,17 @@ src/test/java/com/bingbaihanji/jfgl/geom/       PathTest、FlattenerTest、Tesse
                                                 TessellatorHoleTest、TessellatorRegressionTest、
                                                 StrokeGeneratorTest、StrokeDashTest、
                                                 GeomPackageIsolationTest
-src/test/java/com/bingbaihanji/jfgl/renderer/   VertexFormatTest、VertexWriterTest、ViewTransformTest
+src/test/java/com/bingbaihanji/jfgl/renderer/   VertexFormatTest、VertexWriterTest、ViewTransformTest、
+                                                PickRegistryTest、PickBufferTest
+src/test/java/com/bingbaihanji/jfgl/gl/         FramebufferTest、LwjglGLAbstractionTest
 ```
 
-当前 **125 个测试，0 失败，2 跳过**。单测命令：`mvn test -Dtest=类名`。
+当前 **170 个测试，0 失败，2 跳过**。单测命令：`mvn test -Dtest=类名`。
 
 `geom/`、`math/`、`util/`、`ViewTransform` 都是纯计算、不依赖 GL 上下文，最适合写单测。
+`gl/Framebuffer` 与 `renderer/PickBuffer` 只依赖 `GLAbstraction` **接口**，
+用 `src/test/.../gl/FakeGLAbstraction` 这个假实现也能零 GL 上下文单测——
+这是拾取子系统里唯一能做到这一点的一层。`RenderBatch` 的颜色/ID pass 与 `Gc` 则必须靠校验器。
 
 ## 架构
 
@@ -116,6 +121,22 @@ Main.kt                     设置 prism.* 系统属性
 125% 缩放下，`width = 800` 的窗口实际帧缓冲是 **988×738** 设备像素，画到 `x = 800`
 只覆盖约 81% 宽度。需要铺满时用 `Gc.width` / `Gc.height`。
 
+### 拾取
+
+`gc.pickId = n` 给后续图元打标，`gc.pickable(n) { ... }` 是它的作用域版本（等价于
+`save/pickId/restore`，块内的变换与裁剪改动也会回滚）。`gc.pick(x, y)` / `pickRect` 查询。
+
+- **ID 0 表示不参与拾取**，也是「什么都没命中」的返回值。注册表 `pickRegistry`
+  分配的 ID 从 1 开始，永不返回 0。
+- **拾取只由几何决定，与颜色和透明度无关**：`globalAlpha = 0` 的图元照样能命中。
+  图表的「隐形热区」（比数据点大一圈的透明矩形）就是靠这个行为。**这是刻意保留的，
+  不要"顺手修好"它**——有测试钉着。
+- **裁剪生效**：被 `clipRect` 裁掉的部分不可拾取，与画面一致。
+- **只返回最上层**：重叠时后画的赢。要"全部重叠对象"需要逐对象多趟渲染，不在范围内。
+- **组件在 JavaFX 线程响应鼠标事件时用 `FXGLTransfer.pickAsync`**，不要直接调 `Gc.pick`
+  ——那是跨线程 GL 调用，崩得毫无规律。
+- 注册发生在**数据变化时而非每帧**；不再用的对象要 `unregister`，否则一直被强引用着。
+
 ### 线程模型
 
 所有 `gl*` 调用与 GL 资源生命周期**必须**发生在 `GLCanvas` 的 GL 线程上，即
@@ -144,6 +165,15 @@ Main.kt                     设置 prism.* 系统属性
 1. **改渲染路径后，跑 `PipelineVerifier`，不能只靠人眼看窗口。**
    它回读帧缓冲，逐项断言像素数、包围盒、描边四条边的对称性，失败以非零码退出。
    它是上述缺陷被发现的原因。
+
+   改**拾取**路径后跑 `PickVerifier`（同样回读像素、断言精确 ID，退出码 0/1）：
+
+   ```bash
+   mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
+       -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.PickVerifierKt"
+   ```
+
+   拾取尤其危险：**错误的拾取不会让任何画面变坏**，只会让点击落在错误的对象上。
 2. **改了断言或修了 bug，做变异验证**：把 bug 重新注入，确认校验器真的失败。
    （校验器里那条"反证"断言就是这么来的——避免覆盖性检查恒真、变成橡皮图章。）
 3. 校验器依赖"用户坐标 1:1 映射到设备像素"这一前提。若将来引入真正的 DPI 缩放，
@@ -159,11 +189,13 @@ Main.kt                     设置 prism.* 系统属性
 **可用（依赖 GL 上下文）**
 `gl/ShaderProgram`、`gl/Texture`、`gl/LwjglGLAbstraction`（`initialize()`/`dispose()` 是诚实的
 no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch`、
-`renderer/Gc` 的形状与路径方法、`gpu/ComputeShader`
+`renderer/Gc` 的形状与路径方法、`gpu/ComputeShader`、
+`renderer/PickRegistry`（ID 分配与 `id→对象` 映射，纯内存可单测）、
+`renderer/PickBuffer`、`PickHit`、`Gc` 的 `pickId` / `pickable` / `pick` / `pickRect`、
+`FXGLTransfer.pickAsync`
 
 **未实现 / 待办**
 - **SDF 文本**（子项目 B）：目前完全没有文本绘制能力。需支持中文与任意缩放清晰度。
-- **GPU 拾取**（子项目 C）：顶点格式的 `id` 属性已就位，缺 ID 通道 FBO 与读回。
 - **科学绘图级图表**（子项目 D）：对数轴、多 Y 轴、误差棒、热力图、等高线。图表目前完全不存在。
 - **Paint / 渐变**：所有绘制只接受纯色整数。设计意图是**所有 Paint 归一化为纹理**
   （纯色 = 超白色纹理 + 顶点颜色，渐变 = 1×256 LUT）。

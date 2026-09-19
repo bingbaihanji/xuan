@@ -126,6 +126,35 @@ fillPath()
 strokePath()
 ```
 
+### 拾取
+
+```kotlin
+// 注册：数据变化时做一次，不是每帧
+val id = gc.pickRegistry.register(myDataPoint)
+
+// 打标：状态字段（进 save/restore 栈）
+gc.pickId = id
+gc.fillCircle(x, y, 4f)
+
+// 或作用域块，块结束自动复原
+gc.pickable(id) {
+    gc.fillCircle(x, y, 4f)
+}
+
+// 查询（GL 线程）
+val hit = gc.pick(mouseX, mouseY)          // 最上层命中，PickHit?
+val hits = gc.pickRect(x, y, w, h)         // 区域内的全部命中
+
+// JavaFX 线程（鼠标事件里）用异步版本
+bridge.pickAsync(mouseX, mouseY) { hit ->
+    // 回调在 JavaFX 线程上执行
+    label.text = hit?.payload?.toString() ?: "无"
+}
+```
+
+拾取是**像素级**的（判定用 GPU 实际光栅化的结果，与所见一致），且**只看几何**——
+全透明的图元照样能命中，图表的隐形热区正是靠这个行为。
+
 ### 坐标系与颜色
 
 - 坐标单位是**像素**，原点在**左上角**，**y 轴向下**。
