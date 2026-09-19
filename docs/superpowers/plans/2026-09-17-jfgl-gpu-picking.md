@@ -688,14 +688,21 @@ A 节与 B 节**分两批交付**：A 节不含并发测试，那一批是 17 / 
 | Task 2 | 0（`PickHit` 是 record，见该任务的说明） | 143 |
 | Task 3 | 0（纯管道，常量已核到字节码，不写橡皮图章测试） | 143 |
 | Task 4 | +5 `FramebufferTest` | **148** |
-| Task 5 | +9 `PickBufferTest` | **157** |
-| Task 6 | +3 `VertexWriterTest`（`hasPickableVertices` 是纯 CPU 标志，能单测） | **160** |
-| Task 7 | 0（`RenderBatch` 的 ID pass 要真 GL 上下文，由 Task 10 校验器覆盖） | 160 |
-| Task 11 | 终验 | 160 |
+| Task 5 | +8 `PickBufferTest` | **156**（实跑确认） |
+| Task 6 | +3 `VertexWriterTest`（`hasPickableVertices` 是纯 CPU 标志，能单测） | **159** |
+| Task 7 | 0（`RenderBatch` 的 ID pass 要真 GL 上下文，由 Task 10 校验器覆盖） | 159 |
+| Task 11 | 终验 | 159 |
 
-**数字对不上就停下来查**，不要为了让计数凑上而增删测试——已经踩过一次：
-派单时我按「并发测试也算进去」写了 18 / 143，实现者只交了 17 / 142，
-它把差异报了上来而不是编一个填充测试，这是对的。
+**数字对不上就停下来查**，不要为了让计数凑上而增删测试——**已经踩过两次**：
+
+- Task 1：派单时我按「并发测试也算进去」写了 18 / 143，实现者只交了 17 / 142。
+  它把差异报了上来而不是编一个填充测试。
+- Task 5：我写 `Tests run: 9`，可**计划自己给的代码块里只有 8 个 `@Test`**——
+  我数重了。实现者跑了 8 个、如实报了 156 而不是 157，也没有编第 9 个。
+  我随后又基于「Task 5 = 9」这个错前提把下游抬到 160，一错再错。
+
+所以：**计划里的预期数字是笔算结果，代码块才是唯一事实来源。**
+对不上时先 `grep -c "@Test"` 数一遍代码块，再决定是改测试还是改数字。
 
 **F. 交接纪律**：评审者/实现者在任务边界必须 `git status --porcelain` 确认工作区干净。
 已经发生过一次：被中断的评审者在工作区留下了一个未还原的变异（`unregister` 的守卫被删），
@@ -1794,7 +1801,7 @@ class PickBufferTest {
 ```
 
 Run: `mvn -o test -Dtest=PickBufferTest`
-Expected: `Tests run: 9, Failures: 0, Errors: 0`
+Expected: `Tests run: 8, Failures: 0, Errors: 0`
 
 **变异验证**（每条做完立刻还原）：
 
@@ -1809,8 +1816,8 @@ Expected: `Tests run: 9, Failures: 0, Errors: 0`
 **首次出现的坐标**——覆盖之后 ID 集合不变，变异会存活。断言已改成整表
 `PickPixel` 比较，覆盖坐标。这正是 G 节说的那条，写在这里做个实证。）
 
-全量测试：`mvn -o test` → 期望 `Tests run: 157, Failures: 0, Errors: 0, Skipped: 2`
-（148 + 9）。
+全量测试：`mvn -o test` → 期望 `Tests run: 156, Failures: 0, Errors: 0, Skipped: 2`
+（148 + 8）。
 
 提交：
 
@@ -2187,7 +2194,7 @@ git commit -m "feat(pick): VertexWriter 记录本批是否含可拾取顶点
 - [ ] **Step 8: 编译并跑全量测试**
 
 Run: `mvn -o compile && mvn -o test`
-Expected: BUILD SUCCESS；`Tests run: 160, Failures: 0, Skipped: 2`
+Expected: BUILD SUCCESS；`Tests run: 159, Failures: 0, Skipped: 2`
 
 （`beginFrame` 此刻还没有调用方，`Gc` 仍在用 `setViewportHeight`——这是刻意的，
 见 Step 3 的说明。）
@@ -2484,7 +2491,7 @@ ID pass 保持裁剪开启并复用同一套 scissor 换算，被裁掉的部分
 - [ ] **Step 7: 编译并跑全量测试**
 
 Run: `mvn -o compile && mvn -o test`
-Expected: BUILD SUCCESS；`Tests run: 160, Failures: 0, Skipped: 2`
+Expected: BUILD SUCCESS；`Tests run: 159, Failures: 0, Skipped: 2`
 
 - [ ] **Step 8: 提交**
 
@@ -3163,7 +3170,7 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
 mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
     -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.PickVerifierKt"
 ```
-Expected: 测试 160 通过 / 0 失败 / 2 跳过；两个校验器都退出码 0。
+Expected: 测试 159 通过 / 0 失败 / 2 跳过；两个校验器都退出码 0。
 
 - [ ] **Step 6: 提交**
 
@@ -3176,7 +3183,7 @@ git commit -m "docs: 补拾取的使用要点与验证方式"
 
 ## 完成标准
 
-- [ ] `mvn -o test` → 160 通过 / 0 失败 / 2 跳过
+- [ ] `mvn -o test` → 159 通过 / 0 失败 / 2 跳过
 - [ ] `PipelineVerifier` 退出码 0（原有回归网未被破坏）
 - [ ] `PickVerifier` 退出码 0
 - [ ] 三条变异验证都**实际注入并确认失败**过，且已回滚（`git diff` 为空）
