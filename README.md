@@ -62,9 +62,18 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
     -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.MainKt"
 
 # 跑像素级端到端校验（自动关窗，退出码 0=通过 / 1=断言失败）
+# 渲染管线
 mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
     -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.PipelineVerifierKt"
+
+# 拾取
+mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
+    -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.PickVerifierKt"
 ```
+
+**改哪条路径就跑哪个校验器**：动了顶点/几何/描边跑 `PipelineVerifier`，
+动了拾取（`pickId`、ID pass、`PickBuffer`）跑 `PickVerifier`。两个都过不代表没漏——
+它们只证明自己断言过的那些点，见文末「验证」一节。
 
 > **不要用 `mvn exec:java`**：该插件的类加载器会让 openglfx 链接到另一份
 > `com.sun.prism.GraphicsPipeline`（静态字段永远为 null），启动即抛
@@ -201,10 +210,17 @@ mvn test -Dtest=PathTest     # 单个测试类
 
 `geom/`、`renderer/` 的顶点侧、`math/`、`util/` 都是纯计算，不依赖 GL 上下文。
 
-**改渲染路径后，请跑上面那条 `PipelineVerifier`。** 本管线的多数缺陷属于「静默错误输出」：
-编译通过、单元测试全绿、画面却是错的。校验器把**最终像素**作为口径，回读帧缓冲后断言
-像素数与包围盒，这是唯一拦得住这类缺陷的办法——它曾据此发现描边丢失整条闭合边的 bug，
-而 124 个单元测试没有一个发现。
+**改渲染路径后跑 `PipelineVerifier`，改拾取路径后跑 `PickVerifier`**（见上面「运行」一节）。
+本管线的多数缺陷属于「静默错误输出」：编译通过、单元测试全绿、画面却是错的。
+校验器把**最终像素**作为口径，回读帧缓冲后断言，这是唯一拦得住这类缺陷的办法——
+它曾据此发现描边丢失整条闭合边的 bug，而当时的单元测试没有一个发现。
+
+**但校验器也有盲区**：它只证明自己断言过的那些点。开发拾取校验器时就撞上一次——
+24 条断言全绿，却漏掉了一个真缺陷（`PickBuffer.clear()` 受 `GL_SCISSOR_TEST` 影响，
+只清掉了裁剪盒内那部分，盒外保留上一帧的 ID → 拾取到已消失的对象）。
+原因是**它的场景每帧完全相同**，陈旧 ID 与新鲜 ID 恰好一致。
+所以校验器的场景要会变：至少包含「某个图元在后续帧消失／移动」，
+并专门断言「不该有东西的地方是干净的」，而不只是「该有东西的地方是对的」。
 
 ## 依赖
 
