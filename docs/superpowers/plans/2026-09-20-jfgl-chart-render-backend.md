@@ -180,9 +180,11 @@ import org.lwjgl.opengl.GL42;
 ```java
     // —— 顶点缓冲路径（图表后端用）——
     //
-    // 注意：这几个方法原本是抛 UnsupportedOperationException 的（"真调到了说明走偏了"）。
-    // 图表后端确实要建自己的 VBO，所以改成记录。代价是拾取路径若误调它们不会再报错，
-    // 但下面的记录列表让"误调"仍然可见。
+    // 这一组原本是抛 UnsupportedOperationException 的（"真调到了说明走偏了"）。
+    // 图表后端确实要建自己的 VBO，所以其中几个改成记录。
+    //
+    // **只放开 Task 8 真正会用到的那些。** 计划对"放开抛异常的方法"要求按需放开，
+    // 同一条纪律对"新增字段"一样适用——预先加字段，就是预先卸掉护栏。
 
     /** 创建的 VBO 名字。 */
     public final List<Integer> createdVbos = new ArrayList<>();
@@ -190,20 +192,26 @@ import org.lwjgl.opengl.GL42;
     /** 删除的 VBO 名字。 */
     public final List<Integer> deletedVbos = new ArrayList<>();
 
-    /** 当前绑定的 VBO。 */
+    /** 当前绑定的 VBO。越界检查要靠它判断这次上传落在哪个缓冲上。 */
     public int boundVbo = 0;
 
-    /** 每次 uploadVboSubData 的记录："偏移:字节数"。 */
+    /**
+     * 每个 VBO 的已分配字节数，由定容调用（{@code uploadVboData(float[])}）记录。
+     *
+     * <p><strong>必须按 VBO 名字记，不能只留一个标量</strong>——理由与
+     * {@code r8Widths} 完全相同：标量记的是"最后一次调用"，一旦同时存在多个 VBO，
+     * 检查就会按错误的容量算，于是假实现悄悄放过真正的越界。
+     */
+    private final Map<Integer, Integer> vboCapacityBytes = new HashMap<>();
+
+    /**
+     * 每次 uploadVboSubData 的记录："VBO名@偏移:字节数"。
+     *
+     * <p>第一个字段是<strong>目标 VBO</strong>，不是多余的：Task 11 之后会同时存在多个
+     * VBO（一个系列一个），而"上传落到了别的系列的缓冲上"是画面正常、只是数据错的一类
+     * 缺陷——记录里必须能问出这件事。
+     */
     public final List<String> vboSubDataCalls = new ArrayList<>();
-
-    /** 每次 setVertexAttribDivisor 的记录："位置:除数"。 */
-    public final List<String> divisorCalls = new ArrayList<>();
-
-    /** 每次 drawArraysInstancedBaseInstance 的记录："first,count,instances,base"。 */
-    public final List<String> instanceDrawCalls = new ArrayList<>();
-
-    /** 累计通过 uploadVboSubData 上传的字节数。 */
-    public int subDataBytesTotal = 0;
 
     @Override
     public int createVbo() {
@@ -220,34 +228,170 @@ import org.lwjgl.opengl.GL42;
     @Override
     public void deleteVbo(int vbo) {
         deletedVbos.add(vbo);
+        vboCapacityBytes.remove(vbo);
     }
-
-    /** 每次 uploadVboData(float[]) 的元素个数。图表后端用它给缓冲定容。 */
-    public final List<Integer> vboDataUploads = new ArrayList<>();
 
     @Override
     public void uploadVboData(float[] data) {
-        vboDataUploads.add(data.length);
+        vboCapacityBytes.put(boundVbo, data.length * Float.BYTES);
     }
 
     @Override
     public void uploadVboSubData(int offsetBytes, ByteBuffer data) {
         int bytes = data.remaining();
-        vboSubDataCalls.add(offsetBytes + ":" + bytes);
-        subDataBytesTotal += bytes;
-    }
-
-    @Override
-    public void setVertexAttribDivisor(int index, int divisor) {
-        divisorCalls.add(index + ":" + divisor);
-    }
-
-    @Override
-    public void drawArraysInstancedBaseInstance(int mode, int first, int count,
-                                                int instanceCount, int baseInstance) {
-        instanceDrawCalls.add(first + "," + count + "," + instanceCount + "," + baseInstance);
+        // 真 GL 上，越界要么报 GL_INVALID_OPERATION（而本仓库没有任何地方读错误码——
+        // glGetError 全库只在 PipelineVerifier 的一处诊断打印里出现过），要么静默损坏
+        // 别的数据。假实现把它变成显式失败，与本文件 uploadR8SubImage 的做法一致。
+        //
+        // 这一条不是吹毛求疵：Task 8 的整个测试策略就是靠这个假实现验证 SeriesBuffer，
+        // 而 SeriesBuffer 是"GPU 常驻 + 增量上传"这条主张的承载者。不校验前置条件的话，
+        // 它上面的断言会在"参数其实非法"时通过——本项目最警惕的形状。
+        Integer capacity = vboCapacityBytes.get(boundVbo);
+        if (capacity == null) {
+            throw new AssertionError(
+                    "向从未定容的 VBO " + boundVbo + " 子上传：真 GL 上这是 GL_INVALID_OPERATION");
+        }
+        if (offsetBytes < 0 || (long) offsetBytes + bytes > capacity) {
+            throw new AssertionError(
+                    "子上传越界：offset=" + offsetBytes + " bytes=" + bytes
+                            + " 容量=" + capacity + "（真 GL 上是静默损坏）");
+        }
+        vboSubDataCalls.add(boundVbo + "@" + offsetBytes + ":" + bytes);
     }
 ```
+
+> **并且新增 `src/test/java/com/bingbaihanji/jfgl/gl/FakeGLAbstractionGuardTest.java`**，
+> 把上面那三类清单钉成断言——**这样"护栏被卸掉"会变成一次可见的代码改动，而不是一次静默的通过**：
+>
+> ```java
+> package com.bingbaihanji.jfgl.gl;
+>
+> import org.junit.jupiter.api.Test;
+>
+> import java.lang.reflect.Method;
+> import java.util.Arrays;
+> import java.util.Set;
+> import java.util.TreeSet;
+> import java.util.stream.Collectors;
+>
+> import static org.junit.jupiter.api.Assertions.*;
+>
+> /**
+>  * 钉住假实现的<strong>护栏面</strong>。
+>  *
+>  * <p>{@code FakeGLAbstraction} 的价值全在"测试里真调到了不该调的东西就炸"。
+>  * 而<strong>卸掉护栏没有任何症状</strong>：把某个方法的 {@code throw} 换成空实现，
+>  * 测试照样全绿，直到某天一条走偏的代码路径静默通过。
+>  *
+>  * <p>所以这里把"哪些抛、哪些实现"写成两向断言。将来某个任务想放开一个方法，
+>  * 必须同时改这张清单——于是那次放开是一次<strong>可见的</strong>代码改动，
+>  * 而且会在计划里留下理由。这是本项目"护栏要能被观测"这条纪律的机器化。
+>  */
+> class FakeGLAbstractionGuardTest {
+>
+>     /** 必须抛 {@link UnsupportedOperationException} 的方法签名。 */
+>     private static final Set<String> MUST_THROW = Set.of(
+>             "initialize()", "clear(Color)", "setViewport(int,int,int,int)",
+>             "createVao()", "bindVao(int)", "deleteVao(int)",
+>             "uploadVboData(int[])",          // 注意：float[] 重载是"记录"，不是抛
+>             "uploadVboBytes(ByteBuffer)",
+>             "drawArrays(int,int,int)", "drawElements(int,int)",
+>             "enableBlend()", "disableBlend()", "setBlendFunc(int,int)",
+>             "createShader(String,String)", "createTexture(int,int,int[])",
+>             "setVertexAttribDivisor(int,int)", "drawArraysInstancedBaseInstance(int,int,int,int,int)");
+>
+>     /** 真正实现或记录的方法签名（**不**抛异常的那些）。 */
+>     private static final Set<String> IMPLEMENTED = Set.of(
+>             // 拾取路径
+>             "createFramebuffer()", "bindFramebuffer(int)", "deleteFramebuffer(int)",
+>             "currentFramebufferBinding()", "createIntegerTexture(int,int)",
+>             "deleteTexture(int)", "createR8Texture(int,int)",
+>             "uploadR8SubImage(int,int,int,int,int,byte[])",
+>             "attachTextureToColor0(int)", "framebufferStatus()", "clearIntegerColor(int)",
+>             "isScissorEnabled()", "setScissorEnabled(boolean)",
+>             "readUnsignedIntPixel(int,int)", "readUnsignedIntPixels(int,int,int,int,int[])",
+>             "dispose()",
+>             // 顶点缓冲路径（图表后端）
+>             "createVbo()", "bindVbo(int)", "deleteVbo(int)",
+>             "uploadVboData(float[])", "uploadVboSubData(int,ByteBuffer)");
+>
+>     private static String signature(Method m) {
+>         return m.getName() + Arrays.stream(m.getParameterTypes())
+>                 .map(Class::getSimpleName)
+>                 .collect(Collectors.joining(",", "(", ")"));
+>     }
+>
+>     @Test
+>     void 假实现的方法分类不得静默变化() {
+>         Set<String> actual = Arrays.stream(FakeGLAbstraction.class.getDeclaredMethods())
+>                 .filter(m -> !m.isSynthetic())
+>                 .map(FakeGLAbstractionGuardTest::signature)
+>                 .collect(Collectors.toCollection(TreeSet::new));
+>
+>         Set<String> missing = new TreeSet<>(MUST_THROW);
+>         missing.removeAll(actual);
+>         assertTrue(missing.isEmpty(), "清单里的这些方法在假实现里不存在（改名了？）：" + missing);
+>
+>         Set<String> undocumented = new TreeSet<>(actual);
+>         undocumented.removeAll(MUST_THROW);
+>         undocumented.removeAll(IMPLEMENTED);
+>         assertTrue(undocumented.isEmpty(),
+>                 "假实现里有方法既不在 MUST_THROW 也不在 IMPLEMENTED 里：" + undocumented
+>                         + "。新加一个不抛异常的方法意味着卸掉了一处护栏——"
+>                         + "若是有意的，把它加进 IMPLEMENTED 并说明理由。");
+>
+>         Set<String> overImplemented = new TreeSet<>(IMPLEMENTED);
+>         overImplemented.removeAll(actual);
+>         assertTrue(overImplemented.isEmpty(),
+>                 "IMPLEMENTED 里列了假实现其实没有的方法：" + overImplemented);
+>     }
+> }
+> ```
+>
+> **注意**：`MUST_THROW` 与 `IMPLEMENTED` 的并集必须**恰好覆盖**假实现声明的所有方法。
+> 这条断言的强度全在"两向"上——只查"清单里的都还在"是单向的，
+> 新加一个不抛异常的方法照样溜过去。
+
+> **`setVertexAttribDivisor` 与 `drawArraysInstancedBaseInstance` 继续抛异常。**
+> 质量复核指出这不是随意的：`divisorCalls` / `instanceDrawCalls` 在**整个计划里没有任何
+> 消费者**（计划自己的文件结构表把 `LineSeriesRenderer` / `ChartRenderer` 标为"能单测吗：**否**"），
+> 那两个字段会成为测试源码里的死代码。既然没有消费者，就不该放开。
+> **Task 10 / 14 若真的需要单测渲染器的装配逻辑，那时再放开那两个（并记在这里）。**
+>
+> 附带好处：`setVertexAttribDivisor` 的真正可测接缝不在假实现里，而在
+> `RenderBatch` **绕过 `GLAbstraction`** 直接调 `glVertexAttribPointer` 这件事上
+> （见 `RenderBatch.java:31-33`）。**Task 8/10 要注意：§5.1 那套"同一个 VBO 绑两次、
+> 只差 4 字节偏移、divisor=1"的机制，目前没有任何可测的接缝。**
+>
+> **它们仍需要在 `FakeGLAbstraction` 里写出实现体**——接口加了方法，实现类必须补齐，
+> 否则编译不过。写进文件末尾那段"以下与拾取路径无关，真调到了说明走偏了"的抛异常区即可：
+>
+> ```java
+>     @Override public void setVertexAttribDivisor(int index, int divisor) { throw new UnsupportedOperationException(); }
+>     @Override public void drawArraysInstancedBaseInstance(int mode, int first, int count,
+>                                                           int instanceCount, int baseInstance) { throw new UnsupportedOperationException(); }
+> ```
+>
+> **并且把类 Javadoc 改成显式两类清单**（质量复核的 Finding 1）——原文那句
+> "只实现拾取路径真正用到的那几个方法，其余一律抛 `UnsupportedOperationException`"
+> 现在**是一句为假的安全声明**，而类级 Javadoc 是这个代码库被反复接手时读到的第一手信息：
+>
+> ```java
+> /**
+>  * 测试用的 {@link GLAbstraction} 假实现。
+>  *
+>  * <p>方法分成三类：
+>  * <ul>
+>  *   <li><strong>拾取路径</strong>（FBO / 整数纹理 / 读回 / 裁剪）：真正实现，
+>  *       供 {@code PickBuffer}、{@code Framebuffer}、{@code GlyphAtlas} 单测。</li>
+>  *   <li><strong>顶点缓冲路径</strong>（图表后端用）：只<em>记录</em>调用，
+>  *       并对子上传做越界检查。这一组<strong>不抛异常</strong>——拾取路径若误调它们
+>  *       不会报错，只能靠记录列表发现。</li>
+>  *   <li><strong>其余</strong>：一律抛 {@link UnsupportedOperationException}
+>  *       （见文件末尾的清单）。</li>
+>  * </ul>
+>  */
+> ```
 
 - [ ] **Step 4: 编译**
 
@@ -257,14 +401,16 @@ Expected: `BUILD SUCCESS`。**这一步本身就是一条真检查**：Java 要�
 - [ ] **Step 5: 跑全量测试确认没碰坏别的**
 
 Run: `mvn -o test`
-Expected: `Tests run: 261, Failures: 0, Errors: 0, Skipped: 2`
+Expected: `Tests run: 262, Failures: 0, Errors: 0, Skipped: 2`
+（261 + 新增的 `FakeGLAbstractionGuardTest` 一条）
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add src/main/java/com/bingbaihanji/jfgl/gl/GLAbstraction.java \
         src/main/java/com/bingbaihanji/jfgl/gl/LwjglGLAbstraction.java \
-        src/test/java/com/bingbaihanji/jfgl/gl/FakeGLAbstraction.java
+        src/test/java/com/bingbaihanji/jfgl/gl/FakeGLAbstraction.java \
+        src/test/java/com/bingbaihanji/jfgl/gl/FakeGLAbstractionGuardTest.java
 git commit -F - <<'EOF'
 feat(gl): 补三个图表后端要用的 GL 入口
 
@@ -2835,6 +2981,21 @@ fun main() {
 | 9 | 拾取不越界：点在线旁 20px 不命中 | 读回的 ID |
 | 10 | 系列级 ID：同一曲线不同位置拾取到同一个 ID；两条曲线互不串号 | 读回的 ID |
 | 11 | `pickId == 0` 的系列不可拾取 | 读回的 ID |
+| **12** | **`baseInstance` 生效：环已写满且窗口跨过环绕点时，画面是连续的线，不是乱线** | **跨环绕处的像素** |
+
+> **第 12 条是质量复核补的，而且它指出了一件要紧的事**：原来的十条里
+> **没有任何一条会在 `baseInstance` 传错时失败**——如果测试场景从不跨环绕点，
+> 那么 `baseInstance` 恒为 0，传对传错都一样，十条断言全绿。
+>
+> 而 `drawArraysInstancedBaseInstance` 存在的**全部理由**就是那个偏移
+> （实例属性按 `gl_InstanceID` 取，而它每次从 0 开始）。所以这一条是把
+> "实现了" 与 "生效了" 区分开的**唯一**场景——与 `TextVerifier` 里那条
+> "24px 与 192px 的过渡带宽度都是 1px"同类：**断言的场景必须能让那个量真的起作用。**
+>
+> 构造方法：把环容量设小（比如 8）、写满两圈以上，再让 x 轴窗口
+> **左端落在环绕点之后**（例如 `windowStart = 12.0`、`writeIndex = 20`），
+> 这样 `WindowRange` 会给出两段。断言绘图区左半部分的像素构成一条**单调的线**
+> 而不是错乱的散点。**变异验证**：把 `baseInstance` 硬编码成 0，这一条必须失败。
 
 - [ ] **Step 3: 保证退出码**
 
@@ -3225,7 +3386,20 @@ EOF
 - 「运行」一节：加 `ChartVerifier` 的命令
 - 测试计数
 
-- [ ] **Step 3: 跑全量验收**
+- [ ] **Step 3: 清两处历史欠账的文案**
+
+`CLAUDE.md` 明写"代码注释和 Javadoc **一律使用中文**"，但 `gl/` 下有两处英文：
+`LwjglGLAbstraction`（`:16-22`、`:27`、`:303`）与 `Texture.java:14`。**属孤立的历史欠账**，
+不是普遍现象（`gl/` 下其余文件都是中文）。
+
+一并处理质量复核提的那条**过期清单**——`LwjglGLAbstraction.java:18` 写着
+"delegates to the standard LWJGL OpenGL bindings (GL11, GL15, GL20, GL30)"：
+
+> **不要去补这个清单，直接删掉那个括号。** 它在本轮改动之前就已经烂了：
+> **`GL20` 被列在里面，而这个文件根本没有 import GL20**；同时 **`GL12` 在
+> `createR8Texture` 里真的被用到了却没列**。一份只会腐烂的清单，补一次就会再烂一次。
+
+- [ ] **Step 4: 跑全量验收**
 
 ```bash
 mvn -o clean test
@@ -3245,10 +3419,11 @@ mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime
     "-Dexec.args=-cp %classpath com.bingbaihanji.jfgl.example.ChartVerifierKt"
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add CLAUDE.md README.md
+git add CLAUDE.md README.md src/main/java/com/bingbaihanji/jfgl/gl/LwjglGLAbstraction.java \
+        src/main/java/com/bingbaihanji/jfgl/gl/Texture.java
 git commit -F - <<'EOF'
 docs: 补图表绘制后端（子项目 D-②）的现状与用法
 
