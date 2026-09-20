@@ -69,11 +69,16 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
 # 拾取
 mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
     -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.PickVerifierKt"
+
+# 文本
+mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
+    -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.TextVerifierKt"
 ```
 
 **改哪条路径就跑哪个校验器**：动了顶点/几何/描边跑 `PipelineVerifier`，
-动了拾取（`pickId`、ID pass、`PickBuffer`）跑 `PickVerifier`。两个都过不代表没漏——
-它们只证明自己断言过的那些点，见文末「验证」一节。
+动了拾取（`pickId`、ID pass、`PickBuffer`）跑 `PickVerifier`，
+动了文本（`text/`、`fontSize`、`drawText`）跑 `TextVerifier`。
+三个都过不代表没漏——它们只证明自己断言过的那些点，见文末「验证」一节。
 
 > **不要用 `mvn exec:java`**：该插件的类加载器会让 openglfx 链接到另一份
 > `com.sun.prism.GraphicsPipeline`（静态字段永远为 null），启动即抛
@@ -164,6 +169,38 @@ bridge.pickAsync(mouseX, mouseY) { hit ->
 拾取是**像素级**的（判定用 GPU 实际光栅化的结果，与所见一致），且**只看几何**——
 全透明的图元照样能命中，图表的隐形热区正是靠这个行为。
 
+### 文本
+
+```kotlin
+gc.fontSize = 32f                    // 状态字段，进 save/restore 栈
+gc.fill = 0xFFFFFFFF.toInt()
+
+// (x, y) 是**基线**的起点，不是文本框左上角
+val advance = gc.drawText("中文 Hello", 40f, 100f)
+
+// 量宽度：不绘制、也不生成字形，可以放心用于布局
+val width = gc.measureText("中文 Hello")
+
+// 文本天然可拾取
+gc.pickId = id
+gc.drawText("可点的标签", 40f, 200f)
+```
+
+文本走的是**现有**批处理管线，所以裁剪、z 序、合批、GPU 拾取全部自动成立；
+连续的一段文本通常合并成一条 draw call。
+
+- **基线对齐**：`y` 是基线所在的像素行。刻度文字沿轴线对齐时，基线对齐才是
+  想要的；"左上角对齐"会让不同高度的字符视觉上跳来跳去。
+- **任意缩放清晰**：字形只在 48px 的 em 尺寸下光栅化一次，之后由距离场在屏幕空间
+  重算边缘——同一个字在 10px 和 200px 下都不会是拉伸的糊图。
+  改 `fontSize` 不触发任何重新光栅化，字形按字形索引缓存。
+- **缺字不跳过**：字体里没有的码点画成 `.notdef`（豆腐块），不静默省略。
+- **可拾取范围比墨迹大一圈**：文本的四边形覆盖整个 SDF 位图矩形（含四周各
+  `SPREAD` = 8 像素的外扩）。与"全透明图元仍可拾取"同类，是**刻意**行为。
+- **字体**：默认用 `/fonts/simhei.ttf`（黑体）。换字体见
+  `src/main/resources/fonts/README.md`——**公开分发前必须换掉它**，
+  黑体是微软/中易的专有字体。
+
 ### 坐标系与颜色
 
 - 坐标单位是**像素**，原点在**左上角**，**y 轴向下**。
@@ -188,6 +225,7 @@ src/main/java/com/bingbaihanji/jfgl/
 ├── gpu/         # 计算着色器
 ├── math/        # Vec2、Mat3、Transform
 ├── renderer/    # 顶点侧热路径：VertexFormat、VertexWriter、DrawCommand、RenderBatch
+├── text/        # SDF 文本：FontFile(stb)、GlyphRasterizer、SdfGenerator、GlyphAtlas、TextLayout
 └── util/        # Color、Rect、Disposable
 
 src/main/kotlin/com/bingbaihanji/jfgl/
@@ -201,6 +239,8 @@ src/main/kotlin/com/bingbaihanji/jfgl/
 `geom/` 对 `gl/` **零依赖**（由 `GeomPackageIsolationTest` 强制），因为它是纯计算，
 可以脱离 GL 上下文单独测试。
 
+`src/main/resources/fonts/` 放着字体文件与它的授权/换字体说明（见该目录的 README）。
+
 ## 测试
 
 ```bash
@@ -210,7 +250,7 @@ mvn test -Dtest=PathTest     # 单个测试类
 
 `geom/`、`renderer/` 的顶点侧、`math/`、`util/` 都是纯计算，不依赖 GL 上下文。
 
-**改渲染路径后跑 `PipelineVerifier`，改拾取路径后跑 `PickVerifier`**（见上面「运行」一节）。
+**改渲染路径跑 `PipelineVerifier`，改拾取跑 `PickVerifier`，改文本跑 `TextVerifier`**（见上面「运行」一节）。
 本管线的多数缺陷属于「静默错误输出」：编译通过、单元测试全绿、画面却是错的。
 校验器把**最终像素**作为口径，回读帧缓冲后断言，这是唯一拦得住这类缺陷的办法——
 它曾据此发现描边丢失整条闭合边的 bug，而当时的单元测试没有一个发现。
@@ -227,6 +267,7 @@ mvn test -Dtest=PathTest     # 单个测试类
 - JDK 21+（编译目标 21；本机实测 JDK 25）
 - JavaFX 17.0.6（pom 声明；若 JDK 自带 JavaFX 25，运行时会遮蔽 pom 里的版本）
 - LWJGL 3.3.6 + openglfx-lwjgl
+- lwjgl-stb 3.3.6（字形光栅化）
 - Kotlin 2.3.0
 
 当前仅支持 **Windows**（JavaFX 原生库以 `<classifier>win</classifier>` 声明）。

@@ -60,14 +60,18 @@ src/test/java/com/bingbaihanji/jfgl/geom/       PathTest、FlattenerTest、Tesse
 src/test/java/com/bingbaihanji/jfgl/renderer/   VertexFormatTest、VertexWriterTest、ViewTransformTest、
                                                 PickRegistryTest、PickBufferTest
 src/test/java/com/bingbaihanji/jfgl/gl/         FramebufferTest、LwjglGLAbstractionTest
+src/test/java/com/bingbaihanji/jfgl/text/       SdfGeneratorTest、GlyphAtlasTest、FontFileTest、
+                                                GlyphRasterizerTest、TextLayoutTest
 ```
 
-当前 **170 个测试，0 失败，2 跳过**。单测命令：`mvn test -Dtest=类名`。
+当前 **205 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+`@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`。
 
-`geom/`、`math/`、`util/`、`ViewTransform` 都是纯计算、不依赖 GL 上下文，最适合写单测。
-`gl/Framebuffer` 与 `renderer/PickBuffer` 只依赖 `GLAbstraction` **接口**，
-用 `src/test/.../gl/FakeGLAbstraction` 这个假实现也能零 GL 上下文单测——
-这是拾取子系统里唯一能做到这一点的一层。`RenderBatch` 的颜色/ID pass 与 `Gc` 则必须靠校验器。
+`geom/`、`math/`、`util/`、`ViewTransform`、`text/{SdfGenerator, TextLayout}` 都是纯计算、
+不依赖 GL 上下文，最适合写单测。`gl/Framebuffer`、`renderer/PickBuffer`、`text/GlyphAtlas`
+只依赖 `GLAbstraction` **接口**，用 `src/test/.../gl/FakeGLAbstraction` 这个假实现也能
+零 GL 上下文单测。`text/{FontFile, GlyphRasterizer}` 依赖 stb 的本地库
+（已实测能在 surefire 里加载）。`RenderBatch` 的着色器与 `Gc` 则必须靠校验器。
 
 ## 架构
 
@@ -79,6 +83,8 @@ L2  提交            renderer.RenderBatch                              着色�
 L1  CPU 顶点侧      renderer.VertexWriter / VertexFormat / DrawCommand
                     renderer.ViewTransform                            变换与裁剪（无 GL）
 L0  几何            geom.Path / Flattener / Tessellator / StrokeGenerator   纯计算，零 GL 依赖
+    文本            text.SdfGenerator / text.TextLayout                     纯计算；
+                    text.FontFile（stb）/ text.GlyphAtlas（R8 图集）        依赖 stb 与 GL
     GL 抽象         gl.*                                             LWJGL 3.3.6 + openglfx
 ```
 
@@ -106,7 +112,7 @@ Main.kt                     设置 prism.* 系统属性
 - **变换在 CPU 侧烘焙进顶点**，因此改变换不会打断合批。
 - **预乘 alpha**，混合用 `GL_ONE` / `GL_ONE_MINUS_SRC_ALPHA`。
 - **裁剪只用 `glScissor`**（矩形）；任意路径裁剪不在范围内。
-- `id` 属性（location 3）是为将来的 GPU 拾取预留的。
+- `id` 属性（location 3）用于 GPU 拾取，见「拾取」一节。
 
 ### 坐标与单位约定
 
@@ -136,6 +142,31 @@ Main.kt                     设置 prism.* 系统属性
 - **组件在 JavaFX 线程响应鼠标事件时用 `FXGLTransfer.pickAsync`**，不要直接调 `Gc.pick`
   ——那是跨线程 GL 调用，崩得毫无规律。
 - 注册发生在**数据变化时而非每帧**；不再用的对象要 `unregister`，否则一直被强引用着。
+
+### 文本
+
+`gc.fontSize = 32f` 设字号（状态字段，进 save/restore 栈），
+`gc.drawText(text, x, y)` 绘制并返回推进宽度，`gc.measureText(text)` 只量不画。
+
+- **`(x, y)` 是基线的起点，不是文本框左上角。** `y` 是文字**基线**所在的像素行。
+  选基线是因为只有它是排版的稳定参照——刻度文字沿轴线对齐靠的就是它；
+  当成左上角的话画面"只是位置偏了一点"，最难查。**这条最容易被调用方猜错**。
+- **文本是又一类普通图元**：走现有的批处理管线，因此裁剪、z 序、合批、GPU 拾取
+  全部自动成立。连续的一段文本通常合并成一条 draw call。
+- **任意缩放清晰**：字形只在 48px em 下光栅化一次（`GlyphRasterizer.EM_SIZE`），
+  之后由距离场在屏幕空间重算边缘。改 `fontSize` 不触发任何重新光栅化——
+  字形按字形缓存（图集的 key 是字形索引），不按 (字形, 字号)。
+- **缺字不跳过**：字体里没有的码点画成 `.notdef`（豆腐块）。静默跳过会让人
+  以为排版出了 bug。
+- **文本的可拾取范围比墨迹大一圈**：ID pass 不看 alpha，而文本的四边形覆盖的是
+  整个 SDF 位图矩形（含四周各 `SdfGenerator.SPREAD` = 8 像素的外扩）。与
+  "全透明图元仍可拾取"同类，**是刻意的，有测试钉着，不要当成 bug 修**。
+- **字体**：默认从 classpath 的 `/fonts/simhei.ttf` 加载（`FontFile.DEFAULT_RESOURCE`），
+  启动时解析失败会**抛异常**（不退化成"一个字都画不出来"）。换字体见
+  `src/main/resources/fonts/README.md`——**这个仓库公开分发前必须换掉它**，
+  黑体是微软/中易的专有字体。
+- 本期**不做**字距/连字/bidi、多行与对齐、富文本、多字体回退、MSDF。这些是刻意
+  不做，不是漏了。
 
 ### 线程模型
 
@@ -174,6 +205,16 @@ Main.kt                     设置 prism.* 系统属性
    ```
 
    拾取尤其危险：**错误的拾取不会让任何画面变坏**，只会让点击落在错误的对象上。
+
+   改**文本**路径后跑 `TextVerifier`（退出码 0/1）。它的核心断言是：
+   同一个字以 24px 与 192px 绘制时，**边缘过渡带宽度大致恒定**——
+   位图被放大时过渡带会随缩放线性变宽，**这是唯一能把"SDF 生效"与
+   "位图被放大"区分开的断言**：
+
+   ```bash
+   mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
+       -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.TextVerifierKt"
+   ```
 2. **改了断言或修了 bug，做变异验证**：把 bug 重新注入，确认校验器真的失败。
    （校验器里那条"反证"断言就是这么来的——避免覆盖性检查恒真、变成橡皮图章。）
 3. 校验器依赖"用户坐标 1:1 映射到设备像素"这一前提。若将来引入真正的 DPI 缩放，
@@ -184,7 +225,8 @@ Main.kt                     设置 prism.* 系统属性
 **可用（纯计算，无需 GL，最适合写测试）**
 `geom/Path`（含零分配变更器）、`geom/Flattener`（二次/三次贝塞尔细分）、
 `geom/Tessellator`（凸扇形 + 凹耳切 + 孔洞桥接）、`geom/StrokeGenerator`（端点/接头/虚线）、
-`math/{Vec2,Mat3,Transform}`、`util/{Color,Rect}`、`renderer/ViewTransform`
+`math/{Vec2,Mat3,Transform}`、`util/{Color,Rect}`、`renderer/ViewTransform`、
+`text/SdfGenerator`（覆盖度位图 → 有符号距离场）、`text/TextLayout`（槽位序列 → 四边形顶点）
 
 **可用（依赖 GL 上下文）**
 `gl/ShaderProgram`、`gl/Texture`、`gl/LwjglGLAbstraction`（`initialize()`/`dispose()` 是诚实的
@@ -192,10 +234,11 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
 `renderer/Gc` 的形状与路径方法、`gpu/ComputeShader`、
 `renderer/PickRegistry`（ID 分配与 `id→对象` 映射，纯内存可单测）、
 `renderer/PickBuffer`、`PickHit`、`Gc` 的 `pickId` / `pickable` / `pick` / `pickRect`、
-`FXGLTransfer.pickAsync`
+`FXGLTransfer.pickAsync`、`renderer/Material`（材质选择位）、
+`text/FontFile`（stb 的字体与度量封装）、`text/GlyphRasterizer`、`text/GlyphAtlas`（R8 图集）、
+`Gc` 的 `fontSize` / `drawText` / `measureText`
 
 **未实现 / 待办**
-- **SDF 文本**（子项目 B）：目前完全没有文本绘制能力。需支持中文与任意缩放清晰度。
 - **科学绘图级图表**（子项目 D）：对数轴、多 Y 轴、误差棒、热力图、等高线。图表目前完全不存在。
 - **Paint / 渐变**：所有绘制只接受纯色整数。设计意图是**所有 Paint 归一化为纹理**
   （纯色 = 超白色纹理 + 顶点颜色，渐变 = 1×256 LUT）。
@@ -206,7 +249,7 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
 - 没有黄金图像测试。
 
 **声明了但完全没用到的依赖**
-JOML（数学全是手写的）、`lwjgl-glfw`、`lwjgl-stb`、jspecify、logback、byte-buddy(+agent)、JNA。
+JOML（数学全是手写的）、`lwjgl-glfw`、jspecify、logback、byte-buddy(+agent)、JNA。
 app 的窗口完全由 JavaFX 管理，GLFW 不参与。
 
 ## 构建配置须知
