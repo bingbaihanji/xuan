@@ -2805,7 +2805,10 @@ public final class ChartRenderer implements Disposable {
         if (disposed) {
             throw new IllegalStateException("ChartRenderer 已释放");
         }
-        Axis[] axes = chart.axes();
+        // 注意：Chart.axes() 返回的是 **List<Axis>**，不是数组。
+        // 原稿这里直接写成 `Axis[] axes = chart.axes();` 是编译不过的。
+        // SeriesRenderer.render 的签名要的是 Axis[]，所以这里转一次。
+        Axis[] axes = chart.axes().toArray(new Axis[0]);
         ChartRenderLayout layout = new ChartRenderLayout(plotRect, axes[0], axes[1]);
         GLRenderContextImpl ctx = new GLRenderContextImpl(
                 gl, lineShader, pickShader, layout, viewportWidth, viewportHeight, pickPass);
