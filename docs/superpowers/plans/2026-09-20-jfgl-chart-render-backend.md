@@ -3159,6 +3159,31 @@ EOF
 **Files:**
 - Modify: `src/main/java/com/bingbaihanji/jfgl/chartrender/LineSeriesRenderer.java`
 - Modify: `src/main/java/com/bingbaihanji/jfgl/chartrender/ChartRenderer.java`
+- Modify: `src/main/java/com/bingbaihanji/jfgl/renderer/RenderBatch.java`（只改一句 Javadoc，见下）
+
+> **⚠️ Task 4 复核提出、必须在首次使用 `withPickPass` 时补上的一条**：
+>
+> `RenderBatch.withPickPass` 的 Javadoc 只说"调用方必须自己设置 scissor"，
+> **没说 `GL_SCISSOR_TEST` 必须已启用**。`glScissor` 只在裁剪测试开启时生效。
+>
+> 今天唯一调用者 `drawPickPass` 是从 `submit()` 进来的，而 `submit()` 里 `glEnable(GL_SCISSOR_TEST)`，
+> 所以没事。但**图表后端是第一个在 `submit()` 之外用它的人**——若忘了开，
+> scissor 会**静默失效**：被裁掉的部分变成可拾取，**画面完全正常，只有点击落错对象**。
+> 这正是本仓库最在意的那类缺陷，也恰是这个方法存在的理由。
+>
+> **补一句 Javadoc**（不要改成由 `withPickPass` 自己开——它无法知道调用方想要哪个裁剪矩形，
+> 开了裁剪测试却用着一个陈旧的矩形只会更糟）：
+>
+> ```java
+>      * <p><strong>调用方必须自己设置 scissor，并确保 {@code GL_SCISSOR_TEST} 已启用。</strong>
+>      * {@code glScissor} 只在裁剪测试开启时生效——忘了开的表现是裁剪静默失效：
+>      * 被裁掉的部分变成可拾取，而画面完全正常，只有点击落在错误的对象上。
+>      * 本方法不替调用方开关裁剪测试，因为它无法知道调用方想要哪个裁剪矩形。
+>      * 本批处理自己的 {@code submit()} 路径在进入绘制循环前已经开好了。</p>
+> ```
+>
+> **并且 Task 13 的实现里，图表路径必须自己 `glEnable(GL_SCISSOR_TEST)`**（它的绘制不在
+> `submit()` 里面），用完恢复。
 
 - [ ] **Step 1: 在 `LineSeriesRenderer` 里加 ID pass**
 
