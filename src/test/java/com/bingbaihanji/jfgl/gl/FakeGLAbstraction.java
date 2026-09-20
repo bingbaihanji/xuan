@@ -110,6 +110,36 @@ public final class FakeGLAbstraction implements GLAbstraction {
         deletedTextures.add(texture);
     }
 
+    /** 按纹理 ID 记录的虚拟图集内容，用于断言上传落在正确的区域。 */
+    public final java.util.Map<Integer, byte[]> r8Textures = new java.util.HashMap<>();
+
+    /** 每次 uploadR8SubImage 的调用记录。 */
+    public final java.util.List<String> r8Uploads = new java.util.ArrayList<>();
+
+    private int nextR8Size = 0;
+
+    @Override
+    public int createR8Texture(int width, int height) {
+        int id = nextId++;
+        r8Textures.put(id, new byte[width * height]);
+        nextR8Size = width;
+        return id;
+    }
+
+    @Override
+    public void uploadR8SubImage(int texture, int x, int y, int width, int height, byte[] pixels) {
+        maybeThrow();
+        r8Uploads.add(x + "," + y + "," + width + "," + height);
+        byte[] target = r8Textures.get(texture);
+        if (target == null) {
+            throw new AssertionError("上传到了未创建的 R8 纹理：" + texture);
+        }
+        for (int row = 0; row < height; row++) {
+            System.arraycopy(pixels, row * width,
+                    target, (y + row) * nextR8Size + x, width);
+        }
+    }
+
     @Override
     public void attachTextureToColor0(int texture) {
         // 假实现不做附件检查，完整性由 statusToReturn 单独控制

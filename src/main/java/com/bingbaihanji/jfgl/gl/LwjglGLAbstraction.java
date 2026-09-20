@@ -3,6 +3,7 @@ package com.bingbaihanji.jfgl.gl;
 import com.bingbaihanji.jfgl.util.Color;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL12;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.system.MemoryStack;
@@ -124,6 +125,45 @@ public class LwjglGLAbstraction implements GLAbstraction {
         );
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
         return texture;
+    }
+
+    @Override
+    public int createR8Texture(int width, int height) {
+        int texture = GL11.glGenTextures();
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+        // R8 是归一化格式，可以 LINEAR —— SDF 靠插值得到平滑边缘。
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
+        // CLAMP_TO_EDGE：默认的 REPEAT 会让图集边缘的采样绕回另一侧，
+        // 表现为远端字形的边缘挂着别处的像素。
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
+        // 内容未初始化：图集只采样已经上传过的槽位，而每个槽位四周有 SPREAD 像素的
+        // 外扩把双线性过滤限制在槽内，所以未分配区域永远不会被采到。
+        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_R8, width, height, 0,
+                GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, (ByteBuffer) null);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+        return texture;
+    }
+
+    @Override
+    public void uploadR8SubImage(int texture, int x, int y, int width, int height, byte[] pixels) {
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+        // GL_UNPACK_ALIGNMENT 默认是 4，而单通道每行只有 width 个字节。
+        // 不设成 1，width 不是 4 的倍数时从第二行起整行错位，字形会被斜切。
+        GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 1);
+        try {
+            // 不能用 MemoryStack：它默认只有 64 KB，而一张 64x64 的字形是 4 KB
+            // 还好、整块图集就是 16 MB，直接炸。BufferUtils 的直接缓冲交给 GC。
+            ByteBuffer buf = BufferUtils.createByteBuffer(width * height);
+            buf.put(pixels, 0, width * height);
+            buf.flip();
+            GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, x, y, width, height,
+                    GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, buf);
+        } finally {
+            GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 4);
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+        }
     }
 
     @Override

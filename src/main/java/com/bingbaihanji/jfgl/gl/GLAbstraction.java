@@ -155,6 +155,37 @@ public interface GLAbstraction extends Disposable {
     int createTexture(int width, int height, int[] pixels);
 
     /**
+     * 创建一张 {@code GL_R8} 单通道归一化纹理，内容未初始化。
+     *
+     * <p>与拾取用的 {@code GL_R32UI} 只差两个字母，但语义相反：
+     * {@code R8} 是<strong>归一化</strong>格式，可以用 {@code GL_LINEAR} 过滤
+     * （SDF 正需要靠插值得到平滑边缘）；{@code R8UI} 是<strong>整数</strong>格式，
+     * 必须用 {@code GL_NEAREST}。混用不会报错，只会得到全糊或全锯齿的画面。
+     *
+     * @param width  宽度（像素）
+     * @param height 高度（像素）
+     * @return 纹理 ID
+     */
+    int createR8Texture(int width, int height);
+
+    /**
+     * 把一块 8 位单通道数据上传到纹理的指定矩形区域。
+     *
+     * <p><strong>实现必须处理 {@code GL_UNPACK_ALIGNMENT}</strong>：它的默认值是 4，
+     * 而单通道每行只有 {@code width} 个字节，{@code width} 不是 4 的倍数时
+     * GL 会按 4 字节对齐去读，<strong>从第二行起整行错位</strong>，
+     * 表现为字形被斜切。上传前后必须设/恢复该状态。
+     *
+     * @param texture 目标纹理
+     * @param x       目标矩形左边缘
+     * @param y       目标矩形上边缘
+     * @param width   矩形宽度
+     * @param height  矩形高度
+     * @param pixels  数据，长度必须为 {@code width * height}，按行存储
+     */
+    void uploadR8SubImage(int texture, int x, int y, int width, int height, byte[] pixels);
+
+    /**
      * {@code GL_FRAMEBUFFER_COMPLETE} 的枚举值。
      *
      * <p>放在接口上是为了让调用方不必为了比较一个状态码而引入 LWJGL 的常量。
