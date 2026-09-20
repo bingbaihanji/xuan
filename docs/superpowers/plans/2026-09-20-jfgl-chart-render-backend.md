@@ -157,13 +157,23 @@ import org.lwjgl.opengl.GL42;
 
 `FakeGLAbstraction` 原本对 VBO 相关方法一律抛 `UnsupportedOperationException`（"真调到了说明走偏了"）。图表路径**会真的用到** VBO，所以要把这几个方法从"抛异常"改成"记录"。
 
-把这三行从文件末尾的抛异常区**删掉**：
+把这四行从文件末尾的抛异常区**删掉**：
 
 ```java
     @Override public int createVbo() { throw new UnsupportedOperationException(); }
     @Override public void bindVbo(int vbo) { throw new UnsupportedOperationException(); }
     @Override public void deleteVbo(int vbo) { throw new UnsupportedOperationException(); }
+    @Override public void uploadVboData(float[] data) { throw new UnsupportedOperationException(); }
 ```
+
+> **第四条是实施期补的**（执行 Task 1 时发现的规格缺口）：Task 8 的 `SeriesBuffer`
+> 构造器要靠 `gl.uploadVboData(new float[capacity + 1])` 给缓冲定容，
+> 不放开的话 `SeriesBufferTest` 一跑就撞异常。
+>
+> **按需放开，不要一次全放开。** 每多放开一个方法，就少一处"走偏了就报错"的护栏。
+> `createVao` / `bindVao` / `deleteVao` / `uploadVboBytes` / `uploadVboData(int[])`
+> **继续抛异常**——它们没有任何单元测试会走到，放开只会削弱守卫。
+> 后面哪个任务真的需要，那时再放开那一个（并把它记在这里）。
 
 再在类里加上：
 
@@ -210,6 +220,14 @@ import org.lwjgl.opengl.GL42;
     @Override
     public void deleteVbo(int vbo) {
         deletedVbos.add(vbo);
+    }
+
+    /** 每次 uploadVboData(float[]) 的元素个数。图表后端用它给缓冲定容。 */
+    public final List<Integer> vboDataUploads = new ArrayList<>();
+
+    @Override
+    public void uploadVboData(float[] data) {
+        vboDataUploads.add(data.length);
     }
 
     @Override
