@@ -193,18 +193,15 @@ class Gc internal constructor(private val batch: RenderBatch) {
      * 拾取结果与画面一致（被后画的挡住的部分，拾取到的是后画的那个），
      * 与不做 flush 时的"只返回最上层"语义相同。
      *
-     * @throws IllegalStateException 未经 [beginFrame] 就调用，或本帧 [save]/[restore] 不配对
+     * <p><strong>可以在 [save] 块内调用。</strong>顶点在发射时就把变换烘焙好了、
+     * 裁剪在每次 [syncState] 重新读，所以"clip 住绘图区 → 画网格 → flush → 画数据系列"
+     * 这种写法是合法的，本方法不检查 save/restore 是否平衡——帧内平衡由 [endFrame] 守。
+     * （曾有一道 `stackDepth > 0` 的检查，它会把这个合法写法误判成状态损坏，已删除。）
+     *
+     * @throws IllegalStateException 未经 [beginFrame] 就调用
      */
     fun flush() {
         check(frameActive) { "flush 在 beginFrame 之前调用：beginFrame 与 endFrame 必须配对" }
-        // 与 endFrame 的收尾检查同源（那里是 state.clearStack() 返回的被丢弃层数）。
-        // 这里**不能**用 clearStack()：flush 发生在帧中途，清栈会把外层还没 restore 的
-        // save 一起抹掉，随后的 restore() 会撞上"栈为空"。所以读非破坏性的 stackDepth。
-        val pendingSaves = state.stackDepth
-        check(pendingSaves == 0) {
-            "flush 时本帧的 save/restore 不配对：当前仍有 $pendingSaves 层 save() 没有 restore，" +
-                    "这会让后续图元的变换与裁剪状态错乱"
-        }
         batch.submit(writer)
         writer.reset()
     }

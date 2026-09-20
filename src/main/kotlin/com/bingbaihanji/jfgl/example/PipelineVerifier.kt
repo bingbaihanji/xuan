@@ -83,7 +83,8 @@ class PipelineVerifierApp : Application() {
     // 而失败信息也能直接点名是 flush 的问题，不会伪装成"红矩形画多了"。
     //
     // 分了 RGB 与 ARGB 两套：`pixelAt` 与 `counts` 的口径都是**不含 alpha 的 RGB**，
-    // 拿 ARGB 去比会永远不相等（0xFFFF8000 != 0x00FF80），而那看起来像"颜色画错了"。
+    // 拿 ARGB 去比会永远不相等（同一个色的 0xFF00FF80 与 0x00FF80 就不相等），
+    // 而那看起来像"颜色画错了"。
     private val probeUnderRgb = 0xFF8000
     private val probeOverRgb = 0x00FF80
     private val probeUnderArgb = probeUnderRgb or (0xFF shl 24)
@@ -107,7 +108,7 @@ class PipelineVerifierApp : Application() {
     private fun drawScene(gc: Gc) {
         // flush 探针画在最前面：它们占的是主场景没碰过的空区域（y 175..295、x 40..739），
         // 因此既不影响下面那些颜色计数与包围盒，也让"flush 丢了顶点"这类退化**只**打在新断言上，
-        // 失败信息不会指错方向。
+        // 不去连累主场景那些既有断言。
         assertFlushKeepsZOrder(gc)
 
         gc.fill = 0xFFFF0000.toInt()
@@ -134,13 +135,13 @@ class PipelineVerifierApp : Application() {
     /**
      * flush() 的 z 序：后画的必须盖住先画的，<b>无论中间有没有 flush</b>。
      *
-     * <p>三种情况画的都是同一件事——同一个位置上先画 [probeUnder]、后画 [probeOver] 的
+     * <p>三种情况画的都是同一件事——同一个位置上先画 [probeUnderArgb]、后画 [probeOverArgb] 的
      * 两个重合矩形，只有中间那一步不同：
      * <ol>
      *   <li><b>不 flush</b>：两层落在同一个批里，靠批内的顶点顺序分胜负；</li>
      *   <li><b>中间 flush</b>：两层落在两个批里，靠两批的提交顺序分胜负；</li>
      *   <li><b>flush + 立即模式绘制</b>：上面那层不走 [Gc]，而是用 [immediateFill] 当场发一条
-     *       GL 命令，模拟图表后端数据系列（instancing）的做法。</li>
+     *       在本帧命令流里就地执行的 GL 命令，模拟图表后端"数据系列自己发 draw call"这件事。</li>
      * </ol>
      *
      * <p><b>为什么必须有第三情况。</b>前两种情况里的两层都由 `Gc` 记在同一个顶点写入器里，
@@ -148,31 +149,40 @@ class PipelineVerifierApp : Application() {
      * 像素一模一样</b>。只测前两种的话，这条断言看着在守，其实拦不住 flush 退化，
      * 正是本仓库说的橡皮图章。只有让一方"当场就画"，"flush 把网格先落定"这件事才在像素上可观测：
      * 没有 flush，`Gc` 的顶点要等到 `endFrame` 才提交，于是它会盖在即时绘制的那层<b>上面</b>。
+     *
+     * <p><b>三种情况的排放顺序是有意的：不含 flush 的情况一放在最后。</b>
+     * 一个坏掉的 `flush()` 会把它<b>之前</b>攒下的顶点一起丢掉，所以在这三组探针里，
+     * 只有"后面不再跟着任何 flush"的那一组才不会被别人的 flush 连累。
+     * 情况一因此排在最后（它后面只有主场景，主场景不 flush），于是：
+     * 空实现的 flush 只让情况三失败，submit/reset 对调只让情况二失败——
+     * 失败标签指向的就是真凶，不会出现"报了"不 flush"，真凶却是后面那次 flush"这种误导。
      */
     private fun assertFlushKeepsZOrder(gc: Gc) {
         val ys = 175f
         val size = 120f
-
-        // 情况一：不 flush，under 先 over 后 —— 期望 over
-        gc.fill = probeUnderArgb
-        gc.fillRect(PROBE_X[0], ys, size, size)
-        gc.fill = probeOverArgb
-        gc.fillRect(PROBE_X[0], ys, size, size)
+        val w = size.toInt()
+        val h = size.toInt()
 
         // 情况二：中间 flush，under 先 over 后 —— 期望 over
-        gc.flush()
         gc.fill = probeUnderArgb
         gc.fillRect(PROBE_X[1], ys, size, size)
         gc.flush()
         gc.fill = probeOverArgb
         gc.fillRect(PROBE_X[1], ys, size, size)
+        gc.flush()
 
         // 情况三：flush 之后由**立即模式**的一条 GL 命令盖上去 —— 期望 over
-        gc.flush()
         gc.fill = probeUnderArgb
         gc.fillRect(PROBE_X[2], ys, size, size)
         gc.flush()
-        immediateFill(PROBE_X[2].toInt(), ys.toInt(), size.toInt(), size.toInt(), probeOverArgb)
+        immediateFill(gc, PROBE_X[2].toInt(), ys.toInt(), w, h, probeOverArgb)
+
+        // 情况一：不 flush，under 先 over 后 —— 期望 over
+        // 放在最后：它后面只有主场景（不 flush），所以它的失败只可能由它自己造成。
+        gc.fill = probeUnderArgb
+        gc.fillRect(PROBE_X[0], ys, size, size)
+        gc.fill = probeOverArgb
+        gc.fillRect(PROBE_X[0], ys, size, size)
     }
 
     /**
@@ -180,19 +190,26 @@ class PipelineVerifierApp : Application() {
      *
      * <p>存在的理由：`Gc` 的图元攒到 `endFrame` 才提交，而图表后端（子项目 D-②）的数据系列
      * 是**当场就画**的。校验 `flush()` 的 z 序就必须有一方是"当场就画"的，否则两边都攒在同一个批里、
-     * 按顶点顺序绘制，<b>flush 存在与否根本不影响最终像素</b>。
+     * 按顶点顺序绘制，<b>flush 存在与否根本不影响最终像素</b>——那样的断言是橡皮图章。
      *
-     * <p>用 `glClear` + `glScissor` 而不是 `glDrawArrays`：它同样在本帧的 GL 命令流里
-     * <b>就地</b>执行（而不是等到 `endFrame`），却不需要再搭一套着色器与 VAO。
-     * 清屏色是全局状态，用完必须还原，否则下一帧的 `glClear` 会把整幅背景刷成这个颜色。
+     * <p><b>它模拟的是"一条在本帧命令流里就地执行的 GL 命令"，不是 instanced draw。</b>
+     * 用 `glClear` + `glScissor` 而不是 `glDrawArrays`，是因为这样同样能验证"就地执行 vs 攒到
+     * `endFrame`"这条唯一的判据，却不需要再搭一套着色器与 VAO。真实数据系列那一侧
+     * （着色器、VAO、以及它与本类批处理的混合状态互操作）由 Task 12 的 ChartVerifier 覆盖，
+     * 不在本文件的职责内。
      *
+     * <p>清屏色是全局状态，用完必须还原，否则下一帧的 `glClear` 会把整幅背景刷成这个颜色。
+     *
+     * @param gc  当前帧的绘制上下文：只用来取 [Gc.height] 作为视口高度。
+     *            刻意不另取别的来源——同一帧里 `Gc.height` 与帧缓冲高度必须是同一个数，
+     *            而上面正有一条断言钉着这一点。
      * @param x    矩形左上角 x（用户坐标，与设备像素 1:1）
      * @param y    矩形左上角 y（用户坐标，y 向下）
      * @param w    宽度
      * @param h    高度
      * @param argb 填充色
      */
-    private fun immediateFill(x: Int, y: Int, w: Int, h: Int, argb: Int) {
+    private fun immediateFill(gc: Gc, x: Int, y: Int, w: Int, h: Int, argb: Int) {
         val prevClear = FloatArray(4)
         glGetFloatv(GL_COLOR_CLEAR_VALUE, prevClear)
 
@@ -204,7 +221,7 @@ class PipelineVerifierApp : Application() {
         )
         glEnable(GL_SCISSOR_TEST)
         // glScissor 的 y 从**底边**起算，用户坐标 y 向下，故翻成 height - (y + h)。
-        glScissor(x, (transfer?.scaledHeight ?: 0) - (y + h), w, h)
+        glScissor(x, gc.height - (y + h), w, h)
         glClear(GL_COLOR_BUFFER_BIT)
         glDisable(GL_SCISSOR_TEST)
 
@@ -310,6 +327,10 @@ class PipelineVerifierApp : Application() {
         // 7 种 = 主场景的 6 种（背景 + 红绿蓝青品红）+ flush 探针的后画色。
         // 探针的**先画色**不在里面，正是因为它一个像素都不该剩下（见下面的 z 序断言）。
         report("画面只有 7 种颜色（无杂散像素）", counts.size == 7, "实际 ${counts.size} 种：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")
+        // "只有 7 种颜色"管不住**数量**：探针的后画色在别处多画一块，颜色种数照样是 7。
+        // 三个探针各 120x120，多一个像素都说明有别的东西在用这个颜色。
+        report("探针后画色不多不少 3×120×120（别处无杂散）", (counts[probeOverRgb] ?: 0) == 3 * 120 * 120,
+            "实际 ${counts[probeOverRgb] ?: 0}，期望 ${3 * 120 * 120}")
 
         println("\n-- 形状：包围盒 --")
         fun bbox(label: String, argb: Int, ex: Int, ey: Int, ew: Int, eh: Int) {
