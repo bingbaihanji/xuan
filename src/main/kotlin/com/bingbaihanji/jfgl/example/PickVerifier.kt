@@ -158,7 +158,31 @@ class PickVerifierApp : Application() {
         gc.restore()
     }
 
+    /**
+     * `onRender` 回调的入口：把校验体包进 try/catch。
+     *
+     * <p>校验过程本身抛出异常时必须**以非零码退出**。
+     *
+     * <p>理由不是洁癖：这部分代码在 GL 线程上跑，一旦抛出去，线程死掉、
+     * 汇总行与 `exitProcess` 都走不到，JVM 会因为「最后一个非守护线程结束」而
+     * 以 0 退出——**一个已经打印了 FAIL 的校验器报出退出码 0**，
+     * 正是本仓库最忌讳的那种「静默的绿」。
+     *
+     * <p>本文件有**两处**退出点（帧 1 的「跳过优化」与帧 5 的陈旧 ID 检查），
+     * 两者都在被包裹的 [verifyAll] 体内，所以这一层 try/catch 同时护住它们。
+     */
     private fun verifyOnce() {
+        try {
+            verifyAll()
+        } catch (t: Throwable) {
+            println("\n=== 校验过程抛出异常，判为失败 ===")
+            t.printStackTrace()
+            Platform.exit()
+            exitProcess(1)
+        }
+    }
+
+    private fun verifyAll() {
         val bridge = transfer ?: return
         val justRendered = rendered
         rendered++

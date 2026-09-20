@@ -112,7 +112,28 @@ class PipelineVerifierApp : Application() {
         gc.strokePath()
     }
 
+    /**
+     * `onRender` 回调的入口：把校验体包进 try/catch。
+     *
+     * <p>校验过程本身抛出异常时必须**以非零码退出**。
+     *
+     * <p>理由不是洁癖：这部分代码在 GL 线程上跑，一旦抛出去，线程死掉、
+     * 汇总行与 `exitProcess` 都走不到，JVM 会因为「最后一个非守护线程结束」而
+     * 以 0 退出——**一个已经打印了 FAIL 的校验器报出退出码 0**，
+     * 正是本仓库最忌讳的那种「静默的绿」。
+     */
     private fun verifyOnce() {
+        try {
+            verifyAll()
+        } catch (t: Throwable) {
+            println("\n=== 校验过程抛出异常，判为失败 ===")
+            t.printStackTrace()
+            Platform.exit()
+            exitProcess(1)
+        }
+    }
+
+    private fun verifyAll() {
         val bridge = transfer ?: return
         if (++frame < 5) return
         val w = bridge.scaledWidth
