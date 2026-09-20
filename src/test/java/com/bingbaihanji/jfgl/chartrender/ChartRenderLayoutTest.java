@@ -100,4 +100,21 @@ class ChartRenderLayoutTest {
                 () -> new ChartRenderLayout(PLOT, linearAxis(0, 10, PLOT.width), log),
                 "本期 GPU 路径只支持线性换算。静默按线性画对数轴，曲线形状是错的而画面正常");
     }
+
+    @Test
+    void 时间轴按线性处理不抛异常() {
+        // TIME 轴的值是纪元秒，换算与 LINEAR 完全一样，所以必须放行。
+        //
+        // 这条断言钉的是类文档里那句"LINEAR 与 TIME 都支持"——没有它，
+        // 有人把 requireLinear 收紧成 `type != LINEAR` 时不会有任何测试响，
+        // 而症状是"时间轴的图全画不出来"（构造时抛异常），排查方向会跑偏。
+        Axis time = new Axis(AxisType.TIME, new AxisRange(0, 3600, "t", "s"))
+                .setDisplayLength(PLOT.height);
+        ChartRenderLayout layout = new ChartRenderLayout(
+                PLOT, linearAxis(0, 10, PLOT.width), time);
+
+        // 顺带确认它真的按线性算：值域中点落在绘图区中线
+        assertEquals(PLOT.y + PLOT.height / 2f, layout.screenY(1800.0), 1e-3f,
+                "TIME 轴必须按线性换算，中点落在中线");
+    }
 }
