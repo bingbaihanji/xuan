@@ -1672,6 +1672,44 @@ EOF
 
 ---
 
+> ## ⚠️ Task 7 实施期报上来的两条，Task 8 必须处置
+>
+> **一、"写入总数回退"目前是静默的。**
+>
+> `SeriesUploadPlan.between` 的早退条件 `newCount <= 0` 只被 `between(0,0,…)`（恰好为 0）
+> 钉住。而 `uploadedCount > writtenCount`（写入总数**倒退**）走的是同一分支、返回"不上传"——
+> **没有任何测试钉住它**。
+>
+> 更值得警惕的是**这个行为对不对**：如果数据源的写入总数倒退（换了数据源、或 `ChartData`
+> 的实现被替换），GPU 缓冲里留的是**旧数据**，而返回"不上传"意味着**画面继续显示旧数据**，
+> 一声不响。当前数据源不会退（`RingChartData.writeIndex` 单调、`ArrayChartData.itemCount` 恒定），
+> 所以不可达——**但不可达不等于无害**。
+>
+> **Task 8 要做的**：在 `uploadNewSamples` 里把这个不变式变成**响亮的失败**——
+> ```java
+> if (written < uploadedCount) {
+>     throw new IllegalStateException(
+>             "写入总数倒退了（uploadedCount=" + uploadedCount + ", written=" + written
+>                     + "）：缓冲里现在是旧数据，继续画会静默显示过期内容。"
+>                     + "换数据源时必须重建 SeriesBuffer。");
+> }
+> ```
+> 并补一条 `SeriesUploadPlanTest` 的断言（`between(50L, 20L, CAP)` 返回空），把"恰好为 0"
+> 那半边补成完整的两半。
+>
+> **二、`totalBytes()` 在容量 ≥ 2^29 时整型溢出。**
+>
+> `points * Float.BYTES` 是 `int`：容量 `2^29` 时 `2^29 * 4 = 2^31` 溢出为负。
+> 当前环容量在 `2^16` 量级，**不可达**；`2^20`（100 万点 = 4 MB）也远在安全区内。
+> **安全上界是容量 ≤ `2^28`**（1 GB 缓冲）。
+>
+> **不改成 `long`**（当前不需要，YAGNI），但**把这条上界写进 `SeriesBuffer` 的类文档**，
+> 并在将来真要把环做到 `2^29` 以上时改。
+>
+> 附带一条实施者发现的好东西：`capacity <= 0 || (capacity & (capacity-1)) != 0` 那半条
+> `capacity <= 0` **不是多余的**——它挡住了 `1 << 31`（负数）冒充 2 的幂混过按位判断。
+> **两条合起来才是完整的守卫**，别顺手删掉前一条。
+
 ## Task 8: `SeriesBuffer` —— 一个系列的 GPU 常驻缓冲
 
 **Files:**
