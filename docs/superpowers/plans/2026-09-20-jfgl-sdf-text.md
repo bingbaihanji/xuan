@@ -175,12 +175,17 @@ class SdfGeneratorTest {
 
     @Test
     void 全满输入得到全255() {
-        byte[] cover = new byte[4 * 4];
+        // 边长必须是 4*SPREAD，不能是 2*SPREAD（更正见 Step 5 后）：
+        // 2*SPREAD 恰好是临界情形——中心离边界正好 SPREAD，t = 0.5 + SPREAD/(2*SPREAD) = 1.0，
+        // 落在钳位上。那样即使编码尺度略有偏差也照样通过，等于没验证"饱和"。
+        // 4*SPREAD 让中心离边界整整 2*SPREAD，t = 1.5 远超饱和，断言才真的咬住。
+        int n = 4 * SdfGenerator.SPREAD;
+        byte[] cover = new byte[n * n];
         java.util.Arrays.fill(cover, (byte) 255);
-        byte[] sdf = SdfGenerator.generate(cover, 4, 4);
-        // 外扩的那一圈仍在字形外，只有内部饱和到 255；检查正中心即可
-        int stride = 4 + 2 * SdfGenerator.SPREAD;
-        assertEquals(255, at(sdf, stride, 2 + SdfGenerator.SPREAD, 2 + SdfGenerator.SPREAD));
+        byte[] sdf = SdfGenerator.generate(cover, n, n);
+        int stride = n + 2 * SdfGenerator.SPREAD;
+        int c = n / 2 + SdfGenerator.SPREAD;
+        assertEquals(255, at(sdf, stride, c, c), "实心块的正中心应当饱和到 255");
     }
 }
 ```
@@ -373,12 +378,35 @@ Expected: `Tests run: 7, Failures: 0, Errors: 0`
 
 | 变异 | 应失败的测试 |
 |------|--------------|
-| 把欧氏距离换成一维变换的近似（`edt1d` 里 `(q - v[k]) * (q - v[k])` 改成 `Math.abs(q - v[k])`） | `对角方向用的是欧氏距离而不是切比雪夫` |
+| **把 `edt1d` 整体换成八邻域两趟扫描的棋盘距离变换**（不是把某个乘法改成 `Math.abs`，见下方更正） | `对角方向用的是欧氏距离而不是切比雪夫` |
 | 编码式子里的符号反过来（`distOut - distIn` 改成 `distIn - distOut`） | `内部深处饱和到255`、`边界相邻的像素编码接近一半` |
 | 去掉外扩（`SPREAD` 当成 0 用，即循环里不偏移） | `输出尺寸比输入每边多一个spread` |
 | 阈值判定反过来（`>=` 改成 `<`） | `全空输入得到全零`、`内部深处饱和到255` |
 
 **若某条实测存活，先怀疑检查、再怀疑代码，然后如实上报**——本项目已经四次撞上「变异表本身写错」。
+
+> **更正（2026-09-20，实施时实测）**：第 1 行原本写的是「把 `(q - v[k]) * (q - v[k])` 改成
+> `Math.abs(q - v[k])`」，并称那是切比雪夫近似。**那是错的，实测存活。**
+>
+> `Math.abs` 得到的是 **L1 / 曼哈顿**距离，不是切比雪夫。而对「孤立的单个内部像素」
+> 这个特定的测试形状，曼哈顿距离 2 经调用方的 `Math.sqrt` 之后**恰好等于 √2**，
+> 与真欧氏距离在数值上完全一致——**这个形状区分不了两者**。实测该变异杀掉的是
+> 另外三条（`全满输入得到全255` 191、`内部深处饱和到255` 178、`外部远处饱和到0` 32）。
+>
+> 执行者另外用一个**真正的八邻域棋盘距离变换**验证过：那条对角测试确实按预期失败
+> （`expected: <105> but was: <112>`），所以**这个断言不是橡皮图章**，错的是变异表的标注。
+>
+> 教训：写变异时要说清「改成什么样**算法**」，而不是「改哪一行代码」——
+> 一行之差可能落在完全不同的距离度量上，而两者在这个测试形状下可能数值相等。
+
+> **更正二（同日）**：`全满输入得到全255` 原来的输入是 4×4，**那条断言不可能成立**——
+> 4×4 的实心块，中心离边界只有 2 像素，远达不到 `SPREAD = 8` 的饱和距离，
+> 实现给出的是 159 而不是 255。**159 是对的，是测试的输入形状选错了。**
+> 已改成边长 `4 * SPREAD`。
+>
+> 注意**不能改成 `2 * SPREAD`**：那恰好是临界情形（中心离边界正好 `SPREAD`，
+> `t = 1.0` 落在钳位上），即使编码尺度有偏差也照样通过，等于没验证饱和。
+> `4 * SPREAD` 让中心超出饱和距离整整一倍，断言才真的咬住。
 
 - [ ] **Step 6: 提交**
 
@@ -1356,6 +1384,40 @@ class StbProbeTest {
 ```
 
 Run: `mvn -o test -Dtest=StbProbeTest`
+
+> **实测结论（2026-09-20）：探针通过，走「直接测真路径」分支，不需要 `StbBackend` 隔离层。**
+>
+> 但**本 Step 原本给的探针代码是错的，且错得很危险**：它断言"未初始化的
+> `STBTTFontinfo` 上查字形索引应当返回 0（而不是崩溃）"。**那是未定义行为，
+> 实际是整个 forked JVM 段错误**：
+>
+> ```
+> #  EXCEPTION_ACCESS_VIOLATION (0xc0000005)
+> # Problematic frame:
+> # C  [lwjgl_stb.dll+0x39b38]
+> Tests run: 0 ... The forked VM terminated without properly saying goodbye.
+> ```
+>
+> 只要这个文件在工作区里，**任何人跑 `mvn test` 都会得到 0 测试的报告**，
+> 并行执行时会毒化所有其他人的运行。
+>
+> 正确的探针必须**先 `stbtt_InitFont` 喂真实字体字节**再查字形。执行者改成这样后通过：
+>
+> ```
+> [探针] 字体字节数 = 9745792
+> [探针] stbtt_InitFont = true
+> [探针] glyphIndex('A') = 36, glyphIndex('中') = 1123
+> [探针] scaleForPixelHeight(48) = 0.1875
+> ```
+>
+> 顺带一条**换字体时会踩的坑**：`scaleForPixelHeight(48) = 0.1875` 即 `48/256`，
+> 说明黑体的 `unitsPerEm` 是 **256**（老式 CJK 字体的常见值，不是现在常见的
+> 1000/2048）。所以**必须用 `stbtt_ScaleForPixelHeight`**，绝不能自己拿
+> `unitsPerEm` 硬算缩放——换个字体就会整体错位。
+>
+> 另一条安全实践（由变异实证）：`FontFile.ensureAlive()` **不是防御性编程，是唯一能挡住
+> 进程崩溃的东西**。去掉它之后，释放后读字形的测试不是"断言失败"而是**整个 JVM 段错误**，
+> 签名与上面的探针崩溃完全一致。
 
 - **探针通过** → 删掉这个临时文件，继续 Step 2。
 - **探针失败**（`UnsatisfiedLinkError` / `ExceptionInInitializerError`）→ **停下来，
