@@ -74,7 +74,7 @@
 
 `GL_VERSION = 4.6.0 NVIDIA 581.29`，`GL_CONTEXT_PROFILE_MASK = 2`（**compatibility**，core 是 1），compute shader 端到端可用。`#version 330 core` 的着色器能跑是**向后兼容**，不是版本证据。
 
-**本规格只用 GL 3.3 core 就有的能力**（instancing 是 3.3 core），SSBO 留给 ③——理由见 §5.1。
+**本规格用到的最高版本是 GL 4.2**（`glDrawArraysInstancedBaseInstance`，理由见 §5.1），实测上下文是 4.6，可用。**SSBO 留给 ③**——理由见 §5.1。
 
 ---
 
@@ -99,17 +99,21 @@
 
 示波器数据是等间隔采样的，第 n 个点的 x 就是 n。**x 不需要存**，着色器从实例序号自己算。
 
-于是 **x 一个字节都不用存**——但实例数据要拿到线段的两端，所以成对存：每个线段占 **8 字节**（`y0` 与 `y1` 各一个 float），按点算就是 8 字节/点。
+于是 **x 一个字节都不用存**，数据侧每个采样点只占 **4 字节**（一个 float 的 y 值）。
 
 | | 现在走 `Gc` | ② 的新路 |
 |---|---|---|
-| 10 万点 | 90 万顶点 / **21.6 MB，每帧重传** | **0.8 MB，永不重传** |
-| 100 万点 | **直接抛异常**（上限 11.65 万点） | **8 MB，永不重传** |
+| 10 万点 | 90 万顶点 / **21.6 MB，每帧重传** | **0.4 MB，永不重传** |
+| 100 万点 | **直接抛异常**（上限 11.65 万点） | **4 MB，永不重传** |
+| 每帧 CPU→GPU | 整个窗口 | **新增的那几个点**（每点 4 字节） |
 
-> **为什么是 8 字节而不是 4**：instancing 的每个实例只能拿到"每实例一个"的数据元组（§5.1），所以两端必须成对存，同一个 y 值因此在相邻两个线段里各出现一次。
-> SSBO 的方案能做到 **4 字节/点**（靠 `gl_VertexID` 任意索引邻居），但它要的新 GL 机制多得多——**那笔账在 §5.1 算过，结论是本期不划算**。
+> **怎么做到 4 字节而不是 8**：一个线段要拿到两端，直觉上得成对存（8 字节/段）。
+> 但可以用**同一个缓冲、两个不同的字节偏移**建两个实例属性——`aY0` 读偏移 0，`aY1` 读偏移 4。
+> 于是实例 k 拿到的就是 `(y[k], y[k+1])`，而缓冲里每个点**只存一次**。
 >
-> 即便按 8 字节算，1 亿个采样点也只有 **800 MB**，而 10 万点走 `Gc` 每帧就要重传 21.6 MB。**量级差异不在常数因子上。**
+> **这是本设计里最省事的一处**：既拿到了 4 字节/点，又不需要 SSBO。
+>
+> 缓冲要比环容量**多留一个 float 的余量**：最后一个实例的 `aY1` 会指到界外。虽然那个实例永远不画，但别让 GPU 有机会去读越界地址。
 
 > **不等间隔的数据怎么办**：`ArrayChartData` 的 x 可以是任意值（散点图、静态科学图）。本期对这类数据**存成对的值**（x 与 y 各 4 字节，8 字节/点），走同一条着色器路径，只是 x 从属性来而不是从序号来。用一个 uniform 开关切换。**示波器路径不受影响。**
 
@@ -146,7 +150,17 @@ z 序因此**完全可控**，而不是碰运气。
 
 ### 5.1 数据缓冲：instancing，不引入 SSBO
 
-**几何生成方式**：每个线段一个实例，实例数据是**两个端点的 y 值**（8 字节/段）；顶点侧是一个共享的单位四边形（4 个顶点，divisor = 0），实例数据按 divisor = 1 供给。顶点着色器把"数值 → 屏幕 → NDC"整个算出来，并沿屏幕空间法线把四边形撑成有粗细的线段。
+**几何生成方式**：每个线段一个实例；顶点侧是一个共享的单位四边形（4 个顶点，divisor = 0），两端的 y 值按 divisor = 1 供给——用 §4.2 的双偏移技巧，**同一个缓冲、两个偏移**：
+
+```java
+// 同一个 VBO，绑两次，只差 4 个字节的偏移
+glVertexAttribPointer(0, 1, GL_FLOAT, false, 4, 0);  // aY0 -> y[k]
+glVertexAttribDivisor(0, 1);
+glVertexAttribPointer(1, 1, GL_FLOAT, false, 4, 4);  // aY1 -> y[k+1]
+glVertexAttribDivisor(1, 1);
+```
+
+顶点着色器把"数值 → 屏幕 → NDC"整个算出来，并沿屏幕空间法线把四边形撑成有粗细的线段。
 
 ```glsl
 // 概念示意，不是最终代码
@@ -167,9 +181,9 @@ gl_Position = toNdc(p);
 
 | | instancing（本规格） | SSBO + 顶点拉取 |
 |---|---|---|
-| 每点内存 | 8 字节/段 | 4 字节/点 |
-| 新增 GL 入口 | `glVertexAttribDivisor` + `glDrawArraysInstanced` + `glBufferSubData`（**3 个**） | 创建/绑定/上传/子上传/绑定基址/删除 SSBO（**6 个以上**）+ 一套 GLSL buffer 封装 |
-| 所需 GL 版本 | 3.3 core（与现有着色器同代） | 4.3+ |
+| 每点内存 | **4 字节/点**（§4.2 的双偏移技巧） | 4 字节/点 |
+| 新增 GL 入口 | `glVertexAttribDivisor` + `glDrawArraysInstancedBaseInstance` + `glBufferSubData`（**3 个**） | 创建/绑定/上传/子上传/绑定基址/删除 SSBO（**6 个以上**）+ 一套 GLSL buffer 封装 |
+| 所需 GL 版本 | **4.2**（`...BaseInstance`）——实测上下文是 4.6，可用 | 4.3+ |
 | 接头质量 | 每个实例独立，接头是平接（butt join） | 可以做 miter 接头 |
 | 是否 ③ 的前提 | 否 | **是**（FFT 的 gather/scatter 非它不可） |
 
@@ -177,7 +191,13 @@ gl_Position = toNdc(p);
 
 > **接头质量的诚实话**：`lineWidth` 大于约 3 px 时，转弯处的平接缺口会开始可见。**这是已知限制，不是 bug。** 修法是给每个顶点额外画一个小四边形做接头（`Gc.strokePolyline` 在 CPU 侧用的就是这一招），留给后续任务；或者等 ③ 引入 SSBO 之后改成顶点拉取 + miter。**不要在没有实测到可见缺口之前去优化它。**
 
-**环形结构**：GPU 缓冲镜像 `RingChartData` 的环。新点写在 `writeIndex & (cap-1)`。可见窗口若跨过环绕点，**发两次 `glDrawArraysInstanced`**（两段区间），不做双倍宽镜像——双倍宽是瀑布图为了纹理滚动无缝才需要的（见 scope 项目的做法），这里两段 draw 更简单且同样正确。
+**环形结构**：GPU 缓冲镜像 `RingChartData` 的环。新点写在 `writeIndex & (cap-1)`，**一次 4 字节的子里上传**。可见窗口若跨过环绕点，**发两段 draw**，不做双倍宽镜像——双倍宽是瀑布图为了纹理滚动无缝才需要的（见 scope 项目的做法），这里两段 draw 更省内存。
+
+> **为什么必须用 `...BaseInstance` 而不是普通的 `glDrawArraysInstanced`**：
+> 实例属性是按 `gl_InstanceID` 取的，而 `gl_InstanceID` **每次都从 0 开始**。
+> 普通版本没有任何办法让属性从"环绕点之后那一小段的物理槽位"开始取——
+> 于是第一段（物理槽位 `[p, cap)`）会取到**错误的实例数据**，而且不报错，只会画出一条乱线。
+> `glDrawArraysInstancedBaseInstance` 的 `baseInstance` 正好补上这个偏移。
 
 ### 5.2 `GLAbstraction` 要补的三个方法
 
@@ -188,11 +208,12 @@ void uploadVboSubData(int offsetBytes, ByteBuffer data);
 /** 设置某个顶点属性的实例除数（0 = 每顶点，1 = 每实例）。 */
 void setVertexAttribDivisor(int index, int divisor);
 
-/** 实例化绘制。 */
-void drawArraysInstanced(int mode, int first, int count, int instanceCount);
+/** 实例化绘制，并指定实例属性的起始实例号（见 §5.1 的说明）。 */
+void drawArraysInstancedBaseInstance(int mode, int first, int count,
+                                     int instanceCount, int baseInstance);
 ```
 
-三个都是 GL 3.3 core 的内建功能，`LwjglGLAbstraction` 里一行转发。
+前两个是 GL 3.3 core、第三个是 GL 4.2 的内建功能，`LwjglGLAbstraction` 里各一行转发。
 
 **`uploadVboSubData` 的前置条件必须写进 Javadoc**：目标 VBO 的容量必须**已经**够大。它不扩容——`VertexBuffer.grow()` 是"删旧建新"，而扩容会**让 VAO 里记录的数据缓冲绑定失效**（`RenderBatch.configureVaoAttributes` 的注释里已经踩过这个坑）。因此图表缓冲的容量在**创建时一次定死**（按环容量算），**运行期永不扩容**。这是一条硬约束，不是优化。
 
