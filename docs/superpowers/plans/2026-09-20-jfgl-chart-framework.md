@@ -4493,6 +4493,18 @@ for (long absolute = start + HEAD_MARGIN; absolute < end; absolute++)
 
 **修法**：补一行 `assertEquals(0, RenderContext.class.getDeclaredClasses().length, ...)`。
 
+> **已修**（两个洞都已就地修掉，并各自做过变异验证）：
+> 1. `Files.list` → `Files.walk`。注入探针 `chart/probe/Probe.java`
+>    （真 `import ...renderer.ViewTransform`）后守卫报
+>    `probe\Probe.java:3 -> import com.bingbaihanji.jfgl.renderer.ViewTransform;`。
+> 2. 补 `assertEquals(0, RenderContext.class.getDeclaredClasses().length, ...)`。
+>    注入 `interface RenderContext { interface Slot {} }` 后守卫报
+>    `expected: <0> but was: <1>`（`RenderContext$Slot`）。
+>
+> 两个探针注入前守卫均 `Tests run: 2, Failures: 0`（确认洞存在），修完均 `Failures: 2`，
+> 随后探针已删除、`target/` 下的残留 class 一并清掉。
+> 全量 `mvn -o test` 仍为 261 通过 / 0 失败 / 2 跳过，**测试计数未变**。
+
 ### 另外两条已知边界（不是缺陷，但要知道）
 
 - **`sources.size() >= 16` 阈值零余量**：chart/ 顶层实测恰好 16 个 .java。

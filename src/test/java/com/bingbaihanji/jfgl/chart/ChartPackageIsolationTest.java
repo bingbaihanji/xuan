@@ -45,7 +45,9 @@ class ChartPackageIsolationTest {
                         + "（工作目录应为项目根，找错了目录会让本测试形同虚设）");
 
         List<Path> sources;
-        try (Stream<Path> files = Files.list(CHART_SOURCE_DIR)) {
+        // 必须递归：chart/ 下允许再分子包，非递归的话整棵子树对守卫不可见，
+        // 子包里随便 import renderer/ 都不会响（Task 9 用探针实测过）。
+        try (Stream<Path> files = Files.walk(CHART_SOURCE_DIR)) {
             sources = files.filter(p -> p.getFileName().toString().endsWith(".java")).toList();
         }
         assertTrue(sources.size() >= 16,
@@ -83,5 +85,11 @@ class ChartPackageIsolationTest {
                         + "在原地给它加方法等于把 ② 的东西漏进了 ①");
         assertEquals(0, RenderContext.class.getDeclaredFields().length,
                 "RenderContext 也不该有任何字段");
+        assertEquals(0, RenderContext.class.getDeclaredClasses().length,
+                "RenderContext 也不该有任何嵌套类型，实际有 "
+                        + java.util.Arrays.toString(RenderContext.class.getDeclaredClasses())
+                        + " 个。嵌套类型是把 ② 的概念（比如一个 Slot 载体）偷运进 ① 的现成路子："
+                        + "它既不是方法也不是字段，只有断言 getDeclaredClasses() 才拦得住。"
+                        + "② 要放东西请定义子接口（GLRenderContext extends RenderContext）");
     }
 }
