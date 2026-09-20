@@ -352,6 +352,27 @@ import org.lwjgl.opengl.GL42;
 > 这条断言的强度全在"两向"上——只查"清单里的都还在"是单向的，
 > 新加一个不抛异常的方法照样溜过去。
 
+> **实施期修正两处（执行 Task 1 时实测发现，都已落进代码）：**
+>
+> **一、这个测试必须有两面，只有分类那一面是不够的。**
+> 上面只断言签名归属，而**反射看不到方法体**——把某个方法的 `throw` 换成空实现，
+> `getDeclaredMethods()` 一条都不会少，分类断言**必然照样通过**。
+> 也就是说分类断言保护的是"签名还在"，**不是**"护栏还在"，而"被掏空"恰恰是最像
+> "静默卸护栏"的那一种。
+>
+> 所以还需要第二个测试，**按 `MUST_THROW` 逐个反射调用并断言抛
+> `UnsupportedOperationException`**（参数给默认值即可，这些方法体就是一句 throw）。
+> 实测：把所有方法改成空实现，全量 263 条里**只有这一条失败**——其余 262 条全绿，
+> 这就是"卸掉护栏是零症状的"的实测证据。
+>
+> **二、分类的取法要过滤成"只取实现了 `GLAbstraction` 接口的那些方法"。**
+> `FakeGLAbstraction` 另有 `setUserPixel` / `setScreenBottomUp` / `maybeThrow`
+> 三个**测试便捷入口**，它们不在两张清单里，"并集必须恰好覆盖所有声明方法"会误报它们；
+> 而把它们塞进 `IMPLEMENTED` 会让清单语义变浑。
+>
+> 这个过滤器**不削弱守卫**：类必须实现全部接口方法（否则编译不过），所以任何新增的
+> 接口方法**必然出现在**筛选结果里、必然要求被归类。
+
 > **`setVertexAttribDivisor` 与 `drawArraysInstancedBaseInstance` 继续抛异常。**
 > 质量复核指出这不是随意的：`divisorCalls` / `instanceDrawCalls` 在**整个计划里没有任何
 > 消费者**（计划自己的文件结构表把 `LineSeriesRenderer` / `ChartRenderer` 标为"能单测吗：**否**"），
@@ -401,8 +422,8 @@ Expected: `BUILD SUCCESS`。**这一步本身就是一条真检查**：Java 要�
 - [ ] **Step 5: 跑全量测试确认没碰坏别的**
 
 Run: `mvn -o test`
-Expected: `Tests run: 262, Failures: 0, Errors: 0, Skipped: 2`
-（261 + 新增的 `FakeGLAbstractionGuardTest` 一条）
+Expected: `Tests run: 263, Failures: 0, Errors: 0, Skipped: 2`
+（261 + 新增的 `FakeGLAbstractionGuardTest` 两条）
 
 - [ ] **Step 6: Commit**
 
@@ -1664,7 +1685,15 @@ class SeriesBufferTest {
         buf.uploadNewSamples();
 
         // 5 个点写在槽位 0..4，偏移 0..16
-        assertEquals("0:20", gl.vboSubDataCalls.get(0));
+        //
+        // 记录格式是 "VBO名@偏移:字节数"（实施期质量复核要求带上目标 VBO——
+        // Task 11 之后多 VBO 并存时，"上传落到别的系列的缓冲上"是画面正常、
+        // 只是数据错的一类缺陷，不记 VBO 名就问不出来）。
+        // 这里只断言偏移与字节数，不硬编码 VBO 名——那个名字取决于假实现的
+        // ID 分配顺序，钉死它会让测试因为无关的改动而失败。
+        assertEquals(1, gl.vboSubDataCalls.size());
+        assertTrue(gl.vboSubDataCalls.get(0).endsWith("@0:20"),
+                "偏移应是 0、字节数 20（5 个点 * 4），实际 " + gl.vboSubDataCalls.get(0));
     }
 
     @Test
