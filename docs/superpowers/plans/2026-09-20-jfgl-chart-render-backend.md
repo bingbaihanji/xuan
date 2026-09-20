@@ -1109,6 +1109,19 @@ EOF
 
 ---
 
+> **实施期记录：一处刻意的、但尚未被测试钉住的行为。**
+>
+> 守卫写成 `!(windowEnd > windowStart)` 而**不是** `windowEnd <= windowStart`，
+> 于是 **NaN 窗口会返回空列表**（任何与 NaN 的比较都是 false）。返回空是**对的**——
+> 窗口无意义时什么都不画，好过画出一屏垃圾。
+>
+> **风险**：有人若把它"改规范"成 `windowEnd <= windowStart`，NaN 会掉进主路径：
+> `(long) Math.ceil(NaN)` 是 `0`，于是 `lo` 落到 `validStart`、`hi` 落到上界——
+> 它会把**整个有效范围**画出来。**行为变了，而没有任何测试会响。**
+>
+> 实施者当时正确地**没有**自行加断言凑数（任务书没要求）。**将来若有任务再动
+> `WindowRange`，顺手补一条 `compute(NaN, 4.0, 8L, CAP)` 必须为空的断言。**
+
 ## Task 6: `ChartRenderLayout` —— 数值/序号 ↔ 屏幕（纯算术，TDD）
 
 **Files:**
