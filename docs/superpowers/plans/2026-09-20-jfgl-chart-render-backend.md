@@ -17,7 +17,6 @@
 3. 记忆文件 `gl-render-layer-facts.md`（渲染层的能与不能）与 `jfgl-silent-output-defects.md`。
 
 **两条派单纪律（本轮之前出过真实事故，必须沿用）：**
-
 > **一、只 `git add` 你 `Files:` 里列出的确切路径。** 不要用 `git add -A` / `git add .`。工作区里别人的未提交文件不是你的责任。
 >
 > **二、禁止 `git reset` / `git rebase` / `git commit --amend`。** 发现自己的提交被污染，**停下来报告**，不要自行修历史。
@@ -25,6 +24,16 @@
 **变异验证的规矩**：报告「变异存活 + 为什么」比报告「全部杀死」更有价值。对存活的变异**做对照实验证明变异是活的**（改 fixture、换扫描范围），把"没抓住"变成可修的诊断。
 
 **命令里的 `-D` 必须加引号**（某些 shell 会把 `-D` 前缀吃掉）。**永远不要用 `mvn exec:java`**，它在这个项目里必崩。
+
+> **已知陷阱：`util/Rect` 是 public 可变字段，不是访问器。**
+> 用 `rect.x` / `rect.y` / `rect.width` / `rect.height`，**不是** `rect.x()`。
+> （`math/Vec2` 才是访问器风格 `v.x()` — 两者不一致，容易顺手写错。）
+> 本计划最初有 37 处写成了访问器形式，会让 **Task 6 / Task 10 / Task 13** 的示例代码
+> **编译不过**；已全部纠正。**Task 10 与 Task 13 尚未实现，照抄时务必用字段。**
+>
+> 顺带记一条：`Rect` 可变而 `ChartRenderLayout` 直接持有调用方的实例、却在构造时快照了轴窗口值——
+> 调用方构造后原地改 `rect` 的字段会让映射静默偏移。当前用法（每次 `draw` 新建）安全，
+> **Task 14 若要把 layout 缓存起来，必须重新审视这一条。**
 
 ---
 
@@ -639,17 +648,17 @@ Expected: `BUILD SUCCESS`
 
         // 情况一：不 flush，红先绿后 —— 期望绿
         gc.fill = 0xFFFF0000.toInt()
-        gc.fillRect(box.x(), box.y(), box.width(), box.height())
+        gc.fillRect(box.x, box.y, box.width, box.height)
         gc.fill = 0xFF00FF00.toInt()
-        gc.fillRect(box.x(), box.y(), box.width(), box.height())
+        gc.fillRect(box.x, box.y, box.width, box.height)
 
         // 情况二：中间 flush，红先绿后 —— 期望绿
         gc.flush()
         gc.fill = 0xFFFF0000.toInt()
-        gc.fillRect(box.x() + 200f, box.y(), box.width(), box.height())
+        gc.fillRect(box.x + 200f, box.y, box.width, box.height)
         gc.flush()
         gc.fill = 0xFF00FF00.toInt()
-        gc.fillRect(box.x() + 200f, box.y(), box.width(), box.height())
+        gc.fillRect(box.x + 200f, box.y, box.width, box.height)
     }
 ```
 
@@ -1161,13 +1170,13 @@ class ChartRenderLayoutTest {
 
     @Test
     void y轴映射与Axis一致() {
-        Axis y = linearAxis(-1.0, 1.0, PLOT.height());
-        ChartRenderLayout layout = new ChartRenderLayout(PLOT, linearAxis(0, 10, PLOT.width()), y);
+        Axis y = linearAxis(-1.0, 1.0, PLOT.height);
+        ChartRenderLayout layout = new ChartRenderLayout(PLOT, linearAxis(0, 10, PLOT.width), y);
 
         // 轴自己的映射是"0 在顶部"（值越大越往下），而绘图区是数学惯例：值越大越往上。
         // 两者的关系必须是精确的：screenY(v) == plotY + plotH - axis.dataToDisplay(v)
         for (double v = -1.0; v <= 1.0; v += 0.125) {
-            float expected = (float) (PLOT.y() + PLOT.height() - y.dataToDisplay(v));
+            float expected = (float) (PLOT.y + PLOT.height - y.dataToDisplay(v));
             assertEquals(expected, layout.screenY(v), 1e-3f,
                     "y = " + v + " 处两份映射不一致");
         }
@@ -1175,47 +1184,47 @@ class ChartRenderLayoutTest {
 
     @Test
     void y轴端点落在绘图区边界上() {
-        Axis y = linearAxis(-1.0, 1.0, PLOT.height());
-        ChartRenderLayout layout = new ChartRenderLayout(PLOT, linearAxis(0, 10, PLOT.width()), y);
+        Axis y = linearAxis(-1.0, 1.0, PLOT.height);
+        ChartRenderLayout layout = new ChartRenderLayout(PLOT, linearAxis(0, 10, PLOT.width), y);
 
-        assertEquals(PLOT.y() + PLOT.height(), layout.screenY(-1.0), 1e-3f, "最小值应落在底边");
-        assertEquals(PLOT.y(), layout.screenY(1.0), 1e-3f, "最大值应落在顶边");
-        assertEquals(PLOT.y() + PLOT.height() / 2f, layout.screenY(0.0), 1e-3f, "中值应落在中线");
+        assertEquals(PLOT.y + PLOT.height, layout.screenY(-1.0), 1e-3f, "最小值应落在底边");
+        assertEquals(PLOT.y, layout.screenY(1.0), 1e-3f, "最大值应落在顶边");
+        assertEquals(PLOT.y + PLOT.height / 2f, layout.screenY(0.0), 1e-3f, "中值应落在中线");
     }
 
     @Test
     void x轴按数据下标映射() {
         // 示波器：x 是采样序号，窗口 [100, 200)
-        Axis x = linearAxis(100.0, 200.0, PLOT.width());
-        ChartRenderLayout layout = new ChartRenderLayout(PLOT, x, linearAxis(-1, 1, PLOT.height()));
+        Axis x = linearAxis(100.0, 200.0, PLOT.width);
+        ChartRenderLayout layout = new ChartRenderLayout(PLOT, x, linearAxis(-1, 1, PLOT.height));
 
-        assertEquals(PLOT.x(), layout.screenX(100.0), 1e-3f, "窗口左端的下标落在左边缘");
-        assertEquals(PLOT.x() + PLOT.width(), layout.screenX(200.0), 1e-3f, "窗口右端落在右边缘");
-        assertEquals(PLOT.x() + PLOT.width() / 2f, layout.screenX(150.0), 1e-3f);
+        assertEquals(PLOT.x, layout.screenX(100.0), 1e-3f, "窗口左端的下标落在左边缘");
+        assertEquals(PLOT.x + PLOT.width, layout.screenX(200.0), 1e-3f, "窗口右端落在右边缘");
+        assertEquals(PLOT.x + PLOT.width / 2f, layout.screenX(150.0), 1e-3f);
     }
 
     @Test
     void 窗口外的值照样外推() {
-        Axis y = linearAxis(0.0, 1.0, PLOT.height());
-        ChartRenderLayout layout = new ChartRenderLayout(PLOT, linearAxis(0, 10, PLOT.width()), y);
+        Axis y = linearAxis(0.0, 1.0, PLOT.height);
+        ChartRenderLayout layout = new ChartRenderLayout(PLOT, linearAxis(0, 10, PLOT.width), y);
 
         // 轴本身就不裁剪（裁剪是 glScissor 的活），映射必须照样给出线性外推的值，
         // 而不是钳到边界——钳了的话超出窗口的曲线会贴着边框画一条假的直线。
-        assertTrue(layout.screenY(2.0) < PLOT.y(), "超出上界的值应在绘图区上方，而不是被钳在顶边");
-        assertTrue(layout.screenY(-1.0) > PLOT.y() + PLOT.height(), "超出下界的值应在下方");
+        assertTrue(layout.screenY(2.0) < PLOT.y, "超出上界的值应在绘图区上方，而不是被钳在顶边");
+        assertTrue(layout.screenY(-1.0) > PLOT.y + PLOT.height, "超出下界的值应在下方");
     }
 
     @Test
     void 着色器uniform与CPU映射等价() {
         // 直接按顶点着色器里那几行公式算一遍，与 screenY 比对。
         // 着色器用的是 uValueMin / uValueMax / uPlotY / uPlotH 四个 uniform。
-        Axis y = linearAxis(-2.0, 6.0, PLOT.height());
-        ChartRenderLayout layout = new ChartRenderLayout(PLOT, linearAxis(0, 10, PLOT.width()), y);
+        Axis y = linearAxis(-2.0, 6.0, PLOT.height);
+        ChartRenderLayout layout = new ChartRenderLayout(PLOT, linearAxis(0, 10, PLOT.width), y);
 
         float uValueMin = layout.yMin();
         float uValueMax = layout.yMax();
-        float uPlotY = PLOT.y();
-        float uPlotH = PLOT.height();
+        float uPlotY = PLOT.y;
+        float uPlotH = PLOT.height;
 
         for (double v = -2.0; v <= 6.0; v += 0.25) {
             float fraction = (float) ((v - uValueMin) / (uValueMax - uValueMin));
@@ -1229,7 +1238,7 @@ class ChartRenderLayoutTest {
     void 对数轴明确抛异常不做静默错画() {
         Axis log = new Axis(AxisType.LOGARITHMIC, new AxisRange(1, 1000, "v", "")).setDisplayLength(500);
         assertThrows(UnsupportedOperationException.class,
-                () -> new ChartRenderLayout(PLOT, linearAxis(0, 10, PLOT.width()), log),
+                () -> new ChartRenderLayout(PLOT, linearAxis(0, 10, PLOT.width), log),
                 "本期 GPU 路径只支持线性换算。静默按线性画对数轴，曲线形状是错的而画面正常");
     }
 }
@@ -1339,7 +1348,7 @@ public final class ChartRenderLayout {
      * @return 屏幕 x（设备像素），窗口外照样线性外推
      */
     public float screenX(double index) {
-        return (float) (plotRect.x() + fraction(index, xMin, xMax) * plotRect.width());
+        return (float) (plotRect.x + fraction(index, xMin, xMax) * plotRect.width);
     }
 
     /**
@@ -1349,7 +1358,7 @@ public final class ChartRenderLayout {
      * @return 屏幕 y（设备像素），窗口外照样线性外推
      */
     public float screenY(double value) {
-        return (float) (plotRect.y() + (1.0 - fraction(value, yMin, yMax)) * plotRect.height());
+        return (float) (plotRect.y + (1.0 - fraction(value, yMin, yMax)) * plotRect.height);
     }
 
     private static double fraction(double v, float min, float max) {
@@ -1374,7 +1383,7 @@ Expected: `Tests run: 6, Failures: 0, Errors: 0`
 | 变异 | 期望失败的断言 |
 |---|---|
 | `screenY` 去掉 `1.0 -` 的翻转 | `y轴端点落在绘图区边界上` |
-| `screenY` 用 `plotRect.x()` 而非 `y()` | `y轴端点落在绘图区边界上` |
+| `screenY` 用 `plotRect.x` 而非 `y()` | `y轴端点落在绘图区边界上` |
 | `fraction` 里 `(v - min)` 写成 `(v - max)` | `着色器uniform与CPU映射等价` |
 | `requireLinear` 改成对 LOG 也放行 | `对数轴明确抛异常不做静默错画` |
 
@@ -2624,12 +2633,12 @@ final class LineSeriesRenderer implements SeriesRenderer {
 
         ShaderProgram shader = c.lineShader();
         shader.use();
-        shader.setUniform("uPlotRect", layout.plotRect().x(), layout.plotRect().y(),
-                layout.plotRect().width(), layout.plotRect().height());
+        shader.setUniform("uPlotRect", layout.plotRect().x, layout.plotRect().y,
+                layout.plotRect().width, layout.plotRect().height);
         shader.setUniform("uViewport", (float) c.viewportWidth(), (float) c.viewportHeight());
         shader.setUniform("uValueRange", layout.yMin(), layout.yMax());
         shader.setUniform("uPxPerSample",
-                (float) (layout.plotRect().width() / (windowEnd - windowStart)));
+                (float) (layout.plotRect().width / (windowEnd - windowStart)));
         shader.setUniform("uHalfWidth", series.lineWidth() * 0.5f);
         // 绘制时容差为 0，max() 取到的就是真实线宽
         shader.setUniform("uPickTolerance", 0f);
@@ -2658,8 +2667,8 @@ final class LineSeriesRenderer implements SeriesRenderer {
 
     private void setScissorTo(Rect plot, int viewportHeight) {
         // DrawCommand 的约定：scissorY 是矩形上边缘。glScissor 的原点在左下、y 向上。
-        int y = viewportHeight - (int) plot.y() - (int) plot.height();
-        org.lwjgl.opengl.GL11.glScissor((int) plot.x(), y, (int) plot.width(), (int) plot.height());
+        int y = viewportHeight - (int) plot.y - (int) plot.height;
+        org.lwjgl.opengl.GL11.glScissor((int) plot.x, y, (int) plot.width, (int) plot.height);
     }
 }
 ```
@@ -3212,12 +3221,12 @@ EOF
         int pickId = c.pickId();
         if (pickId != 0) {
             c.pickShader().use();
-            c.pickShader().setUniform("uPlotRect", layout.plotRect().x(), layout.plotRect().y(),
-                    layout.plotRect().width(), layout.plotRect().height());
+            c.pickShader().setUniform("uPlotRect", layout.plotRect().x, layout.plotRect().y,
+                    layout.plotRect().width, layout.plotRect().height);
             c.pickShader().setUniform("uViewport", (float) c.viewportWidth(), (float) c.viewportHeight());
             c.pickShader().setUniform("uValueRange", layout.yMin(), layout.yMax());
             c.pickShader().setUniform("uPxPerSample",
-                    (float) (layout.plotRect().width() / (windowEnd - windowStart)));
+                    (float) (layout.plotRect().width / (windowEnd - windowStart)));
             c.pickShader().setUniform("uHalfWidth", series.lineWidth() * 0.5f);
             // 拾取容差：线只有 1~2px 宽，要求用户精确点中不合理。
             // 这是刻意的，与"全透明图元仍可拾取""文本可拾取范围比墨迹大一圈"同类。

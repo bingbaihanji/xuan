@@ -3,5 +3,6 @@ bin/
 out/
 .idea/
 .xcodemap/
+.claude/settings.local.json
 *.iml
 *.log
