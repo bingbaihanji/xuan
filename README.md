@@ -201,6 +201,41 @@ gc.drawText("可点的标签", 40f, 200f)
   `src/main/resources/fonts/README.md`——**公开分发前必须换掉它**，
   黑体是微软/中易的专有字体。
 
+### 图表
+
+图表框架（`chart/`）是**纯计算**的：数据容器、轴与刻度、配色 LUT、图表装配。
+**绘制后端尚未实现**——它现在只算不画，所以下面这段代码算得出刻度，但还没有
+任何东西出现在屏幕上。
+
+```java
+// 静态数据
+ArrayChartData data = new ArrayChartData(
+        new AxisRange[]{new AxisRange(0, 10, "时间", "s"), new AxisRange(-1, 1, "电压", "V")},
+        new double[][]{{0, 1, 2, 3}, {0.1, -0.2, 0.3, 0.0}});
+
+Axis x = new Axis(AxisType.LINEAR, data.axisRange(0)).setDisplayLength(800);
+Axis y = new Axis(AxisType.LINEAR, data.axisRange(1)).setDisplayLength(600);
+
+Chart chart = new Chart(x, y);
+chart.addLayer("主").add(new Series("电压", data, ChartType.LINE).color(0xFF00FF00));
+
+Tick[] ticks = x.ticks();               // 主/中/次三级刻度，位置已装配好
+
+// 流式数据：采集线程写、GL 线程读，SPSC 无锁
+RingChartData stream = new RingChartData(new AxisRange[]{AxisRange.of(0, 1)}, 1 << 16);
+stream.append(0.5);                     // 采集线程
+double v = stream.value(0, 0);          // GL 线程；窗口之外返回 NaN（缺口）
+```
+
+- **脏区间**：`dirtyRange(sinceRevision)` 让渲染器只上传新增的那一段；
+  `revision` 不变时报空，静态数据一次上传后永不重传。
+- **缺口是 NaN**：丢包与传感器故障是同一种表示，渲染器的规则只有一条——遇到 NaN 就断开折线。
+  **不能连过去**：连过去的那条直线显示的信号并不存在，比不显示更糟。
+- **流式数据只有一个写者**：`RingChartData` 是 SPSC 无锁环形缓冲。
+  数据源若变成网络/串口回调（回调线程不固定），这个前提就不成立，必须换设计。
+- **轴不持有数据**：范围由数据自己声明，轴只是显示窗口，多 Y 轴因此是自然结果。
+- **时间轴按 UTC 格式化**；配色是 1×256 的 LUT（换配色 = 换一张纹理）。
+
 ### 坐标系与颜色
 
 - 坐标单位是**像素**，原点在**左上角**，**y 轴向下**。
@@ -225,6 +260,7 @@ src/main/java/com/bingbaihanji/jfgl/
 ├── gpu/         # 计算着色器
 ├── math/        # Vec2、Mat3、Transform
 ├── renderer/    # 顶点侧热路径：VertexFormat、VertexWriter、DrawCommand、RenderBatch
+├── chart/       # 图表框架（纯计算）：ChartData、Axis、TickGenerator、ColorMapping、Chart
 ├── text/        # SDF 文本：FontFile(stb)、GlyphRasterizer、SdfGenerator、GlyphAtlas、TextLayout
 └── util/        # Color、Rect、Disposable
 
@@ -262,11 +298,17 @@ mvn test -Dtest=PathTest     # 单个测试类
 所以校验器的场景要会变：至少包含「某个图元在后续帧消失／移动」，
 并专门断言「不该有东西的地方是干净的」，而不只是「该有东西的地方是对的」。
 
+`chart/` 也是纯计算（零 GL 依赖，由 `ChartPackageIsolationTest` 强制），
+所以它的验收全部落在单元测试上——不需要、也不该有像素校验器。
+
 ## 依赖
 
 - JDK 21+（编译目标 21；本机实测 JDK 25）
 - JavaFX 17.0.6（pom 声明；若 JDK 自带 JavaFX 25，运行时会遮蔽 pom 里的版本）
-- LWJGL 3.3.6 + openglfx-lwjgl
+- LWJGL 3.3.6 + openglfx-lwjgl（注意：`3.3.6` 是 **LWJGL 库**的版本，
+  实际拿到的 GL 上下文是 **4.6**（compatibility profile）——实测
+  `GL_VERSION = 4.6.0 NVIDIA 581.29`，compute shader 端到端可用。
+  着色器里写着 `#version 330 core` 只是向后兼容，不代表上下文是 3.3）
 - lwjgl-stb 3.3.6（字形光栅化）
 - Kotlin 2.3.0
 

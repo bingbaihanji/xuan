@@ -62,16 +62,51 @@ src/test/java/com/bingbaihanji/jfgl/renderer/   VertexFormatTest、VertexWriterT
 src/test/java/com/bingbaihanji/jfgl/gl/         FramebufferTest、LwjglGLAbstractionTest
 src/test/java/com/bingbaihanji/jfgl/text/       SdfGeneratorTest、GlyphAtlasTest、FontFileTest、
                                                 GlyphRasterizerTest、TextLayoutTest
+src/test/java/com/bingbaihanji/jfgl/chart/      TickGeneratorTest、AxisTest、ArrayChartDataTest、
+                                                RingChartDataTest、ChartDataConcurrencyTest、
+                                                ColorMappingTest、ChartTest、
+                                                ChartPackageIsolationTest
 ```
 
-当前 **205 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+当前 **261 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
 `@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`。
 
-`geom/`、`math/`、`util/`、`ViewTransform`、`text/{SdfGenerator, TextLayout}` 都是纯计算、
-不依赖 GL 上下文，最适合写单测。`gl/Framebuffer`、`renderer/PickBuffer`、`text/GlyphAtlas`
-只依赖 `GLAbstraction` **接口**，用 `src/test/.../gl/FakeGLAbstraction` 这个假实现也能
-零 GL 上下文单测。`text/{FontFile, GlyphRasterizer}` 依赖 stb 的本地库
+`geom/`、`math/`、`util/`、`ViewTransform`、`text/{SdfGenerator, TextLayout}`、`chart/`
+都是纯计算、不依赖 GL 上下文，最适合写单测。`gl/Framebuffer`、`renderer/PickBuffer`、
+`text/GlyphAtlas` 只依赖 `GLAbstraction` **接口**，用 `src/test/.../gl/FakeGLAbstraction`
+这个假实现也能零 GL 上下文单测。`text/{FontFile, GlyphRasterizer}` 依赖 stb 的本地库
 （已实测能在 surefire 里加载）。`RenderBatch` 的着色器与 `Gc` 则必须靠校验器。
+
+**`chart/` 的边界是机器强制的**：它连 `renderer/` 也不依赖，由
+`ChartPackageIsolationTest` 递归遍历源码、按**包名白名单**守卫——白名单只放行
+`chart/`、`math/`、`util/`，引用 `gl/`、`renderer/`、`text/`、`geom/` 中的任何一个
+都会让测试失败。**注意目前 `chart/` 连 `math/` 与 `util/` 也一处没用**：16 个源文件
+除了 `java.*` 之外没有任何 import（守卫放行 ≠ 已经用了）。
+同一个测试还断言 `RenderContext` 是**空接口**（0 方法 / 0 字段 / 0 嵌套类型）。
+
+## 前置事实（已实测，不要重新猜）
+
+**实际 GL 上下文是 4.6（compatibility profile），不是 3.3。**
+开窗探针实测 `GL_VERSION = 4.6.0 NVIDIA 581.29`
+（`GL_RENDERER = NVIDIA GeForce RTX 3060 Laptop GPU/PCIe/SSE2`，RTX 3060 Laptop），
+`GL_MAJOR_VERSION = 4` / `GL_MINOR_VERSION = 6`，
+`GL_SHADING_LANGUAGE_VERSION = 4.60 NVIDIA`。
+同一支探针还**实际编译 + 链接 + dispatch 了一个最小 compute shader**
+（`#version 430`，`local_size_x = 8`，SSBO 写入，输入 `1..8` 输出 `2..16`，
+回读数值恰好两倍）。即：**计算着色器、SSBO、`imageStore`、shared memory 原子操作全部可用。**
+
+> **是 compatibility，不是 core**：`GL_CONTEXT_PROFILE_MASK = 2`，即
+> `GL_CONTEXT_COMPATIBILITY_PROFILE_BIT`（`GL_CONTEXT_CORE_PROFILE_BIT` 是 1），
+> `GL_CONTEXT_FLAGS = 0`。写文档时别顺手写成 "4.6 core"——那是两个不同的上下文，
+> 实测值就是 compatibility。
+
+仓库里那 5 个 `#version 330 core` 着色器（都在 `renderer/RenderBatch.java`）能跑，
+是因为 **4.6 向后兼容**，**不是因为上下文是 3.3**。**不要因为版本号写着 330 就以为
+compute 用不了**——`gpu/GPUFFT.java`（`#version 430`，Cooley-Tukey radix-2 + SSBO）
+就是这么被埋掉的：它一直可用，只是没人引用。
+
+先前的 `CLAUDE.md` 里**没有任何一处写过上下文是几**——唯一沾边的 "3.3" 是架构图里
+`LWJGL 3.3.6`，那是**库**的版本。这一节就是为了补上这个缺口。
 
 ## 架构
 
@@ -85,10 +120,15 @@ L1  CPU 顶点侧      renderer.VertexWriter / VertexFormat / DrawCommand
 L0  几何            geom.Path / Flattener / Tessellator / StrokeGenerator   纯计算，零 GL 依赖
     文本            text.SdfGenerator / text.TextLayout                     纯计算；
                     text.FontFile（stb）/ text.GlyphAtlas（R8 图集）        依赖 stb 与 GL
+    图表            chart.*                                          纯计算，零 GL 依赖
     GL 抽象         gl.*                                             LWJGL 3.3.6 + openglfx
 ```
 
 **`geom/` 对 `gl/` 零依赖**，由 `GeomPackageIsolationTest` 强制。
+
+**`chart/` 对 `gl/`、`renderer/`、`text/`、`geom/` 零依赖**，由 `ChartPackageIsolationTest`
+强制。① 与渲染后端（②）的接缝只有两个类型：`chart/RenderContext`（空接口，② 定义
+子接口扩展它）与 `chart/SeriesRenderer`（纯函数：数据 + 轴 → 顶点）。
 
 ### 启动链路
 
@@ -168,6 +208,55 @@ Main.kt                     设置 prism.* 系统属性
 - 本期**不做**字距/连字/bidi、多行与对齐、富文本、多字体回退、MSDF。这些是刻意
   不做，不是漏了。
 
+### 图表
+
+图表框架（子项目 D-①）在 `chart/` 下，**纯计算、零 GL 依赖**：数据容器（`ArrayChartData`
+静态 / `RingChartData` 流式）、轴与刻度（`Axis` / `TickGenerator` / `AxisType`）、
+配色 LUT（`ColorMapping`）、装配（`Chart` / `Layer` / `Series` / `ChartType`）。
+**绘制后端（子项目 ②）尚未实现**，所以现在还没有"画出来"的能力。
+
+三块分解：**① 图表类框架（已完成，`chart/`）→ ② GPU 绘制后端 → ③ GPU 计算。**
+**分界判据是"能不能脱离 GL 上下文跑测试"**——① 里每一个类都能，② 里的一个都不能，
+`chart/` 的边界正是这么画出来的（也是 `ChartPackageIsolationTest` 在守的那条线）。
+
+```java
+// 静态数据：一次性给出，之后整体替换
+ArrayChartData data = new ArrayChartData(
+        new AxisRange[]{new AxisRange(0, 10, "时间", "s"), new AxisRange(-1, 1, "电压", "V")},
+        new double[][]{{0, 1, 2, 3}, {0.1, -0.2, 0.3, 0.0}});
+
+Axis x = new Axis(AxisType.LINEAR, data.axisRange(0)).setDisplayLength(800);
+Axis y = new Axis(AxisType.LINEAR, data.axisRange(1)).setDisplayLength(600);
+
+Chart chart = new Chart(x, y);
+chart.addLayer("主").add(new Series("电压", data, ChartType.LINE).color(0xFF00FF00));
+
+Tick[] ticks = x.ticks();          // 主/中/次三级刻度，位置已经装配好
+```
+
+- **脏区间是一等公民**：`ChartData.dirtyRange(sinceRevision)` 返回 `[firstDirty, lastDirty)`。
+  `revision` 不变时报空（`DirtyRange.EMPTY`）——静态数据一次上传后**永不重传**；
+  流式数据只报"新加了 N 个"。这是 ② 能做到"GPU 常驻 + 增量上传"的前提，**不是可选优化**。
+- **流式数据是 SPSC 环形缓冲**：`RingChartData` 只允许**一个写者**（采集线程）。
+  **若数据源改成网络/串口回调**（回调线程可能是 IO 线程池里的任意一个），
+  **单生产者前提就不成立，整个无锁设计必须换掉。**
+- **缺口用 NaN 表示**：窗口之外的 `value()` 返回 `NaN`（即 `RingChartData.GAP`），
+  与"传感器自己吐的 NaN"是同一种东西。渲染器只需要一条规则——**遇到 NaN 就断开折线**。
+  不提供也不该提供 `isGap(index)`。
+  **缺口不能连过去**——不插标记的话波形会拉一条直线穿过缺口，**那条直线是假的**：
+  它显示了一个不存在的信号，比不显示更糟，而且看起来完全正常。
+- **轴不持有数据**：范围由数据自己声明（`AxisRange`），轴只是显示窗口 + 换算器，
+  于是多 Y 轴是自然结果。退化范围与对数轴上的 ≤0 值都被稳定化（`withMinimumSpan()` /
+  `withPositiveMin()`，全项目唯一的一份），**不会产生 NaN**。
+- **刻度用 double 算术，不用 `BigDecimal`**（fxcharts 用它是反面教材）。
+  三级刻度的包含关系体现在**格**上：主刻度的值都落在中刻度的格上，中刻度的值都落在
+  次刻度的格上。**一个值只发射一次**（取最粗的级别），别去列表里数重复项。
+- **时间轴标签按 UTC 格式化**（`AxisType.TIME` 的值是 Unix 纪元秒，
+  `TickGenerator` 的 formatter 全部 `.withZone(ZoneOffset.UTC)` + `Locale.ROOT`）。
+  要显示本地时间请在应用层转换——① 不读系统时区，否则同一段代码在不同机器上给出不同结果。
+- **配色归一化成 1×256 LUT**（`ColorMapping.toLut()` 返回 `byte[1024]`，RGBA）。
+  热力图换配色 = 换一张纹理，与数据量无关。
+
 ### 线程模型
 
 所有 `gl*` 调用与 GL 资源生命周期**必须**发生在 `GLCanvas` 的 GL 线程上，即
@@ -226,7 +315,8 @@ Main.kt                     设置 prism.* 系统属性
 `geom/Path`（含零分配变更器）、`geom/Flattener`（二次/三次贝塞尔细分）、
 `geom/Tessellator`（凸扇形 + 凹耳切 + 孔洞桥接）、`geom/StrokeGenerator`（端点/接头/虚线）、
 `math/{Vec2,Mat3,Transform}`、`util/{Color,Rect}`、`renderer/ViewTransform`、
-`text/SdfGenerator`（覆盖度位图 → 有符号距离场）、`text/TextLayout`（槽位序列 → 四边形顶点）
+`text/SdfGenerator`（覆盖度位图 → 有符号距离场）、`text/TextLayout`（槽位序列 → 四边形顶点）、
+`chart/` 全部（数据容器、轴与刻度、配色 LUT、图表装配——见「图表」一节）
 
 **可用（依赖 GL 上下文）**
 `gl/ShaderProgram`、`gl/Texture`、`gl/LwjglGLAbstraction`（`initialize()`/`dispose()` 是诚实的
@@ -239,7 +329,13 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
 `Gc` 的 `fontSize` / `drawText` / `measureText`
 
 **未实现 / 待办**
-- **科学绘图级图表**（子项目 D）：对数轴、多 Y 轴、误差棒、热力图、等高线。图表目前完全不存在。
+- **图表绘制后端**（子项目 D-②）：把 `chart/` 的产物变成 GL 顶点与 draw call
+  （波形、散点、柱、热力图、瀑布）。**图表框架本身（D-①）已经做完，但还没有任何
+  绘制能力**——`chart/` 只算不画。
+- **GPU 计算**（子项目 D-③）：FFT、降采样、包络、密度累积（数字荧光）。
+  `gpu/GPUFFT.java` 已经在那儿且**可用**（`#version 430`，见「前置事实」一节），
+  但它现在**没有任何人引用**——是死代码，不是废代码。
+- **误差棒、等高线、眼图**：`ChartType` 目前没有覆盖，属于 ③ 或更后面的事。
 - **Paint / 渐变**：所有绘制只接受纯色整数。设计意图是**所有 Paint 归一化为纹理**
   （纯色 = 超白色纹理 + 顶点颜色，渐变 = 1×256 LUT）。
 - **`createTexture` 缺少 ARGB→RGBA 通道转换**——**实现 Paint/渐变之前必须先修**。
