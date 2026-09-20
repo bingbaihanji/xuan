@@ -5,6 +5,8 @@ import org.lwjgl.opengl.GL20;
 import org.lwjgl.system.MemoryStack;
 
 import java.nio.FloatBuffer;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.lwjgl.opengl.GL20.*;
 
@@ -89,14 +91,31 @@ public class ShaderProgram implements Disposable {
         glUseProgram(0);
     }
 
+    /** uniform 名字 → 位置。程序链接后位置就固定了，不必每次现查。 */
+    private final Map<String, Integer> uniformLocations = new HashMap<>();
+
     /**
-     * 获取此程序中 uniform 变量的位置。
+     * 获取此程序中 uniform 变量的位置，带缓存。
+     *
+     * <p><strong>为什么要缓存</strong>：{@code glGetUniformLocation} 是按名字做字符串查找。
+     * 图表每个系列每帧要设约 8 个 uniform，多个系列叠加时它会变成热路径上的可见开销。
+     * 程序链接之后位置就固定了，因此可以安全缓存。
+     *
+     * <p>找不到的 uniform 会返回 -1 并<strong>把这个 -1 也缓存下来</strong>——
+     * 免得每帧都去查一个永远不存在的名字。注意 -1 传给 {@code glUniform*} 是**静默无操作**，
+     * 所以 uniform 名字写错不会有任何报错，只会"设了但没生效"。
      *
      * @param name uniform 变量的名称
-     * @return uniform 位置，如果未找到则返回 {@code -1}
+     * @return uniform 位置，未找到时为 -1
      */
     public int getUniformLocation(String name) {
-        return glGetUniformLocation(programId, name);
+        Integer cached = uniformLocations.get(name);
+        if (cached != null) {
+            return cached;
+        }
+        int location = glGetUniformLocation(programId, name);
+        uniformLocations.put(name, location);
+        return location;
     }
 
     /**
@@ -118,6 +137,25 @@ public class ShaderProgram implements Disposable {
      */
     public void setUniform(String name, float x, float y) {
         glUniform2f(getUniformLocation(name), x, y);
+    }
+
+    /**
+     * 设置四分量浮点 uniform。
+     *
+     * <p>图表用它一次传绘图区矩形（x, y, 宽, 高）。
+     *
+     * <p><strong>不要拿 {@link #setUniform(String, float[])} 代替</strong>——
+     * 那个是 mat3（{@code glUniformMatrix3fv}），名字像但语义完全不同，
+     * 而且传错了不会有任何报错。
+     *
+     * @param name uniform 名称
+     * @param x    第一个分量
+     * @param y    第二个分量
+     * @param z    第三个分量
+     * @param w    第四个分量
+     */
+    public void setUniform(String name, float x, float y, float z, float w) {
+        glUniform4f(getUniformLocation(name), x, y, z, w);
     }
 
     /**
