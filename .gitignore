@@ -4,5 +4,6 @@ out/
 .idea/
 .xcodemap/
 .claude/settings.local.json
+.claude/worktrees/
 *.iml
 *.log
