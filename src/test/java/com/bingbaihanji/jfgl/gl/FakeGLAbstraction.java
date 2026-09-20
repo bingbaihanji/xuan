@@ -243,6 +243,14 @@ public final class FakeGLAbstraction implements GLAbstraction {
         deletedVbos.add(vbo);
     }
 
+    /** 每次 uploadVboData(float[]) 的元素个数。图表后端用它给缓冲定容。 */
+    public final List<Integer> vboDataUploads = new ArrayList<>();
+
+    @Override
+    public void uploadVboData(float[] data) {
+        vboDataUploads.add(data.length);
+    }
+
     @Override
     public void uploadVboSubData(int offsetBytes, ByteBuffer data) {
         int bytes = data.remaining();
@@ -268,7 +276,6 @@ public final class FakeGLAbstraction implements GLAbstraction {
     @Override public void setViewport(int x, int y, int w, int h) { throw new UnsupportedOperationException(); }
     @Override public int createVao() { throw new UnsupportedOperationException(); }
     @Override public void bindVao(int vao) { throw new UnsupportedOperationException(); }
-    @Override public void uploadVboData(float[] data) { throw new UnsupportedOperationException(); }
     @Override public void uploadVboData(int[] data) { throw new UnsupportedOperationException(); }
     @Override public void uploadVboBytes(ByteBuffer data) { throw new UnsupportedOperationException(); }
     @Override public void deleteVao(int vao) { throw new UnsupportedOperationException(); }
