@@ -3415,7 +3415,30 @@ EOF
 - 「运行」一节：加 `ChartVerifier` 的命令
 - 测试计数
 
+- [ ] **Step 0: 补上 Task 2 遗留的三处文案（**现在的"Step 3"里附了精确文本，照着改**）**
+
+复核确认 Task 2（`ShaderProgram` 的 uniform 缓存与 vec4）**在 Task 12 之前没有任何运行覆盖**：
+
+> 全仓清点后确认，`getUniformLocation` 与所有 `setUniform*` **在 `src/`（含 `example/`）里一个调用方都没有**。
+> `RenderBatch` 全程不设 uniform——它的 GLSL 只有 `uniform sampler2D uTex`，靠 sampler 默认的 0 号纹理单元。
+> **把 `getUniformLocation` 改成 `return 0;`，`PipelineVerifier` 照样退出 0。**
+
+**这条要记住的意义是「归因」**：Task 2 引入的缺陷，只会以 **Task 12 的 `ChartVerifier` 失败**的形式暴露。
+届时排查方向会天然指向 Task 11/12 的渲染器，**而那口锅可能属于 Task 2**。
+
 - [ ] **Step 3: 清两处历史欠账的文案**
+
+**先补 `ShaderProgram` 的两句**（Task 2 复核提的，当时判为 Minor 未返工，在这里落地）：
+
+1. **线程约定**——本类现在有了唯一的可变状态（`uniformLocations`），而仓库里凡持有非线程安全可变状态的类都写了线程小节：`gl/Framebuffer`、`gl/VertexBuffer`、`renderer/PickBuffer`、`renderer/RenderBatch`、`text/FontFile`、`text/GlyphAtlas`、`text/FontGlyphSource`。**不是真风险**（按线程模型只在 GL 线程用），**所以不要改成 `ConcurrentHashMap`**——那是为假想的需要加东西。加一句即可：
+
+   > 本类只在 GL 线程使用（见 `CLAUDE.md` 的线程模型），因此 uniform 位置缓存用非线程安全的 `HashMap`。
+
+2. **重新链接的不变量**——字段注释说"程序链接之后位置就固定了"，但没写另一半：本类不提供重新链接入口；**若将来加入 `glLinkProgram`，必须清空该缓存**，否则缓存会静默返回旧位置，表现又是"设了但没生效"——本仓库最怕的那类静默错误。
+
+**再清 `gl/` 下的英文文案。** `CLAUDE.md` 明写"代码注释和 Javadoc **一律使用中文**"，但 `gl/` 下有两处英文：
+`LwjglGLAbstraction`（`:16-22`、`:27`、`:303`）与 `Texture.java:14`。**属孤立的历史欠账**，
+不是普遍现象（`gl/` 下其余文件都是中文）。
 
 `CLAUDE.md` 明写"代码注释和 Javadoc **一律使用中文**"，但 `gl/` 下有两处英文：
 `LwjglGLAbstraction`（`:16-22`、`:27`、`:303`）与 `Texture.java:14`。**属孤立的历史欠账**，
