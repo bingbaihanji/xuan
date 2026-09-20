@@ -4431,3 +4431,38 @@ for (long absolute = start + HEAD_MARGIN; absolute < end; absolute++)
 | 3 / 6 / 8 / 9 / 10 | —— | —— | **待做** |
 
 全量 **246 通过 / 0 失败 / 2 跳过**。
+
+---
+
+## 实施期间又实测出的两处「断言没有牙」（Task 3、Task 8）
+
+### Task 8：`allSeries()` 变异**在给定 fixture 下永远不可能失败**
+
+变异「`allSeries()` 改成层内优先（转置）」预期被 `装配顺序即绘制顺序` 杀死，**实测存活**。
+
+原因：正确顺序是「层序优先拼接」，变异是按下标转置。**当第一层只有 1 个系列时，两种排法完全相同**——
+转置后 `a0,(b),a1` 退化成 `a0,a1,b`，与拼接一致。而计划给的 fixture 恰是 `底图=[a]`（1 个）、
+`数据=[b,c]`，于是这个测试**在结构上无法观测到它自己的失败消息所描述的那个 bug**。
+
+执行者做了"变异是活的"对照实验：把第一层改成 2 个系列，变异立刻暴露
+（`expected: <[a0, a1, b, c]> but was: <[a0, b, a1, c]>`）——**证明变异有效，是检查看不见**。
+
+**处置**：fixture 第一层改成 2 个系列，并加注释钉死「第一层必须 ≥2 个系列，别简化回去」。
+原断言全部保留，另补一条层内容断言。
+
+### Task 8：四处 Javadoc 承诺「不可修改的列表」，**零覆盖**
+
+`Layer.series()` / `Chart.axes()` / `Chart.layers()` / `Chart.allSeries()` 都承诺返回不可修改列表，
+去掉 `Collections.unmodifiableList` **照样全绿**。而 `Layer.series()` 返回活列表会**绕过刚立的重复守卫**。
+
+**处置**：补 2 条 `assertThrows(UnsupportedOperationException.class, ...)`，并对新断言再做一次变异验证（已杀死）。
+
+### Task 3：`刻度装配后位置与映射一致` **结构上准恒真**
+
+`assertEquals(axis.dataToDisplay(tick.value()), tick.position())` —— 而 `position` 恰恰就是
+`TickGenerator.generate(..., this::dataToDisplay)` 用**同一个函数**算出来的。只要装配链路是把
+`this::dataToDisplay` 传下去，这条断言**恒真**，抓不到「刻度生成器自己算了一遍映射」这类缺陷
+（**那正是 `Tick` 的 Javadoc 声称要防的事**）。
+
+真正有抓力的是紧随其后的 `assertEquals(4, majors.size())` 与 `assertEquals(LENGTH/3.0, majors.get(1).position())`。
+**不要把它当成覆盖性检查。**
