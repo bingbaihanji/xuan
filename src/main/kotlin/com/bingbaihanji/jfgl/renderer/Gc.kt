@@ -5,6 +5,8 @@ import com.bingbaihanji.jfgl.geom.Path
 import com.bingbaihanji.jfgl.geom.StrokeGenerator
 import com.bingbaihanji.jfgl.geom.Tessellator
 import com.bingbaihanji.jfgl.math.Mat3
+import com.bingbaihanji.jfgl.text.GlyphSlot
+import com.bingbaihanji.jfgl.text.TextLayout
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
@@ -68,6 +70,19 @@ class Gc internal constructor(private val batch: RenderBatch) {
     var globalAlpha: Float = 1f
 
     /**
+     * 当前字号（像素），默认 16f。
+     *
+     * <p>它和 [fill]、[stroke] 一样属于绘制状态，会被 [save] / [restore] 存取；
+     * 进的是样式栈的**浮点**部分。**改样式栈的每层宽度时必须同步改三处**，
+     * 见 [save] 的说明。
+     *
+     * <p>字号只影响 [drawText] / [measureText]：字形本身是在固定的 em 尺寸下
+     * 光栅化的（[com.bingbaihanji.jfgl.text.GlyphRasterizer.EM_SIZE]），
+     * 字号只是发射顶点时的一个缩放因子，因此改字号不会触发任何重新光栅化。
+     */
+    var fontSize: Float = 16f
+
+    /**
      * 当前拾取 ID。**0 表示不参与拾取**（默认）。
      *
      * <p>取值来自 [pickRegistry] 的分配结果，或由调用方自行指定的任意非零整数。
@@ -97,7 +112,7 @@ class Gc internal constructor(private val batch: RenderBatch) {
     /** 样式栈的整数部分：每层 [INTS_PER_STYLE_LEVEL] 个值（fill、stroke、pickId）。 */
     private var styleInts = IntArray(INITIAL_STACK_LEVELS * INTS_PER_STYLE_LEVEL)
 
-    /** 样式栈的浮点部分：每层 [FLOATS_PER_STYLE_LEVEL] 个值（lineWidth、globalAlpha）。 */
+    /** 样式栈的浮点部分：每层 [FLOATS_PER_STYLE_LEVEL] 个值（lineWidth、globalAlpha、fontSize）。 */
     private var styleFloats = FloatArray(INITIAL_STACK_LEVELS * FLOATS_PER_STYLE_LEVEL)
 
     /**
@@ -231,6 +246,94 @@ class Gc internal constructor(private val batch: RenderBatch) {
         return result
     }
 
+    // ------------------------------------------------------------------
+    // 文本
+    // ------------------------------------------------------------------
+
+    /**
+     * 绘制一行文本。
+     *
+     * **`(x, y)` 是基线的起点，不是文本框的左上角。**
+     * `y` 是文字**基线**所在的像素行，`x` 是第一个字形的笔位置。
+     * 选基线而不是左上角，是因为只有基线是排版的稳定参照——图表的刻度文字要沿轴线
+     * 对齐时基线对齐才是想要的；而"左上角对齐"会让不同高度的字符视觉上跳来跳去。
+     * **这条是最容易猜错、且猜错后"看起来只是位置偏了一点"的那类约定。**
+     *
+     * <p>文本是一类普通图元：它走**现有的**批处理管线，所以裁剪、z 序、合批、
+     * GPU 拾取全部自动成立。连续的一段文本通常合并成一条 draw call。
+     *
+     * <p>词法上按**码点**处理（用 [Character.codePointAt]，一次跳过整个代理对），
+     * 因此增补平面上的字符不会被拆成两个豆腐块。
+     *
+     * <p>字体里没有的码点会画成 `.notdef`（通常是个方框），**不会静默跳过**——
+     * 静默跳过的表现是"这段文字少了几个字"，用户会以为是排版 bug。
+     *
+     * <p>空格这类没有轮廓的字形只推进笔，不发顶点，这是正常的。
+     *
+     * <p>**限制**：单次调用发射的顶点数（每字形 6 个）必须放得进当前顶点缓冲的剩余容量。
+     * 在硬上限（[VertexWriter.MAX_VERTEX_CAPACITY] = 1<<20 顶点，约 17 万个字形）以下
+     * [VertexWriter] 会自动扩容，因此实际不可达；真要画超长文本，分多次调用即可。
+     *
+     * @param text 文本，可以包含任意 Unicode 码点
+     * @param x    起点 x（用户坐标）：第一个字形的笔位置
+     * @param y    起点 y（用户坐标）：**基线**所在的像素行
+     * @return 推进宽度（像素），即笔最终走到 `x + 返回值`
+     */
+    fun drawText(text: String, x: Float, y: Float): Float {
+        if (text.isEmpty()) {
+            return 0f
+        }
+        val glyphSource = batch.glyphSource()
+        val atlas = batch.glyphAtlas()
+        // 槽位里的偏移/尺寸/推进全是 em 像素，这里换成当前字号下的缩放。
+        // 字号因此只是发射顶点时的一个乘法，不会触发任何重新光栅化。
+        val scale = fontSize / glyphSource.pixelHeight()
+
+        val slots = ArrayList<GlyphSlot>(text.codePointCount(0, text.length))
+        var index = 0
+        while (index < text.length) {
+            val codepoint = text.codePointAt(index)
+            // 码点不在字体里时 glyphIndex 返回 0（.notdef）——照常画它，不要跳过。
+            slots.add(atlas.acquire(glyphSource.glyphIndex(codepoint)))
+            // 必须一次跳过整个代理对：中文有增补平面字符，
+            // 用 charAt 逐 char 走会把一个字符拆成两个豆腐块。
+            index += Character.charCount(codepoint)
+        }
+
+        // 顺序与 emitTriangles 一致：先 flushIfNeeded 再 syncState——
+        // reset() 会把写入器带回"尚未设置状态"，必须在它之后重新设上。
+        flushIfNeeded()
+        syncState(atlas.textureId(), Material.SDF_TEXT)
+        return TextLayout.layout(slots, x, y, scale, packColor(fill), pickId, writer(), state)
+    }
+
+    /**
+     * 量出一行文本的推进宽度（像素）。**不绘制任何东西，也不生成字形。**
+     *
+     * 走的是字体度量而不是图集，因此可以放心地用于布局计算——测量没有副作用，
+     * 也不会因为"量了一下"就把图集填满。
+     *
+     * <p>与 [drawText] 的返回值**在数学上相等**（两者都是
+     * `字体单位 * scaleForPixelHeight(字号)` 的累加），只差浮点舍入。
+     *
+     * @param text 文本
+     * @return 推进宽度（像素）
+     */
+    fun measureText(text: String): Float {
+        if (text.isEmpty()) {
+            return 0f
+        }
+        val glyphSource = batch.glyphSource()
+        var width = 0f
+        var index = 0
+        while (index < text.length) {
+            val codepoint = text.codePointAt(index)
+            width += glyphSource.advancePixels(glyphSource.glyphIndex(codepoint), fontSize)
+            index += Character.charCount(codepoint)
+        }
+        return width
+    }
+
     /**
      * 当前帧的绘制区宽度，单位是**设备像素**。
      *
@@ -255,7 +358,7 @@ class Gc internal constructor(private val batch: RenderBatch) {
     // ------------------------------------------------------------------
 
     /**
-     * 压入当前的**全部绘制状态**：变换、裁剪、填充色、描边色、线宽、全局不透明度、拾取 ID。
+     * 压入当前的**全部绘制状态**：变换、裁剪、填充色、描边色、线宽、全局不透明度、拾取 ID、字号。
      *
      * <p>与 HTML Canvas / JavaFX 的 `save()` 语义一致——用户改完样式再 [restore] 就能回到原样，
      * 不必手工记下每一个字段。每次 [save] 在稳态下不产生任何分配：
@@ -272,6 +375,7 @@ class Gc internal constructor(private val batch: RenderBatch) {
         val floatBase = styleDepth * FLOATS_PER_STYLE_LEVEL
         styleFloats[floatBase] = lineWidth
         styleFloats[floatBase + 1] = globalAlpha
+        styleFloats[floatBase + 2] = fontSize
         styleDepth++
     }
 
@@ -291,6 +395,7 @@ class Gc internal constructor(private val batch: RenderBatch) {
         val floatBase = styleDepth * FLOATS_PER_STYLE_LEVEL
         lineWidth = styleFloats[floatBase]
         globalAlpha = styleFloats[floatBase + 1]
+        fontSize = styleFloats[floatBase + 2]
     }
 
     // ------------------------------------------------------------------
@@ -865,7 +970,7 @@ class Gc internal constructor(private val batch: RenderBatch) {
         get() = state.matrix
 
     /**
-     * 把当前变换与裁剪状态同步给顶点写入器。
+     * 把当前变换、裁剪状态与材质同步给顶点写入器。
      *
      * <p>**裁剪 y 传的是顶边**：[ViewTransform.clipDeviceY] 已是 y 向下的设备像素顶边，
      * 与 [DrawCommand] 的 `scissorY` 约定一致；翻成 `glScissor` 的 y 向上坐标是
@@ -876,9 +981,11 @@ class Gc internal constructor(private val batch: RenderBatch) {
      * 下一次调用本方法正好重新设上——见 [VertexWriter.isFlushRequested] 的消费方契约。
      *
      * @param textureId 要绑定的纹理 ID
+     * @param material  材质，默认 [Material.COLOR]（纯色绘制的全部调用点都用默认值）
      */
-    internal fun syncState(textureId: Int) {
+    internal fun syncState(textureId: Int, material: Material = Material.COLOR) {
         writer.setState(
+            material,
             textureId,
             state.clipDeviceX,
             state.clipDeviceY,
@@ -912,7 +1019,7 @@ class Gc internal constructor(private val batch: RenderBatch) {
      * 确保样式栈能容纳给定的层数。
      *
      * <p>两个数组按**各自的每层宽度**独立扩容：整数部分每层 3 个（fill、stroke、pickId），
-     * 浮点部分每层 2 个（lineWidth、globalAlpha）。此前两者都是 2，
+     * 浮点部分每层 3 个（lineWidth、globalAlpha、fontSize）。此前两者都是 2，
      * 所以共用了一个 `capacityLevels * 2` 的算法——`pickId` 进来以后那个算法对整数部分就是错的，
      * 会让栈在深层 [save] 时越界。
      *
@@ -973,7 +1080,7 @@ class Gc internal constructor(private val batch: RenderBatch) {
         /** 样式栈每层占用的 int 个数：fill、stroke、pickId。 */
         private const val INTS_PER_STYLE_LEVEL = 3
 
-        /** 样式栈每层占用的 float 个数：lineWidth、globalAlpha。 */
-        private const val FLOATS_PER_STYLE_LEVEL = 2
+        /** 样式栈每层占用的 float 个数：lineWidth、globalAlpha、fontSize。 */
+        private const val FLOATS_PER_STYLE_LEVEL = 3
     }
 }
