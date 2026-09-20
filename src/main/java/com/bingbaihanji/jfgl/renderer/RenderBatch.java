@@ -3,6 +3,10 @@ package com.bingbaihanji.jfgl.renderer;
 import com.bingbaihanji.jfgl.gl.GLAbstraction;
 import com.bingbaihanji.jfgl.gl.ShaderProgram;
 import com.bingbaihanji.jfgl.gl.VertexBuffer;
+import com.bingbaihanji.jfgl.text.FontFile;
+import com.bingbaihanji.jfgl.text.FontGlyphSource;
+import com.bingbaihanji.jfgl.text.GlyphAtlas;
+import com.bingbaihanji.jfgl.text.GlyphRasterizer;
 import com.bingbaihanji.jfgl.util.Disposable;
 
 import java.util.List;
@@ -68,6 +72,14 @@ import static org.lwjgl.opengl.GL30.glVertexAttribIPointer;
  * {@link GLAbstraction#enableBlend()} 会先把混合因子设成非预乘的
  * {@code GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA}，所以本类紧接着必须再设一次——
  * 这两行的<strong>先后顺序不能调换</strong>，否则半透明边缘会出现二次混合的暗缝。
+ *
+ * <h2>文本与拾取</h2>
+ * <p>ID pass 用的是同一张命令表，因此文本天然可拾取。但要注意
+ * {@link #drawPickPass} <strong>不看 alpha</strong>（对整数附件而言，颜色没有意义），
+ * 而文本的四边形覆盖的是整个 SDF 位图矩形——包含四周各 {@code SdfGenerator.SPREAD}
+ * 像素的外扩。所以<strong>文本的可拾取范围比墨迹大一圈</strong>，
+ * 这跟"全透明图元仍可拾取"是同一类行为，是刻意的、有测试钉着的，
+ * 不要当成 bug"顺手修好"。
  */
 public final class RenderBatch implements Disposable {
 
@@ -134,6 +146,38 @@ public final class RenderBatch implements Disposable {
             }
             """;
 
+    /**
+     * SDF 文本的片段着色器。
+     *
+     * <p>把图集的红通道当有符号距离（0 = 远在字形外，128 = 边界，255 = 远在字形内），
+     * 用屏幕空间导数把边缘重新求一遍——<strong>平滑宽度必须由屏幕空间决定</strong>，
+     * 预先烘进纹理是不可能的，因为同一个字形会在不同字号下被绘制。
+     * 这正是 SDF 相对位图拉伸的全部价值。
+     *
+     * <p>{@code fwidth} 是 GLSL 3.3 core 的内建函数，不需要扩展。
+     *
+     * <p><strong>最后一行必须是 {@code vColor * a}，不能写成
+     * {@code vec4(vColor.rgb, vColor.a * a)}。</strong>
+     * 顶点色是<strong>预乘</strong>的，乘一个标量不破坏预乘性；
+     * 而后者会破坏它——被覆盖的像素里 {@code rgb} 不再随 alpha 衰减，
+     * 结果是每个被覆盖的像素都饱和到全白，边缘的过渡带整个消失
+     * （与渲染管线文档里那条"混合因子顺序不能调换"是同一类问题）。
+     */
+    private static final String SDF_FRAGMENT_SHADER = """
+            #version 330 core
+            in vec2 vUV;
+            in vec4 vColor;
+            uniform sampler2D uTex;
+            out vec4 fragColor;
+            void main() {
+                float d  = texture(uTex, vUV).r;
+                float sd = d - 0.5;
+                float w  = fwidth(d);
+                float a  = smoothstep(-w, w, sd);
+                fragColor = vColor * a;
+            }
+            """;
+
     /** GL 抽象层，资源类操作（VAO/VBO/纹理/着色器）都经它转发。 */
     private final GLAbstraction gl;
 
@@ -164,6 +208,18 @@ public final class RenderBatch implements Disposable {
     /** 1×1 不透明白色纹理的 ID，纯色绘制时绑定，使 {@code texture(uTex, vUV)} 恒为 1。 */
     private int whiteTexture;
 
+    /** SDF 文本使用的着色器程序。 */
+    private final ShaderProgram sdfShader;
+
+    /** 字体。与 glyphSource 同时创建，同时释放。 */
+    private final FontFile font;
+
+    /** 字形来源：字体 + 光栅化器 + 距离场。 */
+    private final FontGlyphSource glyphSource;
+
+    /** 字形图集，与颜色 pass 用同一张纹理。 */
+    private final GlyphAtlas glyphAtlas;
+
     /** 视口高度，用于把裁剪矩形从 y 向下翻转为 GL 的 y 向上。 */
     private int viewportHeight;
 
@@ -187,6 +243,16 @@ public final class RenderBatch implements Disposable {
         this.pickShader = gl.createShader(PICK_VERTEX_SHADER, PICK_FRAGMENT_SHADER);
         // 尺寸先给 1x1 占位，第一帧 beginFrame 时会按真实尺寸重建。
         this.pickBuffer = new PickBuffer(gl, 1, 1);
+
+        this.sdfShader = gl.createShader(VERTEX_SHADER, SDF_FRAGMENT_SHADER);
+        // 字体在启动时就加载并解析：规格 §7 要求"字体缺失 / 无法解析"在启动时抛异常，
+        // 而不是退化成"一个字都画不出来"——后者的表现是屏幕一片空白，
+        // 排查方向会指向 GL 而不是字体。
+        //
+        // 这一步会分配 9.7 MB 的堆外内存并在 dispose 里归还，见 FontFile 的说明。
+        this.font = FontFile.loadClasspath(FontFile.DEFAULT_RESOURCE);
+        this.glyphSource = new FontGlyphSource(font, new GlyphRasterizer(font));
+        this.glyphAtlas = new GlyphAtlas(gl, glyphSource);
         createVao();
     }
 
@@ -277,6 +343,9 @@ public final class RenderBatch implements Disposable {
         // 这样上层的拾取查询（Gc.pick / Gc.pickRect）会诚实地返回「没命中」，
         // 而不是拿陈旧的 ID 去注册表里查——那会拾取到早已消失的对象，而画面完全正常。
         pickBufferValid = false;
+        // 图集的帧边界重置钩子：只有在上一帧判定过"货架装不下"时才会真的重置，
+        // 因此正常帧是零开销。整体重置只能发生在帧边界——见 GlyphAtlas 的类说明。
+        glyphAtlas.beginFrame();
     }
 
     /**
@@ -290,6 +359,29 @@ public final class RenderBatch implements Disposable {
      */
     public int whiteTextureId() {
         return whiteTexture;
+    }
+
+    /**
+     * 返回字形图集。
+     *
+     * <p>{@code Gc.drawText} 需要它来取 uv 与绑定纹理。
+     *
+     * @return 字形图集
+     */
+    public GlyphAtlas glyphAtlas() {
+        return glyphAtlas;
+    }
+
+    /**
+     * 返回字形来源。
+     *
+     * <p>{@code Gc} 需要它来查字形索引与度量（{@code measureText} 走的是字体度量，
+     * 不生成字形、不碰图集）。
+     *
+     * @return 字形来源
+     */
+    public FontGlyphSource glyphSource() {
+        return glyphSource;
     }
 
     /**
@@ -317,7 +409,6 @@ public final class RenderBatch implements Disposable {
         }
         vertexBuffer.upload(writer.buffer());
 
-        shader.use();
         gl.bindVao(vao);
         gl.bindVbo(vertexBuffer.id());
 
@@ -333,10 +424,21 @@ public final class RenderBatch implements Disposable {
         // LWJGL 3 没有 glScissorTest 这个便捷函数，只有 glEnable/glDisable(GL_SCISSOR_TEST)。
         glEnable(GL_SCISSOR_TEST);
 
+        // 材质按命令切换。连续文本是一片相邻的同材质命令，因此通常只切两次
+        // （进入文本、离开文本），不会退化成每个字形一次切换。
+        ShaderProgram current = shader;
+        current.use();
+
         List<DrawCommand> commands = writer.commands();
         for (DrawCommand command : commands) {
             if (command.vertexCount() == 0) {
                 continue;
+            }
+            ShaderProgram wanted = command.material() == Material.SDF_TEXT ? sdfShader : shader;
+            if (wanted != current) {
+                current.unuse();
+                wanted.use();
+                current = wanted;
             }
             // uTex 采样的是 0 号纹理单元：sampler 默认值就是 0，本类从不改动它，
             // 这里显式 glActiveTexture(GL_TEXTURE0) 是为了保证下面这行 glBindTexture
@@ -351,12 +453,14 @@ public final class RenderBatch implements Disposable {
         // 放在这里而不是另起一趟，是因为此刻 VAO/VBO/属性指针与 scissor 都正好是
         // 绘制所需的状态。
         if (writer.hasPickableVertices()) {
+            // ID pass 自己会切程序并在结束时解绑；先把颜色 pass 的程序解绑，
+            // 免得留下"已绑定但随后被换掉"的悬空状态。
+            current.unuse();
             drawPickPass(commands);
         }
 
         glDisable(GL_SCISSOR_TEST);
         gl.bindVao(0);
-        shader.unuse();
         gl.disableBlend();
     }
 
@@ -488,6 +592,9 @@ public final class RenderBatch implements Disposable {
         shader.dispose();
         pickShader.dispose();
         pickBuffer.dispose();
+        sdfShader.dispose();
+        glyphAtlas.dispose();
+        font.dispose();
         vertexBuffer.dispose();
         gl.deleteVao(vao);
         glDeleteTextures(whiteTexture);

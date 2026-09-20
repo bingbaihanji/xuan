@@ -74,8 +74,12 @@ class VertexFormatTest {
 
     @Test
     void DrawCommand保存全部状态() {
-        DrawCommand c = new DrawCommand(7, 12, 34, 1, 2, 3, 4);
+        // 材质刻意用 SDF_TEXT 而不是 COLOR：用默认值做断言的话，
+        // "忘了把材质传进命令"这个变异会存活。
+        DrawCommand c = new DrawCommand(7, Material.SDF_TEXT, 12, 34, 1, 2, 3, 4);
         assertEquals(7, c.textureId());
+        assertEquals(Material.SDF_TEXT, c.material(),
+                "材质进了合批判据，就必须进命令——否则文本会被当成纯色画");
         assertEquals(12, c.firstVertex());
         assertEquals(34, c.vertexCount());
         assertEquals(1, c.scissorX());

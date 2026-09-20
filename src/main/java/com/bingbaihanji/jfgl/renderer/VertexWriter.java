@@ -81,6 +81,9 @@ public final class VertexWriter {
     /** 当前这批顶点里是否出现过非零的拾取 ID。{@link #reset()} 时复位。 */
     private boolean hasPickable = false;
 
+    /** 当前状态的材质。 */
+    private Material material = Material.COLOR;
+
     /** 当前状态的纹理 ID。 */
     private int textureId;
 
@@ -122,7 +125,12 @@ public final class VertexWriter {
     }
 
     /**
-     * 设置当前状态。与上一条命令状态不同时会结束当前命令。
+     * 设置当前状态为纯色材质。等价于
+     * {@code setState(Material.COLOR, textureId, ...)}。
+     *
+     * <p>保留这个重载是为了让纯色绘制的调用点不必每处都写一遍
+     * {@code Material.COLOR}——它同时把"纯色绘制用 COLOR"这条约定固定在一个地方，
+     * 而不是散落在几十个调用点上。
      *
      * @param textureId     纹理 ID
      * @param scissorX      裁剪矩形左边缘 x
@@ -132,7 +140,27 @@ public final class VertexWriter {
      */
     public void setState(int textureId, int scissorX, int scissorY,
                          int scissorWidth, int scissorHeight) {
+        setState(Material.COLOR, textureId, scissorX, scissorY, scissorWidth, scissorHeight);
+    }
+
+    /**
+     * 设置当前状态。与上一条命令状态不同时会结束当前命令。
+     *
+     * <p><strong>材质是合批判据的一部分</strong>：只有相邻且材质、纹理、裁剪都相同的
+     * 绘制才会合并。漏判的表现是文本被当成纯色画（采样到 1×1 白色纹理，
+     * 整片文字糊成方块），而且不报错。
+     *
+     * @param material      材质，决定用哪个片段着色器
+     * @param textureId     纹理 ID
+     * @param scissorX      裁剪矩形左边缘 x
+     * @param scissorY      裁剪矩形上边缘 y（y 向下；glScissor 的 y 换算见 {@link DrawCommand}）
+     * @param scissorWidth  裁剪矩形宽度
+     * @param scissorHeight 裁剪矩形高度
+     */
+    public void setState(Material material, int textureId, int scissorX, int scissorY,
+                         int scissorWidth, int scissorHeight) {
         if (currentFirstVertex != NO_COMMAND
+                && this.material == material
                 && this.textureId == textureId
                 && this.scissorX == scissorX && this.scissorY == scissorY
                 && this.scissorWidth == scissorWidth && this.scissorHeight == scissorHeight) {
@@ -142,6 +170,7 @@ public final class VertexWriter {
         // 只有相邻且同状态的绘制才会落进同一条命令，绝不跨命令合并——绘制顺序即 z 序。
         sealCurrentCommand();
 
+        this.material = material;
         this.textureId = textureId;
         this.scissorX = scissorX;
         this.scissorY = scissorY;
@@ -388,7 +417,8 @@ public final class VertexWriter {
      * @return 当前命令
      */
     private DrawCommand currentCommand() {
-        return new DrawCommand(textureId, currentFirstVertex, vertexCount - currentFirstVertex,
+        return new DrawCommand(textureId, material, currentFirstVertex,
+                vertexCount - currentFirstVertex,
                 scissorX, scissorY, scissorWidth, scissorHeight);
     }
 

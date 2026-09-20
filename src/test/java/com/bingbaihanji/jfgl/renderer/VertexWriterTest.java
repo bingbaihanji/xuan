@@ -261,4 +261,47 @@ class VertexWriterTest {
         assertFalse(w.hasPickableVertices(),
                 "reset 是帧中途 flush 的分批边界，标志必须跟着分批复位");
     }
+
+    @Test
+    void 材质不同的相邻绘制不合并() {
+        VertexWriter w = new VertexWriter(64);
+        w.setState(Material.COLOR, 1, 0, 0, 100, 100);
+        w.vertex(0f, 0f, 0f, 0f, 0xFFFFFFFF, 0);
+        // 只有材质不同，纹理与裁剪完全一样
+        w.setState(Material.SDF_TEXT, 1, 0, 0, 100, 100);
+        w.vertex(1f, 1f, 0f, 0f, 0xFFFFFFFF, 0);
+
+        assertEquals(2, w.commandCount(),
+                "材质不同必须切命令：否则文本与纯色会被同一条命令画出来，"
+                        + "采样的是白色纹理，文字糊成方块");
+    }
+
+    @Test
+    void 材质相同的相邻绘制合并() {
+        VertexWriter w = new VertexWriter(64);
+        w.setState(Material.SDF_TEXT, 1, 0, 0, 100, 100);
+        w.vertex(0f, 0f, 0f, 0f, 0xFFFFFFFF, 0);
+        w.setState(Material.SDF_TEXT, 1, 0, 0, 100, 100);
+        w.vertex(1f, 1f, 0f, 0f, 0xFFFFFFFF, 0);
+
+        assertEquals(1, w.commandCount(),
+                "材质、纹理、裁剪都相同就该合并——一段连续文本必须是一条 draw call");
+    }
+
+    @Test
+    void 材质记进命令且五参数重载落成纯色() {
+        VertexWriter w = new VertexWriter(64);
+        w.setState(Material.SDF_TEXT, 9, 0, 0, 100, 100);
+        w.vertex(0f, 0f, 0f, 0f, 0xFFFFFFFF, 0);
+
+        assertEquals(Material.SDF_TEXT, w.command(0).material());
+        assertEquals(9, w.command(0).textureId(), "加材质不该挤掉纹理");
+
+        VertexWriter plain = new VertexWriter(64);
+        plain.setState(1, 0, 0, 100, 100);      // 五参数重载
+        plain.vertex(0f, 0f, 0f, 0f, 0xFFFFFFFF, 0);
+
+        assertEquals(Material.COLOR, plain.command(0).material(),
+                "五参数重载是给纯色绘制的，必须落成 COLOR 而不是未定义值");
+    }
 }
