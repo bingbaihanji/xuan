@@ -3176,7 +3176,7 @@ Expected: BUILD SUCCESS；`Tests run: 205, Failures: 0, Errors: 0, Skipped: 2`�
 | 变异 | 应失败的测试 |
 |------|--------------|
 | `setState` 的合批判据漏掉材质（删掉 `this.material == material &&`） | `材质不同的相邻绘制不合并` |
-| `currentCommand()` 里写死 `Material.COLOR` | `材质记进命令且五参数重载落成纯色`、`DrawCommand保存全部状态` |
+| `currentCommand()` 里写死 `Material.COLOR` | **只有** `材质记进命令且五参数重载落成纯色`。实测：`DrawCommand保存全部状态` **不会失败**——它直接 `new DrawCommand(7, Material.SDF_TEXT, ...)`，根本不经过 `VertexWriter.currentCommand()`，这个变异碰不到它。想验证那条测试，要改的是 record 本身（例如给 `material()` 加一个返回 `COLOR` 的实现），实测那样它确实会失败 |
 | `submit` 的循环里所有命令都用颜色着色器（去掉 `wanted` 那句，恒用 `shader`） | **无单测**（要真 GL 上下文）→ 由 Task 9 的 `TextVerifier` 覆盖：文字会采样到 1×1 白色纹理，墨迹变成整块四边形，推进/基线/过渡带断言全部失败 |
 
 - [ ] **Step 8: 提交**
