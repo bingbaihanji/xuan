@@ -4,8 +4,10 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
@@ -46,7 +48,15 @@ class FakeGLAbstractionGuardTest {
             "createShader(String,String)", "createTexture(int,int,int[])",
             "setVertexAttribDivisor(int,int)", "drawArraysInstancedBaseInstance(int,int,int,int,int)");
 
-    /** 真正实现或记录的方法签名（**不**抛异常的那些）。 */
+    /**
+     * 真正实现或记录的方法签名（**不**抛 {@link UnsupportedOperationException} 的那些）。
+     *
+     * <p>措辞要准确：这一组<strong>并非"都不抛异常"</strong>——
+     * {@code clearIntegerColor}（裁剪开着时）与 {@code uploadR8SubImage}（纹理不存在时）
+     * 都会抛 {@link AssertionError}，{@code uploadVboSubData} 与
+     * {@code uploadVboData(float[])} 也会（VBO 名不合法或越界时）。
+     * 本清单管的是"护栏怎么分类"，不是"这个方法绝不失败"。
+     */
     private static final Set<String> IMPLEMENTED = Set.of(
             // 拾取路径
             "createFramebuffer()", "bindFramebuffer(int)", "deleteFramebuffer(int)",
@@ -56,6 +66,7 @@ class FakeGLAbstractionGuardTest {
             "attachTextureToColor0(int)", "framebufferStatus()", "clearIntegerColor(int)",
             "isScissorEnabled()", "setScissorEnabled(boolean)",
             "readUnsignedIntPixel(int,int)", "readUnsignedIntPixels(int,int,int,int,int[])",
+            // 生命周期：空实现，无资源可释放（不属上面任何一类，也不抛）
             "dispose()",
             // 顶点缓冲路径（图表后端）
             "createVbo()", "bindVbo(int)", "deleteVbo(int)",
@@ -128,6 +139,46 @@ class FakeGLAbstractionGuardTest {
                     sig + " 不再抛 UnsupportedOperationException 了——护栏被悄悄卸掉了。"
                             + "若是有意放开，请把它移到 IMPLEMENTED 并说明理由。");
         }
+    }
+
+    /**
+     * 定容与子上传都要求当前绑定的确实是一个<b>活着</b>的 VBO。
+     *
+     * <p>这是本项目那条纪律的直接应用：上一轮堵住了"越界"，却漏了"名字压根不合法"——
+     * 而后者会把容量记在 0 名下，随后越界断言<strong>全部放行</strong>。
+     * 不被执行的守卫等于没有守卫，所以这里把三条分支（从未绑定 / 从未创建 / 建了又删）
+     * 逐一钉住。
+     *
+     * <p>末尾的反向断言同样必要：没有它，前面几条"抛 AssertionError"可能只是恒抛。
+     */
+    @Test
+    void 未绑定活着的VBO时定容与子上传必须显式失败() {
+        FakeGLAbstraction fake = new FakeGLAbstraction();
+        int live = fake.createVbo();
+        int spare = fake.createVbo();
+        ByteBuffer payload = ByteBuffer.allocate(16);
+
+        // 1) 从未 bindVbo：boundVbo 保持 0，而 0 永远不是合法名字
+        assertThrows(AssertionError.class, () -> fake.uploadVboSubData(0, payload));
+        // 定容这条最关键：不拦的话容量会记到 0 名下，越界断言从此全部放行
+        assertThrows(AssertionError.class, () -> fake.uploadVboData(new float[4]));
+
+        // 2) 绑到一个从未创建的名字
+        fake.bindVbo(9999);
+        assertThrows(AssertionError.class, () -> fake.uploadVboSubData(0, payload));
+
+        // 3) 建了又删——只查 createdVbos 拦不住这一条
+        fake.bindVbo(live);
+        fake.deleteVbo(live);
+        assertThrows(AssertionError.class, () -> fake.uploadVboSubData(0, payload));
+
+        // 反向：合法流程必须放行，且边界（offset + bytes == 容量）恰好通过
+        fake.bindVbo(spare);
+        fake.uploadVboData(new float[8]);
+        fake.uploadVboSubData(0, ByteBuffer.allocate(32));
+        assertEquals(List.of(spare + "@0:32"), fake.vboSubDataCalls);
+        // 再多一个字节才越界
+        assertThrows(AssertionError.class, () -> fake.uploadVboSubData(0, ByteBuffer.allocate(33)));
     }
 
     private static void invokeWithDefaults(Method m, FakeGLAbstraction target) {

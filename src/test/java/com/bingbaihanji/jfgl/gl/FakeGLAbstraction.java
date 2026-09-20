@@ -15,11 +15,14 @@ import java.util.Map;
  * <ul>
  *   <li><strong>拾取路径</strong>（FBO / 整数纹理 / 读回 / 裁剪）：真正实现，
  *       供 {@code PickBuffer}、{@code Framebuffer}、{@code GlyphAtlas} 单测。</li>
- *   <li><strong>顶点缓冲路径</strong>（图表后端用）：只<em>记录</em>调用，
- *       并对子上传做越界检查。这一组<strong>不抛异常</strong>——拾取路径若误调它们
- *       不会报错，只能靠记录列表发现。</li>
+ *   <li><strong>顶点缓冲路径</strong>（图表后端用）：创建 / 绑定 / 子上传记入<em>公开</em>
+ *       记录列表；定容只记入<strong>私有</strong>容量表（定容被误调无法从记录里看出，
+ *       只能间接由越界断言观测）。这一组<strong>不抛
+ *       {@link UnsupportedOperationException}</strong>，但登记不合法（未创建 / 已删除 /
+ *       从未绑定）的 VBO 名与越界上传会抛 {@link AssertionError}——拾取路径若误调它们
+ *       不会立刻报错。</li>
  *   <li><strong>其余</strong>：一律抛 {@link UnsupportedOperationException}
- *       （见文件末尾的清单）。</li>
+ *       （见文件末尾的清单）。唯一例外是 {@link #dispose()}：空实现，无资源可释放。</li>
  * </ul>
  *
  * <p>这三类清单由 {@code FakeGLAbstractionGuardTest} 钉住。
@@ -263,13 +266,31 @@ public final class FakeGLAbstraction implements GLAbstraction {
         vboCapacityBytes.remove(vbo);
     }
 
+    /**
+     * 断言当前绑定的确实是一个<b>活着</b>的 VBO。
+     *
+     * <p>不加这道检查的话，"漏了 bindVbo"（{@code boundVbo} 保持 0）会把容量记在 0 名下，
+     * 而之后 {@code uploadVboSubData} 的两道断言都会放行——真 GL 上那是
+     * {@code GL_INVALID_OPERATION}。堵越界却漏了这条，等于没堵。
+     *
+     * <p>{@code createVbo} 从 {@code nextId}（初值 100）开始发号，因此 0 永远不是合法名字。
+     */
+    private void requireLiveVbo(String operation) {
+        if (boundVbo == 0 || !createdVbos.contains(boundVbo) || deletedVbos.contains(boundVbo)) {
+            throw new AssertionError(operation + "：当前没有绑定有效的 VBO（boundVbo="
+                    + boundVbo + "）。真 GL 上这是 GL_INVALID_OPERATION");
+        }
+    }
+
     @Override
     public void uploadVboData(float[] data) {
+        requireLiveVbo("uploadVboData");
         vboCapacityBytes.put(boundVbo, data.length * Float.BYTES);
     }
 
     @Override
     public void uploadVboSubData(int offsetBytes, ByteBuffer data) {
+        requireLiveVbo("uploadVboSubData");
         int bytes = data.remaining();
         // 真 GL 上，越界要么报 GL_INVALID_OPERATION（而本仓库没有任何地方读错误码——
         // glGetError 全库只在 PipelineVerifier 的一处诊断打印里出现过），要么静默损坏
