@@ -168,6 +168,47 @@ class Gc internal constructor(private val batch: RenderBatch) {
         check(unbalanced == 0) { "save() 与 restore() 不配对：本帧结束时仍残留 $unbalanced 层 save()" }
     }
 
+    /**
+     * 帧内提交点：把到目前为止积累的顶点立刻提交掉。
+     *
+     * <p><strong>它是为 z 序存在的。</strong>本类的图元默认攒到 [endFrame] 才一次性提交，
+     * 而图表的数据系列是<strong>当场就画</strong>的。没有这个方法，数据系列就只能整个
+     * 画在 `Gc` 内容之上或之下，"网格 → 数据 → 标注"这种夹心顺序做不到。
+     *
+     * <pre>
+     * gc.beginFrame(w, h)
+     *   画网格
+     * gc.flush()                      // 网格落定
+     * charts.draw(chart, plotRect)    // 数据系列画在网格之上
+     *   画刻度文字                     // 标注画在数据之上
+     * gc.endFrame()
+     * </pre>
+     *
+     * <p><strong>调用方不需要在之后重新设状态。</strong>[VertexWriter.reset] 会把写入器
+     * 带回"尚未设置状态"，而下一个图元经由 [syncState] 重新 `setState`——
+     * 这条路径与缓冲区写满时的自动提交（[flushIfNeeded]）完全一致，已经跑了很多年。
+     *
+     * <p><strong>它会让 ID pass 多跑几趟。</strong>[RenderBatch.submit] 在本批有可拾取顶点时
+     * 每次都跑一趟 ID pass，分批提交就意味着分趟拾取。这是设计使然，不是缺陷：
+     * 拾取结果与画面一致（被后画的挡住的部分，拾取到的是后画的那个），
+     * 与不做 flush 时的"只返回最上层"语义相同。
+     *
+     * @throws IllegalStateException 未经 [beginFrame] 就调用，或本帧 [save]/[restore] 不配对
+     */
+    fun flush() {
+        check(frameActive) { "flush 在 beginFrame 之前调用：beginFrame 与 endFrame 必须配对" }
+        // 与 endFrame 的收尾检查同源（那里是 state.clearStack() 返回的被丢弃层数）。
+        // 这里**不能**用 clearStack()：flush 发生在帧中途，清栈会把外层还没 restore 的
+        // save 一起抹掉，随后的 restore() 会撞上"栈为空"。所以读非破坏性的 stackDepth。
+        val pendingSaves = state.stackDepth
+        check(pendingSaves == 0) {
+            "flush 时本帧的 save/restore 不配对：当前仍有 $pendingSaves 层 save() 没有 restore，" +
+                    "这会让后续图元的变换与裁剪状态错乱"
+        }
+        batch.submit(writer)
+        writer.reset()
+    }
+
     // ------------------------------------------------------------------
     // 拾取
     // ------------------------------------------------------------------

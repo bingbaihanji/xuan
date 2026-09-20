@@ -78,6 +78,20 @@ class PipelineVerifierApp : Application() {
     private val magenta = 0xFF00FF
     private val background = 0x333333
 
+    // flush() 的 z 序探针专用色。**刻意不复用上面任何一个**：这两个颜色在画面里
+    // 只出现在三个探针矩形内，于是"先画的那层一个像素都不剩"就成了覆盖整幅画面的不变量，
+    // 而失败信息也能直接点名是 flush 的问题，不会伪装成"红矩形画多了"。
+    //
+    // 分了 RGB 与 ARGB 两套：`pixelAt` 与 `counts` 的口径都是**不含 alpha 的 RGB**，
+    // 拿 ARGB 去比会永远不相等（0xFFFF8000 != 0x00FF80），而那看起来像"颜色画错了"。
+    private val probeUnderRgb = 0xFF8000
+    private val probeOverRgb = 0x00FF80
+    private val probeUnderArgb = probeUnderRgb or (0xFF shl 24)
+    private val probeOverArgb = probeOverRgb or (0xFF shl 24)
+
+    /** 三个 flush 探针的左上角 x（y、尺寸见 [assertFlushKeepsZOrder]），都落在主场景的空区域里。 */
+    private val PROBE_X = floatArrayOf(40f, 200f, 620f)
+
     override fun start(stage: Stage) {
         val bridge = FXGLTransfer()
         bridge.onFrame { gc -> drawScene(gc) }
@@ -91,6 +105,11 @@ class PipelineVerifierApp : Application() {
     }
 
     private fun drawScene(gc: Gc) {
+        // flush 探针画在最前面：它们占的是主场景没碰过的空区域（y 175..295、x 40..739），
+        // 因此既不影响下面那些颜色计数与包围盒，也让"flush 丢了顶点"这类退化**只**打在新断言上，
+        // 失败信息不会指错方向。
+        assertFlushKeepsZOrder(gc)
+
         gc.fill = 0xFFFF0000.toInt()
         gc.fillRect(50f, 50f, 200f, 120f)
 
@@ -110,6 +129,86 @@ class PipelineVerifierApp : Application() {
         gc.moveTo(50f, 550f)
         gc.bezierCurveTo(200f, 450f, 300f, 650f, 450f, 550f)
         gc.strokePath()
+    }
+
+    /**
+     * flush() 的 z 序：后画的必须盖住先画的，<b>无论中间有没有 flush</b>。
+     *
+     * <p>三种情况画的都是同一件事——同一个位置上先画 [probeUnder]、后画 [probeOver] 的
+     * 两个重合矩形，只有中间那一步不同：
+     * <ol>
+     *   <li><b>不 flush</b>：两层落在同一个批里，靠批内的顶点顺序分胜负；</li>
+     *   <li><b>中间 flush</b>：两层落在两个批里，靠两批的提交顺序分胜负；</li>
+     *   <li><b>flush + 立即模式绘制</b>：上面那层不走 [Gc]，而是用 [immediateFill] 当场发一条
+     *       GL 命令，模拟图表后端数据系列（instancing）的做法。</li>
+     * </ol>
+     *
+     * <p><b>为什么必须有第三情况。</b>前两种情况里的两层都由 `Gc` 记在同一个顶点写入器里，
+     * 最终按顶点顺序画进同一个帧缓冲——也就是说，<b>把 flush() 掏空成空方法，前两种情况的
+     * 像素一模一样</b>。只测前两种的话，这条断言看着在守，其实拦不住 flush 退化，
+     * 正是本仓库说的橡皮图章。只有让一方"当场就画"，"flush 把网格先落定"这件事才在像素上可观测：
+     * 没有 flush，`Gc` 的顶点要等到 `endFrame` 才提交，于是它会盖在即时绘制的那层<b>上面</b>。
+     */
+    private fun assertFlushKeepsZOrder(gc: Gc) {
+        val ys = 175f
+        val size = 120f
+
+        // 情况一：不 flush，under 先 over 后 —— 期望 over
+        gc.fill = probeUnderArgb
+        gc.fillRect(PROBE_X[0], ys, size, size)
+        gc.fill = probeOverArgb
+        gc.fillRect(PROBE_X[0], ys, size, size)
+
+        // 情况二：中间 flush，under 先 over 后 —— 期望 over
+        gc.flush()
+        gc.fill = probeUnderArgb
+        gc.fillRect(PROBE_X[1], ys, size, size)
+        gc.flush()
+        gc.fill = probeOverArgb
+        gc.fillRect(PROBE_X[1], ys, size, size)
+
+        // 情况三：flush 之后由**立即模式**的一条 GL 命令盖上去 —— 期望 over
+        gc.flush()
+        gc.fill = probeUnderArgb
+        gc.fillRect(PROBE_X[2], ys, size, size)
+        gc.flush()
+        immediateFill(PROBE_X[2].toInt(), ys.toInt(), size.toInt(), size.toInt(), probeOverArgb)
+    }
+
+    /**
+     * 直接向 GL 发一次"立即模式"的矩形填充，绕开 [Gc] 的批处理。
+     *
+     * <p>存在的理由：`Gc` 的图元攒到 `endFrame` 才提交，而图表后端（子项目 D-②）的数据系列
+     * 是**当场就画**的。校验 `flush()` 的 z 序就必须有一方是"当场就画"的，否则两边都攒在同一个批里、
+     * 按顶点顺序绘制，<b>flush 存在与否根本不影响最终像素</b>。
+     *
+     * <p>用 `glClear` + `glScissor` 而不是 `glDrawArrays`：它同样在本帧的 GL 命令流里
+     * <b>就地</b>执行（而不是等到 `endFrame`），却不需要再搭一套着色器与 VAO。
+     * 清屏色是全局状态，用完必须还原，否则下一帧的 `glClear` 会把整幅背景刷成这个颜色。
+     *
+     * @param x    矩形左上角 x（用户坐标，与设备像素 1:1）
+     * @param y    矩形左上角 y（用户坐标，y 向下）
+     * @param w    宽度
+     * @param h    高度
+     * @param argb 填充色
+     */
+    private fun immediateFill(x: Int, y: Int, w: Int, h: Int, argb: Int) {
+        val prevClear = FloatArray(4)
+        glGetFloatv(GL_COLOR_CLEAR_VALUE, prevClear)
+
+        glClearColor(
+            ((argb ushr 16) and 0xFF) / 255f,
+            ((argb ushr 8) and 0xFF) / 255f,
+            (argb and 0xFF) / 255f,
+            1f
+        )
+        glEnable(GL_SCISSOR_TEST)
+        // glScissor 的 y 从**底边**起算，用户坐标 y 向下，故翻成 height - (y + h)。
+        glScissor(x, (transfer?.scaledHeight ?: 0) - (y + h), w, h)
+        glClear(GL_COLOR_BUFFER_BIT)
+        glDisable(GL_SCISSOR_TEST)
+
+        glClearColor(prevClear[0], prevClear[1], prevClear[2], prevClear[3])
     }
 
     /**
@@ -208,7 +307,9 @@ class PipelineVerifierApp : Application() {
         // 圆角矩形描边：中心线周长 2*(250-32)+2*(150-32)+2π*16 ≈ 772.5，线宽 4。
         approx("蓝圆角矩形描边", counts[blue] ?: 0, 772.5 * 4)
         report("品红贝塞尔描边存在", (counts[magenta] ?: 0) > 200, "实际 ${counts[magenta] ?: 0} px")
-        report("画面只有 6 种颜色（无杂散像素）", counts.size == 6, "实际 ${counts.size} 种：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")
+        // 7 种 = 主场景的 6 种（背景 + 红绿蓝青品红）+ flush 探针的后画色。
+        // 探针的**先画色**不在里面，正是因为它一个像素都不该剩下（见下面的 z 序断言）。
+        report("画面只有 7 种颜色（无杂散像素）", counts.size == 7, "实际 ${counts.size} 种：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")
 
         println("\n-- 形状：包围盒 --")
         fun bbox(label: String, argb: Int, ex: Int, ey: Int, ew: Int, eh: Int) {
@@ -242,6 +343,26 @@ class PipelineVerifierApp : Application() {
 
         println("\n-- 背景 --")
         report("背景色为 clear 色", (counts[background] ?: 0) > 0, "背景像素 ${counts[background] ?: 0}")
+
+        println("\n-- flush() 的 z 序 --")
+        // 三个探针都是"先画 probeUnder、后画 probeOver"的重合矩形，最终必须**只剩 probeOver**。
+        // 断言的量必须是颜色：只断言"有东西画出来了"，对顺序颠倒同样成立，那是橡皮图章。
+        val probeLabels = arrayOf("不 flush", "中间 flush", "flush + 立即模式绘制")
+        for (i in PROBE_X.indices) {
+            val x0 = PROBE_X[i].toInt()
+            val y0 = 175
+            val cx = x0 + 60
+            val cy = y0 + 60
+            val center = pixelAt(cx, cy)
+            report("z 序（${probeLabels[i]}）：后画的盖住先画的", center == probeOverRgb,
+                "中心 ($cx,$cy) = #%06X，期望 #%06X".format(center, probeOverRgb))
+            approx("z 序（${probeLabels[i]}）：后画色铺满 120x120",
+                countIn(x0, y0, x0 + 119, y0 + 119, probeOverRgb), 120.0 * 120, 0.01)
+        }
+        // probeUnder 只出现在这三个探针里，所以"一个像素都不剩"是一条覆盖整幅画面的不变量：
+        // 顺序反了会留下它，后画的那层没盖全（位置/尺寸错了）也会留下它。
+        report("z 序：先画的那层被完全盖住（全画面无残影）", (counts[probeUnderRgb] ?: 0) == 0,
+            "先画色像素 ${counts[probeUnderRgb] ?: 0}")
 
         println()
         if (failures.isEmpty()) {
