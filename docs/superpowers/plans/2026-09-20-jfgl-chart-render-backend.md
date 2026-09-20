@@ -1759,17 +1759,19 @@ class SeriesBufferTest {
 
     @Test
     void 跨环绕时产生两次子上传() {
-        // 容量 8，写 10 个点 -> 槽位 0..7 然后 0..1
-        data.append(1, 2, 3, 4, 5, 6, 7, 8);
+        // 关键是**这一次上传**的新增样本要跨过环绕点，而不是"环曾经绕过"。
+        //
+        // ⚠️ 原稿这条是错的：它先把前 8 个点传掉（uploadedCount=8），再追加 2 个——
+        // 那 2 个落在槽位 0、1，是**连续**的，只会产生 1 次子上传，断言必然失败。
+        // 要让一次上传跨环绕，必须让新样本的起始槽位高、数量大到越过环尾：
+        data.append(1, 2, 3, 4, 5, 6);        // 先只写 6 个（槽位 0..5），**不上传**
         SeriesBuffer buf = new SeriesBuffer(gl, data);
-        buf.uploadNewSamples();
-        gl.vboSubDataCalls.clear();
-        buf.beginFrame();
-
-        data.append(9, 10);
+        data.append(7, 8, 9, 10);             // 再写 4 个（槽位 6,7,0,1）——共 10 个
         buf.uploadNewSamples();
 
-        assertEquals(2, gl.vboSubDataCalls.size(), "跨环绕点必须切成两次子上传");
+        // between(0, 10, 8)：newCount=10、effective=8、firstWritten=2、firstSlot=2，
+        // 2 + 8 > 8 -> 切成两段（槽位 2..7 与 0..1）
+        assertEquals(2, gl.vboSubDataCalls.size(), "新增样本跨过环绕点必须切成两次子上传");
     }
 
     @Test
