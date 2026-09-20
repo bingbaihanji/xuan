@@ -585,7 +585,7 @@ EOF
      * 拾取结果与画面一致（被后画的挡住的部分，拾取到的是后画的那个），
      * 与不做 flush 时的"只返回最上层"语义相同。
      *
-     * @throws IllegalStateException 未经 [beginFrame] 就调用，或本帧 [save]/[restore] 不配对
+     * @throws IllegalStateException 未经 [beginFrame] 就调用
      */
     fun flush() {
         check(frameActive) { "flush 在 beginFrame 之前调用：beginFrame 与 endFrame 必须配对" }
@@ -611,7 +611,11 @@ EOF
 > **帧内平衡本来就由 `endFrame()` 在正确的位置守着**，flush 不需要再管一次。
 > 用户的自然写法（clip 住绘图区 → 画网格 → flush → 画数据系列）必须能跑。
 
-> **注意上面用到的 `state.hasUnbalancedSave()`**：`endFrame()` 里已经有一段等价的检查（`Gc.kt:162-166`），**照抄它的写法**。若那里的方法名不是 `hasUnbalancedSave()`，就用它实际用的那个——**不要自己发明一个新方法名**。先读 `Gc.kt:160-170` 确认。
+> ~~**注意上面用到的 `state.hasUnbalancedSave()`**：`endFrame()` 里已经有一段等价的检查（`Gc.kt:162-166`），**照抄它的写法**。~~
+>
+> **这段已作废**——上面那段 ⚠️ 更正已经说明那道检查被整体删除，`hasUnbalancedSave()` 这个方法名从来不存在。
+> （保留作废的原文是为了让读者看到原稿错在哪；`endFrame` 实际用的是 `state.clearStack()`，
+> 而它是**破坏性**的，帧中途不能调用。）
 
 - [ ] **Step 2: 编译**
 
@@ -1444,10 +1448,24 @@ class SeriesUploadPlanTest {
     }
 
     @Test
-    void 字节数只与新增点数有关与窗口无关() {
-        // 从 100 增加到 110（10 个点），无论环多大、窗口多宽，都只传 40 字节
-        assertEquals(40, SeriesUploadPlan.between(100L, 110L, 100L, CAP).totalBytes());
-        assertEquals(40, SeriesUploadPlan.between(100L, 110L, 100L, 1 << 16).totalBytes());
+    void 环装得下时字节数只与新增点数有关() {
+        // 新增 10 个点，两种环容量都装得下，所以都传 40 字节——
+        // 与窗口多宽、环多大**无关**（这是"每帧只传新增的点"这条主张的最小形式）。
+        assertEquals(40, SeriesUploadPlan.between(100L, 110L, 1024).totalBytes());
+        assertEquals(40, SeriesUploadPlan.between(100L, 110L, 1 << 16).totalBytes());
+    }
+
+    @Test
+    void 新增超过环容量时只传最后一圈() {
+        // 这条与上一条**不矛盾**：上限是"环里还留着的那些"。
+        // 一次新增 10 个点但环只有 8——前面 2 个已经被覆盖，传了也是白传。
+        //
+        // 注意这条测试纠正了原稿的一个错误预期：原稿声称"无论环多大都传 40"，
+        // 而容量 8 时只能是 32。**夹取是对的，错的是原稿的期望值。**
+        assertEquals(32, SeriesUploadPlan.between(100L, 110L, CAP).totalBytes(),
+                "容量 8：只传最后 8 个点");
+        assertEquals(40, SeriesUploadPlan.between(100L, 110L, 1 << 16).totalBytes(),
+                "容量够大：10 个点全传");
     }
 
     @Test
@@ -3486,6 +3504,11 @@ EOF
    > 本类只在 GL 线程使用（见 `CLAUDE.md` 的线程模型），因此 uniform 位置缓存用非线程安全的 `HashMap`。
 
 2. **重新链接的不变量**——字段注释说"程序链接之后位置就固定了"，但没写另一半：本类不提供重新链接入口；**若将来加入 `glLinkProgram`，必须清空该缓存**，否则缓存会静默返回旧位置，表现又是"设了但没生效"——本仓库最怕的那类静默错误。
+
+**再修一处 `PipelineVerifier.kt` 里措辞偏宽的注释**（Task 3 收尾复核提的）：
+
+- `:157` 的"空实现的 flush 只让情况三失败"**字面上不成立**——实测是 5 条失败（2 条带"情况三"标签 + 3 条全画面不变量），三条都由情况三残留的 under 造成。**指向没错，但"只让情况三失败"会让人以为全画面不变量是安全的。** 收紧为"只把情况三那一组（外加三条全画面不变量）打死"。
+- 新加的 `3×120×120` 那条，标签写"别处无杂散"，**实际失败原因是探针少了一块**（28800 < 43200）。标签改成"后画色恰好铺满三个探针矩形（不多不少）"。
 
 **再清 `gl/` 下的英文文案。** `CLAUDE.md` 明写"代码注释和 Javadoc **一律使用中文**"，但 `gl/` 下有两处英文：
 `LwjglGLAbstraction`（`:16-22`、`:27`、`:303`）与 `Texture.java:14`。**属孤立的历史欠账**，
