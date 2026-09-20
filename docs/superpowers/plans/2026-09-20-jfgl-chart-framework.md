@@ -4466,3 +4466,36 @@ for (long absolute = start + HEAD_MARGIN; absolute < end; absolute++)
 
 真正有抓力的是紧随其后的 `assertEquals(4, majors.size())` 与 `assertEquals(LENGTH/3.0, majors.get(1).position())`。
 **不要把它当成覆盖性检查。**
+
+---
+
+## ⚠️ `ChartPackageIsolationTest` 有两个洞，必须修
+
+**这个守卫是 ①/② 分界线的执行机制**（把「若需要改 gl/renderer/text/geom 就停下重讨论」
+变成机器检查）。它瞎了，那条架构规则就没有牙齿。Task 9 用探针实测出两个洞：
+
+### 洞 1（严重）：`Files.list` 是**非递归**的，整个 `chart/**` 子树不可见
+
+探针：新建 `chart/probe/Probe.java`，`package com.bingbaihanji.jfgl.chart.probe;`
++ `import com.bingbaihanji.jfgl.renderer.ViewTransform;`（真的引用了它）
+→ **`Tests run: 2, Failures: 0`，守卫一声不吭。**
+
+**修法**：把 `Files.list` 换成 `Files.walk`。
+换完再核对正则：`com.bingbaihanji.jfgl.chart.probe` 的 group(1) 是 `chart`、在白名单里，
+所以**子包内的兄弟包引用**才会被抓——那正是要抓的。
+
+### 洞 2：`RenderContext` 的嵌套类型抓不到
+
+探针：`interface RenderContext { interface Slot { } }` → 全绿。
+原因：测试只断言了 `getDeclaredMethods()` 与 `getDeclaredFields()`，
+**从没断言 `getDeclaredClasses()`**。而嵌套类型恰恰是把 ② 的概念（比如一个 `Slot` 载体）
+偷运进 ① 的现成路子。
+
+**修法**：补一行 `assertEquals(0, RenderContext.class.getDeclaredClasses().length, ...)`。
+
+### 另外两条已知边界（不是缺陷，但要知道）
+
+- **`sources.size() >= 16` 阈值零余量**：chart/ 顶层实测恰好 16 个 .java。
+  以后任何一次 chart 文件合并都会让这条守卫**因无关原因变红**。
+- **守卫不查传递依赖**：`math/` 与 `util/` 当前都不引用 `gl|renderer|text|geom`（已 grep 确认），
+  所以白名单**今天**是传递安全的；哪天 `math/` 引了 `gl`，chart 会隔着 math 沾上 GL 而守卫不会响。
