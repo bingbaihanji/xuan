@@ -116,13 +116,21 @@ public final class FakeGLAbstraction implements GLAbstraction {
     /** 每次 uploadR8SubImage 的调用记录。 */
     public final java.util.List<String> r8Uploads = new java.util.ArrayList<>();
 
-    private int nextR8Size = 0;
+    /**
+     * 每张 R8 纹理的宽度，用作 {@code uploadR8SubImage} 的行跨距。
+     *
+     * <p><strong>必须按纹理 ID 记录，不能只留一个标量。</strong>标量记的是"最后一次
+     * {@code createR8Texture} 的宽度"，一旦同时存在两张<em>宽度不同</em>的 R8 纹理，
+     * 往先建那张上传时行偏移就会按错误的跨距算——假实现会悄悄污染自己的虚拟纹理，
+     * 于是所有建立在其上的断言都失去意义（本项目最警惕的「静默错误输出」形状）。
+     */
+    private final java.util.Map<Integer, Integer> r8Widths = new java.util.HashMap<>();
 
     @Override
     public int createR8Texture(int width, int height) {
         int id = nextId++;
         r8Textures.put(id, new byte[width * height]);
-        nextR8Size = width;
+        r8Widths.put(id, width);
         return id;
     }
 
@@ -134,9 +142,10 @@ public final class FakeGLAbstraction implements GLAbstraction {
         if (target == null) {
             throw new AssertionError("上传到了未创建的 R8 纹理：" + texture);
         }
+        int stride = r8Widths.get(texture);
         for (int row = 0; row < height; row++) {
             System.arraycopy(pixels, row * width,
-                    target, (y + row) * nextR8Size + x, width);
+                    target, (y + row) * stride + x, width);
         }
     }
 
