@@ -10,6 +10,7 @@ import com.bingbaihanji.jfgl.text.GlyphRasterizer;
 import com.bingbaihanji.jfgl.util.Disposable;
 
 import java.util.List;
+import java.util.Objects;
 
 import static org.lwjgl.opengl.GL11.GL_FLOAT;
 import static org.lwjgl.opengl.GL11.GL_ONE;
@@ -496,6 +497,45 @@ public final class RenderBatch implements Disposable {
      * @param commands 本批的绘制命令
      */
     private void drawPickPass(List<DrawCommand> commands) {
+        pickShader.use();
+        try {
+            withPickPass(() -> {
+                for (DrawCommand command : commands) {
+                    if (command.vertexCount() == 0) {
+                        continue;
+                    }
+                    applyScissor(command);
+                    glDrawArrays(GL_TRIANGLES, command.firstVertex(), command.vertexCount());
+                }
+            });
+        } finally {
+            pickShader.unuse();
+        }
+        pickPassCount++;
+    }
+
+    /**
+     * 在拾取缓冲上执行一段绘制。
+     *
+     * <p>本方法负责：本帧首次调用时清空拾取缓冲、绑定拾取 FBO、结束后恢复原 FBO
+     * 并把拾取缓冲标记为有效。调用方负责：绑定自己的 VAO/VBO、配置属性指针、
+     * 设置 scissor、发出 draw call。
+     *
+     * <p><strong>为什么是回调而不是 {@code begin()}/{@code end()} 成对</strong>：
+     * 成对的 API 一定有人忘了调 {@code end()}，而忘掉的表现是"下一帧画进了拾取缓冲"——
+     * 画面完全正常，只是拾取全错。回调式让编译器替他记住。
+     *
+     * <p><strong>调用方不得改动 {@link #pickPassCount()}</strong>。它跨帧累计、从不复位，
+     * 是 {@code PickVerifier} 用来断言"无拾取对象时整趟跳过"的计数器。往它里面加计数会
+     * 污染已有的断言，而症状是"拾取校验器突然失败"，排查方向会指向 ID pass 本身。
+     *
+     * <p><strong>调用方必须自己设置 scissor</strong>：被裁掉的部分不可拾取，与画面一致。
+     * 本方法不做这件事，因为裁剪矩形取决于调用方的几何。
+     *
+     * @param body 要执行的绘制，不得为 null
+     */
+    public void withPickPass(Runnable body) {
+        Objects.requireNonNull(body, "body");
         if (!pickBufferCleared) {
             pickBuffer.clear();
             pickBufferCleared = true;
@@ -506,21 +546,15 @@ public final class RenderBatch implements Disposable {
 
         // 整数附件不能开混合；ID 被插值成「零点几个对象」也没有意义。
         gl.disableBlend();
-        pickShader.use();
-
-        for (DrawCommand command : commands) {
-            if (command.vertexCount() == 0) {
-                continue;
-            }
-            applyScissor(command);
-            glDrawArrays(GL_TRIANGLES, command.firstVertex(), command.vertexCount());
+        try {
+            body.run();
+        } finally {
+            // 必须恢复：openglfx 渲染到它自己的 FBO，不恢复的话下一帧会画进拾取缓冲。
+            gl.bindFramebuffer(previousFramebuffer);
         }
 
-        pickShader.unuse();
-        // 必须恢复：openglfx 渲染到它自己的 FBO，不恢复的话下一帧会画进拾取缓冲。
-        gl.bindFramebuffer(previousFramebuffer);
-
-        pickPassCount++;
+        // 标记缓冲有效：不置的话上层拾取查询会诚实地返回「没命中」，
+        // 于是图表永远点不中，而画面完全正常——那种「看起来像没实现」的静默错误。
         pickBufferValid = true;
     }
 
