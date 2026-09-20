@@ -150,6 +150,12 @@ class FakeGLAbstractionGuardTest {
      * 逐一钉住。
      *
      * <p>末尾的反向断言同样必要：没有它，前面几条"抛 AssertionError"可能只是恒抛。
+     *
+     * <p><strong>观测点必须瞄准"守卫保护的那个量"，而不是"抛了个什么"。</strong>
+     * 第 3 段的子上传断言一度是橡皮图章：那个 VBO 从没被定容过，所以就算把
+     * {@code deletedVbos} 条件整个删掉，异常也会改由下一道"从未定容"的断言抛出——
+     * <strong>同样是 {@code AssertionError}</strong>，{@code assertThrows} 照样满足，
+     * 于是一整条条件被削掉而测试全绿。真正有判别力的是紧随其后的那条<em>定容</em>断言。
      */
     @Test
     void 未绑定活着的VBO时定容与子上传必须显式失败() {
@@ -167,13 +173,19 @@ class FakeGLAbstractionGuardTest {
         fake.bindVbo(9999);
         assertThrows(AssertionError.class, () -> fake.uploadVboSubData(0, payload));
 
-        // 3) 建了又删——只查 createdVbos 拦不住这一条
+        // 3) 建了又删
         fake.bindVbo(live);
         fake.deleteVbo(live);
         assertThrows(AssertionError.class, () -> fake.uploadVboSubData(0, payload));
+        // 删掉 deletedVbos 条件时，定容会**静默**把容量记到死人名下——不抛。
+        // 这一条才有判别力：上面那条子上传断言无论有没有 deletedVbos 条件都会抛，
+        // 因为异常来自下一道"从未定容"的断言（两者都是 AssertionError，分不出来）。
+        assertThrows(AssertionError.class, () -> fake.uploadVboData(new float[4]));
 
         // 反向：合法流程必须放行，且边界（offset + bytes == 容量）恰好通过
         fake.bindVbo(spare);
+        // 还没定容就子上传：异常必须来自"从未定容"那道断言（在此之前它零覆盖）
+        assertThrows(AssertionError.class, () -> fake.uploadVboSubData(0, payload));
         fake.uploadVboData(new float[8]);
         fake.uploadVboSubData(0, ByteBuffer.allocate(32));
         assertEquals(List.of(spare + "@0:32"), fake.vboSubDataCalls);

@@ -15,9 +15,9 @@ import java.util.Map;
  * <ul>
  *   <li><strong>拾取路径</strong>（FBO / 整数纹理 / 读回 / 裁剪）：真正实现，
  *       供 {@code PickBuffer}、{@code Framebuffer}、{@code GlyphAtlas} 单测。</li>
- *   <li><strong>顶点缓冲路径</strong>（图表后端用）：创建 / 绑定 / 子上传记入<em>公开</em>
- *       记录列表；定容只记入<strong>私有</strong>容量表（定容被误调无法从记录里看出，
- *       只能间接由越界断言观测）。这一组<strong>不抛
+ *   <li><strong>顶点缓冲路径</strong>（图表后端用）：创建与子上传记入<em>公开</em>记录列表，
+ *       绑定记入公开字段 {@code boundVbo}；定容只记入<strong>私有</strong>容量表（定容被误调
+ *       无法从记录里看出，只能间接由越界断言观测）。这一组<strong>不抛
  *       {@link UnsupportedOperationException}</strong>，但登记不合法（未创建 / 已删除 /
  *       从未绑定）的 VBO 名与越界上传会抛 {@link AssertionError}——拾取路径若误调它们
  *       不会立刻报错。</li>
