@@ -4,14 +4,25 @@ import com.bingbaihanji.jfgl.util.Color;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 测试用的 {@link GLAbstraction} 假实现。
  *
- * <p>只实现拾取路径真正用到的那几个方法，其余一律抛
- * {@link UnsupportedOperationException}——测试里真调到了就说明走偏了，
- * 静默返回 0 反而会让断言看起来通过。
+ * <p>方法分成三类：
+ * <ul>
+ *   <li><strong>拾取路径</strong>（FBO / 整数纹理 / 读回 / 裁剪）：真正实现，
+ *       供 {@code PickBuffer}、{@code Framebuffer}、{@code GlyphAtlas} 单测。</li>
+ *   <li><strong>顶点缓冲路径</strong>（图表后端用）：只<em>记录</em>调用，
+ *       并对子上传做越界检查。这一组<strong>不抛异常</strong>——拾取路径若误调它们
+ *       不会报错，只能靠记录列表发现。</li>
+ *   <li><strong>其余</strong>：一律抛 {@link UnsupportedOperationException}
+ *       （见文件末尾的清单）。</li>
+ * </ul>
+ *
+ * <p>这三类清单由 {@code FakeGLAbstractionGuardTest} 钉住。
  *
  * <p>{@link #setUserPixel} 是给测试用的便捷入口：按<strong>用户坐标</strong>
  * （原点左上、y 向下）写入虚拟屏幕，内部换算成 GL 行序。这样测试用例可以用
@@ -201,9 +212,11 @@ public final class FakeGLAbstraction implements GLAbstraction {
 
     // —— 顶点缓冲路径（图表后端用）——
     //
-    // 注意：这几个方法原本是抛 UnsupportedOperationException 的（"真调到了说明走偏了"）。
-    // 图表后端确实要建自己的 VBO，所以改成记录。代价是拾取路径若误调它们不会再报错，
-    // 但下面的记录列表让"误调"仍然可见。
+    // 这一组原本是抛 UnsupportedOperationException 的（"真调到了说明走偏了"）。
+    // 图表后端确实要建自己的 VBO，所以其中几个改成记录。
+    //
+    // **只放开 Task 8 真正会用到的那些。** 计划对"放开抛异常的方法"要求按需放开，
+    // 同一条纪律对"新增字段"一样适用——预先加字段，就是预先卸掉护栏。
 
     /** 创建的 VBO 名字。 */
     public final List<Integer> createdVbos = new ArrayList<>();
@@ -211,20 +224,26 @@ public final class FakeGLAbstraction implements GLAbstraction {
     /** 删除的 VBO 名字。 */
     public final List<Integer> deletedVbos = new ArrayList<>();
 
-    /** 当前绑定的 VBO。 */
+    /** 当前绑定的 VBO。越界检查要靠它判断这次上传落在哪个缓冲上。 */
     public int boundVbo = 0;
 
-    /** 每次 uploadVboSubData 的记录："偏移:字节数"。 */
+    /**
+     * 每个 VBO 的已分配字节数，由定容调用（{@code uploadVboData(float[])}）记录。
+     *
+     * <p><strong>必须按 VBO 名字记，不能只留一个标量</strong>——理由与
+     * {@code r8Widths} 完全相同：标量记的是"最后一次调用"，一旦同时存在多个 VBO，
+     * 检查就会按错误的容量算，于是假实现悄悄放过真正的越界。
+     */
+    private final Map<Integer, Integer> vboCapacityBytes = new HashMap<>();
+
+    /**
+     * 每次 uploadVboSubData 的记录："VBO名@偏移:字节数"。
+     *
+     * <p>第一个字段是<strong>目标 VBO</strong>，不是多余的：Task 11 之后会同时存在多个
+     * VBO（一个系列一个），而"上传落到了别的系列的缓冲上"是画面正常、只是数据错的一类
+     * 缺陷——记录里必须能问出这件事。
+     */
     public final List<String> vboSubDataCalls = new ArrayList<>();
-
-    /** 每次 setVertexAttribDivisor 的记录："位置:除数"。 */
-    public final List<String> divisorCalls = new ArrayList<>();
-
-    /** 每次 drawArraysInstancedBaseInstance 的记录："first,count,instances,base"。 */
-    public final List<String> instanceDrawCalls = new ArrayList<>();
-
-    /** 累计通过 uploadVboSubData 上传的字节数。 */
-    public int subDataBytesTotal = 0;
 
     @Override
     public int createVbo() {
@@ -241,32 +260,35 @@ public final class FakeGLAbstraction implements GLAbstraction {
     @Override
     public void deleteVbo(int vbo) {
         deletedVbos.add(vbo);
+        vboCapacityBytes.remove(vbo);
     }
-
-    /** 每次 uploadVboData(float[]) 的元素个数。图表后端用它给缓冲定容。 */
-    public final List<Integer> vboDataUploads = new ArrayList<>();
 
     @Override
     public void uploadVboData(float[] data) {
-        vboDataUploads.add(data.length);
+        vboCapacityBytes.put(boundVbo, data.length * Float.BYTES);
     }
 
     @Override
     public void uploadVboSubData(int offsetBytes, ByteBuffer data) {
         int bytes = data.remaining();
-        vboSubDataCalls.add(offsetBytes + ":" + bytes);
-        subDataBytesTotal += bytes;
-    }
-
-    @Override
-    public void setVertexAttribDivisor(int index, int divisor) {
-        divisorCalls.add(index + ":" + divisor);
-    }
-
-    @Override
-    public void drawArraysInstancedBaseInstance(int mode, int first, int count,
-                                                int instanceCount, int baseInstance) {
-        instanceDrawCalls.add(first + "," + count + "," + instanceCount + "," + baseInstance);
+        // 真 GL 上，越界要么报 GL_INVALID_OPERATION（而本仓库没有任何地方读错误码——
+        // glGetError 全库只在 PipelineVerifier 的一处诊断打印里出现过），要么静默损坏
+        // 别的数据。假实现把它变成显式失败，与本文件 uploadR8SubImage 的做法一致。
+        //
+        // 这一条不是吹毛求疵：Task 8 的整个测试策略就是靠这个假实现验证 SeriesBuffer，
+        // 而 SeriesBuffer 是"GPU 常驻 + 增量上传"这条主张的承载者。不校验前置条件的话，
+        // 它上面的断言会在"参数其实非法"时通过——本项目最警惕的形状。
+        Integer capacity = vboCapacityBytes.get(boundVbo);
+        if (capacity == null) {
+            throw new AssertionError(
+                    "向从未定容的 VBO " + boundVbo + " 子上传：真 GL 上这是 GL_INVALID_OPERATION");
+        }
+        if (offsetBytes < 0 || (long) offsetBytes + bytes > capacity) {
+            throw new AssertionError(
+                    "子上传越界：offset=" + offsetBytes + " bytes=" + bytes
+                            + " 容量=" + capacity + "（真 GL 上是静默损坏）");
+        }
+        vboSubDataCalls.add(boundVbo + "@" + offsetBytes + ":" + bytes);
     }
 
     // —— 以下与拾取路径无关，真调到了说明走偏了 ——
@@ -286,5 +308,8 @@ public final class FakeGLAbstraction implements GLAbstraction {
     @Override public void setBlendFunc(int s, int d) { throw new UnsupportedOperationException(); }
     @Override public ShaderProgram createShader(String v, String f) { throw new UnsupportedOperationException(); }
     @Override public int createTexture(int w, int h, int[] p) { throw new UnsupportedOperationException(); }
+    @Override public void setVertexAttribDivisor(int index, int divisor) { throw new UnsupportedOperationException(); }
+    @Override public void drawArraysInstancedBaseInstance(int mode, int first, int count,
+                                                          int instanceCount, int baseInstance) { throw new UnsupportedOperationException(); }
     @Override public void dispose() { /* 无资源可释放 */ }
 }
