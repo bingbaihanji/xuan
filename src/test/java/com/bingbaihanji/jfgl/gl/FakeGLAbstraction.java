@@ -199,20 +199,79 @@ public final class FakeGLAbstraction implements GLAbstraction {
         }
     }
 
+    // —— 顶点缓冲路径（图表后端用）——
+    //
+    // 注意：这几个方法原本是抛 UnsupportedOperationException 的（"真调到了说明走偏了"）。
+    // 图表后端确实要建自己的 VBO，所以改成记录。代价是拾取路径若误调它们不会再报错，
+    // 但下面的记录列表让"误调"仍然可见。
+
+    /** 创建的 VBO 名字。 */
+    public final List<Integer> createdVbos = new ArrayList<>();
+
+    /** 删除的 VBO 名字。 */
+    public final List<Integer> deletedVbos = new ArrayList<>();
+
+    /** 当前绑定的 VBO。 */
+    public int boundVbo = 0;
+
+    /** 每次 uploadVboSubData 的记录："偏移:字节数"。 */
+    public final List<String> vboSubDataCalls = new ArrayList<>();
+
+    /** 每次 setVertexAttribDivisor 的记录："位置:除数"。 */
+    public final List<String> divisorCalls = new ArrayList<>();
+
+    /** 每次 drawArraysInstancedBaseInstance 的记录："first,count,instances,base"。 */
+    public final List<String> instanceDrawCalls = new ArrayList<>();
+
+    /** 累计通过 uploadVboSubData 上传的字节数。 */
+    public int subDataBytesTotal = 0;
+
+    @Override
+    public int createVbo() {
+        int id = nextId++;
+        createdVbos.add(id);
+        return id;
+    }
+
+    @Override
+    public void bindVbo(int vbo) {
+        boundVbo = vbo;
+    }
+
+    @Override
+    public void deleteVbo(int vbo) {
+        deletedVbos.add(vbo);
+    }
+
+    @Override
+    public void uploadVboSubData(int offsetBytes, ByteBuffer data) {
+        int bytes = data.remaining();
+        vboSubDataCalls.add(offsetBytes + ":" + bytes);
+        subDataBytesTotal += bytes;
+    }
+
+    @Override
+    public void setVertexAttribDivisor(int index, int divisor) {
+        divisorCalls.add(index + ":" + divisor);
+    }
+
+    @Override
+    public void drawArraysInstancedBaseInstance(int mode, int first, int count,
+                                                int instanceCount, int baseInstance) {
+        instanceDrawCalls.add(first + "," + count + "," + instanceCount + "," + baseInstance);
+    }
+
     // —— 以下与拾取路径无关，真调到了说明走偏了 ——
 
     @Override public void initialize() { throw new UnsupportedOperationException(); }
     @Override public void clear(Color color) { throw new UnsupportedOperationException(); }
     @Override public void setViewport(int x, int y, int w, int h) { throw new UnsupportedOperationException(); }
     @Override public int createVao() { throw new UnsupportedOperationException(); }
-    @Override public int createVbo() { throw new UnsupportedOperationException(); }
     @Override public void bindVao(int vao) { throw new UnsupportedOperationException(); }
-    @Override public void bindVbo(int vbo) { throw new UnsupportedOperationException(); }
     @Override public void uploadVboData(float[] data) { throw new UnsupportedOperationException(); }
     @Override public void uploadVboData(int[] data) { throw new UnsupportedOperationException(); }
     @Override public void uploadVboBytes(ByteBuffer data) { throw new UnsupportedOperationException(); }
     @Override public void deleteVao(int vao) { throw new UnsupportedOperationException(); }
-    @Override public void deleteVbo(int vbo) { throw new UnsupportedOperationException(); }
     @Override public void drawArrays(int mode, int offset, int count) { throw new UnsupportedOperationException(); }
     @Override public void drawElements(int mode, int count) { throw new UnsupportedOperationException(); }
     @Override public void enableBlend() { throw new UnsupportedOperationException(); }

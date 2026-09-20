@@ -6,6 +6,8 @@ import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.GL33;
+import org.lwjgl.opengl.GL42;
 import org.lwjgl.system.MemoryStack;
 
 import java.nio.ByteBuffer;
@@ -69,6 +71,22 @@ public class LwjglGLAbstraction implements GLAbstraction {
     @Override
     public void uploadVboBytes(ByteBuffer data) {
         GL15.glBufferData(GL15.GL_ARRAY_BUFFER, data, GL15.GL_DYNAMIC_DRAW);
+    }
+
+    @Override
+    public void uploadVboSubData(int offsetBytes, ByteBuffer data) {
+        GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER, offsetBytes, data);
+    }
+
+    @Override
+    public void setVertexAttribDivisor(int index, int divisor) {
+        GL33.glVertexAttribDivisor(index, divisor);
+    }
+
+    @Override
+    public void drawArraysInstancedBaseInstance(int mode, int first, int count,
+                                                int instanceCount, int baseInstance) {
+        GL42.glDrawArraysInstancedBaseInstance(mode, first, count, instanceCount, baseInstance);
     }
 
     @Override

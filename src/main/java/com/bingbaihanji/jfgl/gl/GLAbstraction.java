@@ -87,6 +87,50 @@ public interface GLAbstraction extends Disposable {
     void uploadVboBytes(ByteBuffer data);
 
     /**
+     * 把数据写到 VBO 的指定字节偏移处，<strong>不重新分配缓冲</strong>。
+     *
+     * <p><strong>前置条件：目标 VBO 的容量必须已经够大。</strong>本方法不扩容——
+     * {@code VertexBuffer.grow()} 是"删旧建新"，而扩容会让 VAO 里记录的数据缓冲绑定失效
+     * （见 {@code RenderBatch.configureVaoAttributes} 里的说明）。因此调用方必须在创建时
+     * 就定死容量，运行期永不增长。
+     *
+     * <p>越界写入是未定义行为：驱动可能报错，也可能静默损坏别的数据。
+     *
+     * @param offsetBytes 相对缓冲起点的字节偏移，必须 ≥ 0
+     * @param data        数据，position 为 0、limit 为有效字节数
+     */
+    void uploadVboSubData(int offsetBytes, ByteBuffer data);
+
+    /**
+     * 设置某个顶点属性的实例除数。
+     *
+     * <p>0 = 每顶点取一次（默认），1 = 每实例取一次。图表的数据缓冲靠它把
+     * "每个线段一份的两个端点 y 值"供给每个实例。
+     *
+     * @param index   顶点属性位置
+     * @param divisor 除数，必须 ≥ 0
+     */
+    void setVertexAttribDivisor(int index, int divisor);
+
+    /**
+     * 实例化绘制，并指定<strong>实例属性的起始实例号</strong>。
+     *
+     * <p><strong>为什么不能只用 {@code glDrawArraysInstanced}</strong>：实例属性是按
+     * {@code gl_InstanceID} 取的，而它<strong>每次都从 0 开始</strong>。环形缓冲里
+     * "环绕点之后那一小段"的物理槽位不从 0 开始，普通版本没有任何办法把属性偏移过去——
+     * 于是会取到错误的实例数据，<strong>而且不报错</strong>，只会画出一条乱线。
+     * {@code baseInstance} 正是补这个偏移用的。
+     *
+     * @param mode          图元类型（如 {@code GL_TRIANGLE_STRIP}）
+     * @param first         顶点数组的起始下标
+     * @param count         顶点数
+     * @param instanceCount 实例数
+     * @param baseInstance  实例属性的起始实例号
+     */
+    void drawArraysInstancedBaseInstance(int mode, int first, int count,
+                                         int instanceCount, int baseInstance);
+
+    /**
      * 删除顶点数组对象。
      *
      * @param vao VAO 的 ID
