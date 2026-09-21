@@ -25,6 +25,20 @@
 
 **命令里的 `-D` 必须加引号**（某些 shell 会把 `-D` 前缀吃掉）。**永远不要用 `mvn exec:java`**，它在这个项目里必崩。
 
+> **已知陷阱：`ShaderProgram` 只有 `glUniform1i`，设不了 `uint` uniform。**
+> 对 `uniform uint` 用 `glUniform1i` 会报 `GL_INVALID_OPERATION`（0x502）**且值保持 0**，
+> 而那个 0 会一直挂在 GL 错误位上污染后续检查。
+> **实测**（Task 9 的 GL 探针）：`glUniform1i` → `0x502`、回读 0；`glUniform1ui` → `0x0`、回读正确。
+>
+> 对图表拾取这是**致命且静默**的：`uPickId` 恒为 0，而 **0 正是"什么都没命中"**，
+> 于是拾取会永远返回"没点到"，而画面一点不坏。
+>
+> **规则：setter 用的 GL 函数必须与 uniform 声明的类型匹配。** 着色器里统一用 `int`
+> （`uPickId` 的取值来自 `PickRegistry`，从 1 开始、恒为正，放得下），不要用 `uint`。
+>
+> **如果将来真要设 `uint` uniform**，得在 `ShaderProgram` 与 `GLAbstraction` 各加一个
+> `glUniform1ui` 入口——**并同时在 `FakeGLAbstraction` 的护栏清单里放开它**（见 Task 1 的说明）。
+
 > **已知陷阱：`util/Rect` 是 public 可变字段，不是访问器。**
 > 用 `rect.x` / `rect.y` / `rect.width` / `rect.height`，**不是** `rect.x()`。
 > （`math/Vec2` 才是访问器风格 `v.x()` — 两者不一致，容易顺手写错。）
