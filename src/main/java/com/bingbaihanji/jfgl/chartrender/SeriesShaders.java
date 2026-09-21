@@ -58,13 +58,18 @@ final class SeriesShaders {
             // 颜色（直通，非预乘）
             uniform vec4  uColor;
             // 拾取 ID
-            uniform uint  uPickId;
+            //
+            // 必须是 int 而不是 uint：本项目的 ShaderProgram 只有 glUniform1i，
+            // 对 uint uniform 用 glUniform1i 会报 GL_INVALID_OPERATION 且**值保持 0**——
+            // 而 0 正是"什么都没命中"，于是图表拾取会静默地永远返回没点到。
+            // （实测：glUniform1i → 0x502、回读 0；glUniform1ui → 0x0、回读正确。）
+            uniform int  uPickId;
 
             out vec4 vColor;
             flat out uint vId;
 
             void main() {
-                vId = uPickId;
+                vId = uint(uPickId);   // 发号从 1 开始、恒为正，转换无损
                 vColor = uColor;
 
                 // 任一端是 NaN 就把整个四边形退化到裁剪空间之外。
