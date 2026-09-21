@@ -106,6 +106,39 @@ private const val LABEL_H = 20f
  */
 private const val SPILL_LOW = 0.85
 
+// ---------------------------------------------------------------------------
+// 折返图：专门用来钉住"线段的两端是两个不同的实例属性"
+// ---------------------------------------------------------------------------
+
+/** 折返图自己的绘图区，落在斜坡绘图区的下方（两者不重叠）。 */
+private const val ZIG_PLOT_X = 350f
+private const val ZIG_PLOT_Y = 505f
+private const val ZIG_PLOT_W = 450f
+private const val ZIG_PLOT_H = 90f
+
+/** 折返图的 x 轴窗口：只有 4 段。 */
+private const val ZIG_WINDOW_MIN = 0.0
+private const val ZIG_WINDOW_MAX = 4.0
+
+/**
+ * 折返图的 y 值：**5 个点大幅折返**，相邻两点的值一个 0 一个 1。
+ *
+ * <p><strong>为什么必须陡。</strong>这条断言要分开的两种实现是：
+ * <ul>
+ *   <li>正确：线段两端取的是 {@code y[k]} 与 {@code y[k+1]}（同一个 VBO、偏移差 4 字节）；</li>
+ *   <li>坏掉：两个实例属性都指向 {@code y[k]}（第二个偏移写成 0），于是每个线段退化成
+ *       一段**水平小横线**，画在左端点的高度上。</li>
+ * </ul>
+ * 判别式只有"相邻两点的**中点**"这一处：正确实现在那里是两端点的平均值，
+ * 坏实现里那里什么都没有（它的线在左端点的高度上）。
+ *
+ * <p>斜坡那种密而缓的数据分不开这两种实现——差值只有约 2 px，而且
+ * (250,380) / (400,300) 恰好都是坏实现那些横线的**顶点**，两条断言照样通过（实测）。
+ * 折返图把相邻两点拉开整个绘图区高度，中点到左端点的高度差是**半高 = 45 px**，
+ * 一眼可辨，也不怕抗锯齿。
+ */
+private val ZIG_VALUES = doubleArrayOf(0.0, 1.0, 0.0, 1.0, 0.0)
+
 /**
  * 校验器的启动入口。
  *
@@ -150,6 +183,11 @@ class ChartVerifierApp : Application() {
     /** 标注矩形的颜色。 */
     private val labelRgb = 0xFF8000
 
+    /** 折返图的颜色。 */
+    private val zigRgb = 0xFFFF00
+
+    private val zigArgb = zigRgb or (0xFF shl 24)
+
     private val rampArgb = rampRgb or (0xFF shl 24)
     private val spillArgb = spillRgb or (0xFF shl 24)
     private val degenerateArgb = degenerateRgb or (0xFF shl 24)
@@ -168,6 +206,19 @@ class ChartVerifierApp : Application() {
     //   x = 400 → 下标 50 → 值 0.50 → y = 300
     // 而值 1.2 → y = 20，在绘图区（y ≥ 100）**上方**——溢出系列靠它钉住裁剪。
     private val chart: Chart = buildChart()
+
+    /**
+     * 折返图：**另一张图、另一块绘图区、另一个颜色**，与上面那张互不干扰。
+     * 它只为一条断言存在——"线段的两端是两个不同的实例属性"，见 [ZIG_VALUES]。
+     */
+    private val zigzagChart: Chart = buildZigzagChart()
+
+    /** 折返图里数据下标 → 屏幕 x。 */
+    private fun zigX(index: Double): Double =
+        ZIG_PLOT_X + (index - ZIG_WINDOW_MIN) / (ZIG_WINDOW_MAX - ZIG_WINDOW_MIN) * ZIG_PLOT_W
+
+    /** 折返图里数值 → 屏幕 y（与 ChartRenderLayout 同一条映射，值越大越靠上）。 */
+    private fun zigY(value: Double): Double = ZIG_PLOT_Y + (1.0 - value) * ZIG_PLOT_H
 
     override fun start(stage: Stage) {
         val bridge = FXGLTransfer()
@@ -226,6 +277,32 @@ class ChartVerifierApp : Application() {
     }
 
     /**
+     * 造折返图：5 个点、x 均匀铺满窗口、y 在 0 与 1 之间大幅折返。
+     *
+     * <p>点数刻意少（4 段）且值刻意陡，理由见 [ZIG_VALUES]。
+     */
+    private fun buildZigzagChart(): Chart {
+        val data = ArrayChartData(
+            arrayOf(
+                AxisRange(ZIG_WINDOW_MIN, ZIG_WINDOW_MAX, "样本", ""),
+                AxisRange(0.0, 1.0, "值", "")
+            ),
+            arrayOf(
+                DoubleArray(ZIG_VALUES.size) { it.toDouble() },
+                ZIG_VALUES.copyOf()
+            )
+        )
+        val xAxis = Axis(AxisType.LINEAR, data.axisRange(0))
+            .setDisplayLength(ZIG_PLOT_W.toDouble())
+            .setWindow(ZIG_WINDOW_MIN, ZIG_WINDOW_MAX)
+        val yAxis = Axis(AxisType.LINEAR, data.axisRange(1))
+            .setDisplayLength(ZIG_PLOT_H.toDouble())
+        val chart = Chart(xAxis, yAxis)
+        chart.addLayer("折返").add(Series("折返", data, ChartType.LINE).color(zigArgb).lineWidth(4f))
+        return chart
+    }
+
+    /**
      * 一帧的场景。**它是逐帧变化的**（探测方块在动），原因见 [movingSquareX]。
      */
     private fun drawScene(gc: Gc) {
@@ -245,6 +322,9 @@ class ChartVerifierApp : Application() {
             gc.flush()
             gc.charts.draw(chart, Rect(PLOT_X.toFloat(), PLOT_Y.toFloat(),
                 PLOT_W.toFloat(), PLOT_H.toFloat()), gc.width, gc.height)
+            // 3b) 第二张图。同一帧里画两张图也是顺带被覆盖到的用法。
+            gc.charts.draw(zigzagChart, Rect(ZIG_PLOT_X, ZIG_PLOT_Y, ZIG_PLOT_W, ZIG_PLOT_H),
+                gc.width, gc.height)
 
             // 4) 标注：在图表**之后**画的普通图元。它必须盖在数据系列之上——
             //    这一条钉住的是"图表是当场就画的"，见 [LABEL_X] 的说明。
@@ -446,12 +526,48 @@ class ChartVerifierApp : Application() {
                     rampRgb)
             }")
 
-        // ---- 8. 画面的颜色集合恰好是预期的那几个 ----
+        // ---- 8. 线段的两端确实是两个不同的实例属性 ----
+        println("\n-- 实例属性：线段两端的 y 是两次不同的取值 --")
+        // 守的是 LineSeriesRenderer.configureDataAttributes 里的第二行：
+        //     glVertexAttribPointer(2, 1, GL_FLOAT, false, Float.BYTES, Float.BYTES);
+        //                                   偏移 ─────────────────────────┘
+        // 把那个偏移写成 0L，两个属性就都指向 y[k]，折线退化成"每个样本一段水平小横线"。
+        //
+        // **上面那两条位置断言抓不到它**：坏实现的横线仍然穿过每个样本点，
+        // 而 (250,380) 与 (400,300) 恰好都是那些横线的顶点（实测确认过）。
+        // 能分开两种实现的地方是**相邻两点的中点**（实测：变异后这两条都失败，
+        // 而上面那些位置断言全部照常通过）：
+        //   正确 → 那里是两端点的平均值（线段从这儿斜着过去）；
+        //   坏掉 → 那里什么都没有，线在**左端点的高度**上横着走。
+        //
+        // 两条断言必须成对，各自防的退化不同：
+        //   只有"中点有像素" → "把横线画在左端点高度、**同时**把正确的斜线也画出来"
+        //                     这类实现照样通过；
+        //   只有"左端点高度没有像素" → "整条线一个像素都没画"照样通过。
+        // 单看任何一条都是橡皮图章。
+        //
+        // 取第 1→2 段（值 1.0 → 0.0），几何全部可以手算：
+        //   p0 = (462.5, 505)、p1 = (575, 595) → 中点 x = 518、y = 550；
+        //   左端点的高度 = 505。两者相差 45 px，不是斜坡那种 2 px。
+        val segMidX = ((zigX(1.0) + zigX(2.0)) / 2.0).toInt()
+        val segMidY = ((zigY(1.0) + zigY(0.0)) / 2.0).toInt()
+        val segLeftY = zigY(1.0).toInt()
+        val midHit = countIn(segMidX - 2, segMidY - 3, segMidX + 3, segMidY + 3, zigRgb)
+        report("折返段的中点处有折线（正确实现：两端的平均值）", midHit >= 10,
+            "($segMidX,$segMidY) 附近 ${midHit} px，期望 ≥10")
+        val wrongHit = countIn(segMidX - 2, segLeftY - 2, segMidX + 3, segLeftY + 2, zigRgb)
+        report("折返段的**左端点高度**处没有折线（坏实现会把水平小横线画在这里）",
+            wrongHit == 0,
+            "($segMidX,$segLeftY) 附近 ${wrongHit} px，期望 0——" +
+                    "非 0 说明线段两端取的是同一个 y（第二个实例属性的偏移写成了 0）")
+
+        // ---- 9. 画面的颜色集合恰好是预期的那几个 ----
         // "只数了那几种颜色"管不住"多出来一种颜色"；这条管住了。
         // 退化色不在集合里，正是因为它一个像素都不该剩下。
         println("\n-- 颜色集合 --")
-        val expectedColors = setOf(background, plotBackground, rampRgb, spillRgb, squareRgb, labelRgb)
-        report("画面只有这 6 种颜色（无杂散像素）", counts.keys == expectedColors,
+        val expectedColors =
+            setOf(background, plotBackground, rampRgb, spillRgb, squareRgb, labelRgb, zigRgb)
+        report("画面只有这 7 种颜色（无杂散像素）", counts.keys == expectedColors,
             "实际 ${counts.keys.sorted().joinToString { "#%06X".format(it) }}")
 
         println("\n画面出现的颜色：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")
