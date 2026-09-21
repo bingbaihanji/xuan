@@ -25,6 +25,24 @@
 
 **命令里的 `-D` 必须加引号**（某些 shell 会把 `-D` 前缀吃掉）。**永远不要用 `mvn exec:java`**，它在这个项目里必崩。
 
+> **已知陷阱：把 `long` 绝对号窄化成 `int` 之前，必须在 `long` 域判界。**
+>
+> Task 8 实施期在我的规格里抓到一处**静默数据损坏**：
+> `SeriesSource` 的环形实现原本写的是 `ring.value(dim, (int)(absoluteIndex - ring.windowStart()))`。
+> 当绝对号**远离窗口**时，那个差值窄化成 `int` 会**回绕成一个落在 `[0, count)` 里的合法下标**——
+> 于是 `RingChartData.value` 的越界检查放行，**读到的是另一个样本的值**。
+>
+> **这正是本项目最警惕的形状**：不报错、不返回 NaN，只是数据悄悄错了。
+>
+> **规则：任何 `(int)` 窄化之前，先用 `long` 比较判界**，越界就返回 `GAP`（NaN）而不是让它回绕。
+>
+> **附带一条假实现的盲区**（Task 8 实施期发现，尚未解决）：
+> `FakeGLAbstraction.uploadVboSubData` 只记 `"VBO名@偏移:字节数"`，**回读不到字节内容**——
+> 所以"偏移对、内容错"这一类（同上，本项目的招牌形状）**用现有的假实现一条都拦不住**。
+> Task 8 的绕法是从**可观测处**下手（用 `RecordingSource` 记下"向它请求了哪几个绝对号"），
+> 这比记字节更贴近真相，但**"写进去的字节对不对"仍然没有单测覆盖**——
+> 它由 Task 12 的像素校验器端到端兜住。**Task 11 多系列并存时要重新审视这一条。**
+
 > **已知陷阱：`ShaderProgram` 只有 `glUniform1i`，设不了 `uint` uniform。**
 > 对 `uniform uint` 用 `glUniform1i` 会报 `GL_INVALID_OPERATION`（0x502）**且值保持 0**，
 > 而那个 0 会一直挂在 GL 错误位上污染后续检查。
