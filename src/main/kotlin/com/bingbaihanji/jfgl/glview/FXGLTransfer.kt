@@ -136,6 +136,12 @@ class FXGLTransfer(
         // 释放：销毁批处理提交器持有的全部 GL 资源
         addOnDisposeEvent {
             onDisposeCallback?.invoke()
+            // 图表后端在上层，先放它再放批处理：所有权链条是
+            // FXGLTransfer → RenderBatch，而 Gc.charts 挂在这条链的下游。
+            // 顺序反了不会立刻炸（两边的 GL 资源互不引用），但"下游先释放"是这条链
+            // 唯一说得通的次序，也就没有理由写成反的。
+            // 从未创建过图表时 disposeCharts() 是空操作（它不会顺手把懒值建出来）。
+            gc?.disposeCharts()
             renderBatch?.dispose()
             renderBatch = null
             gc = null

@@ -1,0 +1,193 @@
+package com.bingbaihanji.jfgl.chartrender;
+
+import com.bingbaihanji.jfgl.chart.Axis;
+import com.bingbaihanji.jfgl.chart.Chart;
+import com.bingbaihanji.jfgl.chart.ChartType;
+import com.bingbaihanji.jfgl.chart.Layer;
+import com.bingbaihanji.jfgl.chart.Series;
+import com.bingbaihanji.jfgl.chart.SeriesRenderer;
+import com.bingbaihanji.jfgl.gl.GLAbstraction;
+import com.bingbaihanji.jfgl.gl.ShaderProgram;
+import com.bingbaihanji.jfgl.renderer.PickRegistry;
+import com.bingbaihanji.jfgl.util.Disposable;
+import com.bingbaihanji.jfgl.util.Rect;
+
+import java.util.IdentityHashMap;
+import java.util.Map;
+
+/**
+ * 图表绘制入口：把 {@code chart/} 的装配结果画成 GL 实例化绘制。
+ *
+ * <h2>它只做装配，不做几何</h2>
+ * <p>每个系列交给对应的 {@link SeriesRenderer}，本类负责把"这个系列该用哪个渲染器"
+ * 与"它的 GPU 缓冲在哪"接起来。渲染器本身是无状态的纯函数——缓冲由本类持有、
+ * 每次渲染前注入（见 {@link GLRenderContextImpl} 的说明）。
+ *
+ * <h2>它在 {@code RenderBatch.submit} 之外，当场就画</h2>
+ * <p>数据系列不是攒进顶点缓冲、等 {@code endFrame} 一次性提交的图元，而是当场发
+ * instanced draw call。因此"网格 → 数据 → 标注"这种夹心 z 序要靠 {@code Gc.flush()}：
+ *
+ * <pre>
+ *   画网格
+ *   gc.flush()                          // 网格落定
+ *   gc.charts.draw(chart, plotRect, w, h)
+ *   画刻度文字
+ * </pre>
+ *
+ * <h2>它必须挂在 GL 资源的释放链上</h2>
+ * <p>所有权链条是 {@code FXGLTransfer.onDispose → RenderBatch.dispose()}，
+ * 而本类由 {@code Gc.charts} 懒创建、挂在这条链的下游。{@code RenderBatch} 不认识
+ * 本类（它在更上层的包里），所以由 {@code FXGLTransfer} 经 {@code Gc} 转一手。
+ *
+ * <h2>不支持的图型明确报错</h2>
+ * <p>热力图与瀑布图（{@code polylineFamily() == false}）本期没有渲染器；
+ * 散点（Task 14）也还没有。遇到它们<b>抛异常</b>——静默不画是本项目最典型的
+ * 静默错误输出：画面里少一张图，与"这张图没数据"在视觉上完全一样。
+ */
+public final class ChartRenderer implements Disposable {
+
+    private final GLAbstraction gl;
+
+    /** 每个系列的 GPU 常驻缓冲。用 IdentityHashMap：Series 没有值语义。 */
+    private final Map<Series, SeriesBuffer> buffers = new IdentityHashMap<>();
+
+    /**
+     * 拾取 ID 注册表。
+     *
+     * <p><strong>必须是 {@code Gc} 的那一个，不能自己新建。</strong>
+     * 拾取缓冲里只有一个 ID 空间：两套注册表各自从 1 发号的话，"1 号"既可能是一条曲线、
+     * 也可能是一个按钮——点击会落在错误的对象上，而画面完全正常。
+     */
+    private final PickRegistry pickRegistry;
+
+    /** 系列 → 拾取 ID。同一个 Series 只注册一次。 */
+    private final Map<Series, Integer> pickIds = new IdentityHashMap<>();
+
+    /** 折线族渲染器，全局一个（它自己不持有数据）。 */
+    private final LineSeriesRenderer lineRenderer;
+
+    /** 绘制用的着色器。 */
+    private final ShaderProgram lineShader;
+
+    /**
+     * 拾取用的着色器。
+     *
+     * <p>本期（Task 10/11）还没有拾取 pass，所以它暂时没有消费者。仍然在这里创建，
+     * 是因为<b>构造期就编译链接一次</b>能把 {@code SeriesShaders.PICK_FRAGMENT} 的
+     * 语法/接口错误在启动时就暴露出来；留到 Task 13 才发现的话，那口锅会看起来像是
+     * Task 13 的。
+     */
+    private final ShaderProgram pickShader;
+
+    private boolean disposed = false;
+
+    /**
+     * 创建图表渲染器：编译两个着色器程序。
+     *
+     * <p>必须在 GL 线程（且 GL 上下文已 current）上调用。
+     *
+     * @param gl           GL 抽象层，应当就是 {@code RenderBatch} 用的那一个
+     * @param pickRegistry 拾取 ID 注册表，应当是 {@code Gc.pickRegistry}（理由见字段说明）
+     */
+    public ChartRenderer(GLAbstraction gl, PickRegistry pickRegistry) {
+        this.gl = gl;
+        this.pickRegistry = pickRegistry;
+        this.lineShader = gl.createShader(SeriesShaders.LINE_VERTEX, SeriesShaders.LINE_FRAGMENT);
+        this.pickShader = gl.createShader(SeriesShaders.LINE_VERTEX, SeriesShaders.PICK_FRAGMENT);
+        this.lineRenderer = new LineSeriesRenderer(gl);
+    }
+
+    /**
+     * 画一张图。
+     *
+     * <p>调用方应当先用 {@code Gc} 画好网格、调用 {@code gc.flush()}，再调本方法，
+     * 最后画刻度文字——这样 z 序是"网格 → 数据 → 标注"（见类文档）。
+     *
+     * @param chart          图表
+     * @param plotRect       绘图区（数据区域）矩形，设备像素
+     * @param viewportWidth  帧缓冲宽度（设备像素）
+     * @param viewportHeight 帧缓冲高度（设备像素）
+     * @throws IllegalStateException 已释放后调用
+     */
+    public void draw(Chart chart, Rect plotRect, int viewportWidth, int viewportHeight) {
+        if (disposed) {
+            throw new IllegalStateException("ChartRenderer 已释放");
+        }
+        // Chart.axes() 返回的是 List<Axis>，而 SeriesRenderer.render 要的是 Axis[]，
+        // 这里转一次。x 轴的单位是数据下标，y 轴是数值——两份都在 ChartRenderLayout 里。
+        Axis[] axes = chart.axes().toArray(new Axis[0]);
+        if (axes.length < 2) {
+            // 没有这道守卫的话，下一行会抛一个 ArrayIndexOutOfBounds，而"轴不够"
+            // 与"索引算错了"看起来一模一样，排查方向会跑偏。
+            throw new IllegalArgumentException(
+                    "画图需要两根轴：0 号是数据下标（x），1 号是数值（y）。实际只有 "
+                            + axes.length + " 根。");
+        }
+        ChartRenderLayout layout = new ChartRenderLayout(plotRect, axes[0], axes[1]);
+        GLRenderContextImpl ctx = new GLRenderContextImpl(
+                gl, lineShader, layout, viewportWidth, viewportHeight);
+
+        for (Layer layer : chart.layers()) {
+            for (Series series : layer.series()) {
+                SeriesRenderer renderer = rendererFor(series.type());
+                // 先设当前系列、再给它缓冲：bufferFor 会拿这个断言拦住
+                // "渲染器自己缓存了跨系列缓冲引用"那类越界（见 GLRenderContextImpl）。
+                ctx.setCurrentSeries(series);
+                ctx.setCurrentBuffer(buffers.computeIfAbsent(series,
+                        s -> new SeriesBuffer(gl, s.data())));
+                // 拾取号在**渲染层**分配，不在图表框架里——所以 Series 上没有 pickId()。
+                // 注册的是 Series 对象本身：命中之后 PickHit.payload() 直接就是那个 Series。
+                //
+                // 注意号分配走的是 Gc 的注册表（不能自己新建一份，理由见 pickRegistry 字段），
+                // 而注册表对 payload 是强引用，因此 dispose 时必须注销。
+                ctx.setPickId(pickIds.computeIfAbsent(series, pickRegistry::register));
+                renderer.render(ctx, series.data(), series, axes);
+            }
+        }
+    }
+
+    /**
+     * 图型 → 渲染器。不支持的图型明确抛异常，不静默不画。
+     *
+     * <p>查表规则与 {@link ChartType} 的属性组合一一对应：
+     * 不在折线族里的（热力图、瀑布图）本期没有渲染器；只画标记点的（散点）
+     * 是独立的渲染器（Task 14），本期也还没有。其余归折线渲染器，
+     * 由它自己再守一道"这个图型我画不画得出来"（见 {@code requireSupported}）。
+     */
+    private SeriesRenderer rendererFor(ChartType type) {
+        if (!type.polylineFamily()) {
+            throw new UnsupportedOperationException(
+                    "图型 " + type + " 本期还没有渲染器（热力图与瀑布图的顶点不是"
+                            + "\"每个样本一个点\"，要各自的独立渲染器）。明确报错而不是静默不画："
+                            + "画面里少一张图，与\"这张图没数据\"在视觉上完全一样。");
+        }
+        if (type.drawsMarkers() && !type.connectsSamples()) {
+            throw new UnsupportedOperationException(
+                    "散点渲染器（Task 14）尚未实现，图型 " + type + " 暂时画不出来。"
+                            + "明确报错而不是把它当折线画：散点图连成线之后，"
+                            + "两条相邻的采样值之间会多出一条不存在的信号。");
+        }
+        return lineRenderer;
+    }
+
+    /**
+     * 释放本类创建的全部 GL 资源。
+     *
+     * <p>幂等。顺序是"先注销拾取 ID、再删 GL 资源"：注册表持有 payload 的强引用，
+     * 不注销的话，被移除的 {@code Series} 会一直被引用着——而它在画面上早就没了。
+     */
+    @Override
+    public void dispose() {
+        if (disposed) {
+            return;
+        }
+        pickIds.values().forEach(id -> pickRegistry.unregister(id));
+        pickIds.clear();
+        buffers.values().forEach(SeriesBuffer::dispose);
+        buffers.clear();
+        lineRenderer.dispose();
+        lineShader.dispose();
+        pickShader.dispose();
+        disposed = true;
+    }
+}

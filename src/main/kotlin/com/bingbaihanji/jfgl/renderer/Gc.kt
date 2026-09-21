@@ -1,5 +1,6 @@
 package com.bingbaihanji.jfgl.renderer
 
+import com.bingbaihanji.jfgl.chartrender.ChartRenderer
 import com.bingbaihanji.jfgl.geom.Flattener
 import com.bingbaihanji.jfgl.geom.Path
 import com.bingbaihanji.jfgl.geom.StrokeGenerator
@@ -108,6 +109,44 @@ class Gc internal constructor(private val batch: RenderBatch) {
      * 「ID 已注册但载荷为 null，与 ID 未注册，都表现为 null」那一条。
      */
     val pickRegistry = PickRegistry()
+
+    /**
+     * 图表绘制入口，懒创建。
+     *
+     * <p>第一次访问时才建（它要编译两个着色器程序、建 VAO，不该让不用图表的应用
+     * 白付这份开销）。生命周期与 [RenderBatch] 一致。
+     *
+     * <p>它持有 GL 资源，而 [RenderBatch] 不认识它（[ChartRenderer] 在更上层的包里），
+     * 所以释放由 [disposeCharts] 转一手，调用方是 `FXGLTransfer` 的 `onDispose`。
+     *
+     * <p>典型用法（z 序：网格 → 数据 → 标注）：
+     * ```
+     * gc.beginFrame(w, h)
+     *   画网格
+     * gc.flush()                                  // 网格落定
+     * gc.charts.draw(chart, plotRect, gc.width, gc.height)
+     *   画刻度文字
+     * gc.endFrame()
+     * ```
+     */
+    private val chartsLazy = lazy { ChartRenderer(batch.glAbstraction(), pickRegistry) }
+
+    /** 图表绘制入口。见 [chartsLazy]。 */
+    val charts: ChartRenderer by chartsLazy
+
+    /**
+     * 释放图表后端持有的 GL 资源；从未用过图表时什么都不做。
+     *
+     * <p>**不在 [RenderBatch.dispose] 里调用**：那是下层，不认识上层的 [ChartRenderer]。
+     * 由 `FXGLTransfer.onDispose` 在 `renderBatch.dispose()` **之前**调用。
+     * 顺序反了不会立刻炸（两边的 GL 资源互不引用），但"下游先释放"是这条链唯一
+     * 说得通的次序，没有理由写成反的。
+     */
+    fun disposeCharts() {
+        if (chartsLazy.isInitialized()) {
+            chartsLazy.value.dispose()
+        }
+    }
 
     /** 样式栈的整数部分：每层 [INTS_PER_STYLE_LEVEL] 个值（fill、stroke、pickId）。 */
     private var styleInts = IntArray(INITIAL_STACK_LEVELS * INTS_PER_STYLE_LEVEL)

@@ -372,6 +372,17 @@ public final class RenderBatch implements Disposable {
     }
 
     /**
+     * 返回本批处理使用的 GL 抽象层。
+     *
+     * <p>图表后端需要它来建自己的着色器与 VAO。它是无状态的转发层，共享是安全的。
+     *
+     * @return GL 抽象层
+     */
+    public GLAbstraction glAbstraction() {
+        return gl;
+    }
+
+    /**
      * 提交并绘制一批已收集的顶点。
      *
      * <p><strong>同一帧内可以被调用任意多次</strong>：帧中途 flush

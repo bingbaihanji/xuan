@@ -142,6 +142,28 @@ public final class SeriesBuffer implements Disposable {
         return capacity;
     }
 
+    /**
+     * 已上传到 GPU 的样本总数（<strong>单调不减</strong>）。
+     *
+     * <p>它是 {@link WindowRange#compute} 要的那个 {@code writeIndex}：渲染器每帧
+     * {@link #uploadNewSamples()} 之后用它算"可见窗口落在哪些实例上"。
+     *
+     * <p><strong>为什么返回"已上传"而不是数据源的实时写入数</strong>：算出来的实例会被
+     * 直接画出来，而 GPU 缓冲里只有已经传上去的那些样本。拿数据源的实时值当上界的话，
+     * 写者刚写、还没上传的那几个样本会被当成有效数据画出来——它们在缓冲里仍是上一次的
+     * 旧值（首次上传之前甚至是 0），表现为<b>曲线末端拖出一小段凭空的横线</b>。
+     * 用已上传数则天然收口：算出来的每一个实例，两端都已经在缓冲里。
+     *
+     * <p><strong>不要改用 {@code ChartData.itemCount()}</strong>：环写满之后它就停在容量上
+     * 不动了，拿它当写指针会让画面定格在第一屏（见 {@link SeriesSource} 的对照表），
+     * 这正是 Task 8 抓到的那条静默缺陷。
+     *
+     * @return 已上传样本数，初值 0
+     */
+    public long writeCount() {
+        return uploadedCount;
+    }
+
     /** 每帧开始时清零本帧的上传计数。 */
     public void beginFrame() {
         uploadedBytesThisFrame = 0;
