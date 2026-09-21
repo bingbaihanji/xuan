@@ -30,20 +30,6 @@ public final class ColorMapping {
     /** LUT 的纹素个数。 */
     public static final int LUT_SIZE = 256;
 
-    /**
-     * 一个色标。
-     *
-     * @param position 位置，{@code [0, 1]}
-     * @param argb     颜色，{@code 0xAARRGGBB}（与本项目其它地方一致）
-     */
-    public record Stop(double position, int argb) {
-        public Stop {
-            if (!(position >= 0.0 && position <= 1.0)) {
-                throw new IllegalArgumentException("色标位置必须在 [0,1] 内，实际为 " + position);
-            }
-        }
-    }
-
     /** 灰度：从黑到白。任何需要"看得见就行"的场合都可以先拿它顶。 */
     public static final ColorMapping GRAYSCALE = of(
             new Stop(0.0, 0xFF000000),
@@ -91,6 +77,18 @@ public final class ColorMapping {
             throw new IllegalArgumentException("stops 不能为 null");
         }
         return new ColorMapping(stops.clone());
+    }
+
+    private static int lerp(int argbA, int argbB, double fraction) {
+        int alpha = mix((argbA >>> 24) & 0xFF, (argbB >>> 24) & 0xFF, fraction);
+        int red = mix((argbA >>> 16) & 0xFF, (argbB >>> 16) & 0xFF, fraction);
+        int green = mix((argbA >>> 8) & 0xFF, (argbB >>> 8) & 0xFF, fraction);
+        int blue = mix(argbA & 0xFF, argbB & 0xFF, fraction);
+        return (alpha << 24) | (red << 16) | (green << 8) | blue;
+    }
+
+    private static int mix(int a, int b, double fraction) {
+        return (int) Math.round(a + (b - a) * fraction);
     }
 
     /**
@@ -148,15 +146,18 @@ public final class ColorMapping {
         return Arrays.copyOf(stops, stops.length);
     }
 
-    private static int lerp(int argbA, int argbB, double fraction) {
-        int alpha = mix((argbA >>> 24) & 0xFF, (argbB >>> 24) & 0xFF, fraction);
-        int red = mix((argbA >>> 16) & 0xFF, (argbB >>> 16) & 0xFF, fraction);
-        int green = mix((argbA >>> 8) & 0xFF, (argbB >>> 8) & 0xFF, fraction);
-        int blue = mix(argbA & 0xFF, argbB & 0xFF, fraction);
-        return (alpha << 24) | (red << 16) | (green << 8) | blue;
-    }
+    /**
+     * 一个色标。
+     *
+     * @param position 位置，{@code [0, 1]}
+     * @param argb     颜色，{@code 0xAARRGGBB}（与本项目其它地方一致）
+     */
+    public record Stop(double position, int argb) {
 
-    private static int mix(int a, int b, double fraction) {
-        return (int) Math.round(a + (b - a) * fraction);
+        public Stop {
+            if (!(position >= 0.0 && position <= 1.0)) {
+                throw new IllegalArgumentException("色标位置必须在 [0,1] 内，实际为 " + position);
+            }
+        }
     }
 }

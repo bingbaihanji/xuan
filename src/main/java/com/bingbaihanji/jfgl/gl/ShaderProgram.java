@@ -18,6 +18,9 @@ public class ShaderProgram implements Disposable {
     /** 着色器程序 ID */
     private final int programId;
 
+    /** uniform 名字 → 位置。程序链接后位置就固定了，不必每次现查。 */
+    private final Map<String, Integer> uniformLocations = new HashMap<>();
+
     /** 顶点着色器 ID */
     private int vertexShaderId;
 
@@ -90,9 +93,6 @@ public class ShaderProgram implements Disposable {
     public void unuse() {
         glUseProgram(0);
     }
-
-    /** uniform 名字 → 位置。程序链接后位置就固定了，不必每次现查。 */
-    private final Map<String, Integer> uniformLocations = new HashMap<>();
 
     /**
      * 获取此程序中 uniform 变量的位置，带缓存。

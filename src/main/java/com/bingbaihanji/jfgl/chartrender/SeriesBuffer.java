@@ -63,8 +63,11 @@ public final class SeriesBuffer implements Disposable {
     private static final int VALUE_DIM = 1;
 
     private final GLAbstraction gl;
+
     private final SeriesSource source;
+
     private final int capacity;
+
     private final int vbo;
 
     /** 上一次已经上传到哪（已写样本总数的绝对号）。 */
@@ -74,11 +77,6 @@ public final class SeriesBuffer implements Disposable {
     private int uploadedBytesThisFrame;
 
     private boolean disposed = false;
-
-    /** 缓冲字节数：容量个 float，外加一个 float 的余量。 */
-    public static int bufferBytesFor(int capacity) {
-        return (capacity + 1) * Float.BYTES;
-    }
 
     /** 为给定的数据创建缓冲，容量与数据的环容量一致。 */
     public SeriesBuffer(GLAbstraction gl, ChartData data) {
@@ -127,6 +125,11 @@ public final class SeriesBuffer implements Disposable {
         gl.bindVbo(vbo);
         gl.uploadVboData(new float[capacity + 1]);
         gl.bindVbo(0);
+    }
+
+    /** 缓冲字节数：容量个 float，外加一个 float 的余量。 */
+    public static int bufferBytesFor(int capacity) {
+        return (capacity + 1) * Float.BYTES;
     }
 
     /** 底层 VBO 的名字，供 VAO 配置用。 */

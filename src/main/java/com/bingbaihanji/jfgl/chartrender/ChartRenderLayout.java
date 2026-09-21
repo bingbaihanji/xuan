@@ -29,9 +29,13 @@ import com.bingbaihanji.jfgl.util.Rect;
 public final class ChartRenderLayout {
 
     private final Rect plotRect;
+
     private final float xMin;
+
     private final float xMax;
+
     private final float yMin;
+
     private final float yMax;
 
     /**
@@ -58,6 +62,16 @@ public final class ChartRenderLayout {
                             + "（LINEAR / TIME）。按线性去画非线性轴，曲线形状是错的而画面正常，"
                             + "因此这里明确报错而不是静默画错。");
         }
+    }
+
+    private static double fraction(double v, float min, float max) {
+        double span = (double) max - min;
+        // 退化范围在 ① 的 Axis 构造里已被 withMinimumSpan() 稳定化，不会走到这里；
+        // 这里再兜一次，免得除零产生 NaN 后一路传到顶点位置上。
+        if (span == 0.0) {
+            return 0.0;
+        }
+        return (v - min) / span;
     }
 
     /** 绘图区矩形。 */
@@ -103,15 +117,5 @@ public final class ChartRenderLayout {
      */
     public float screenY(double value) {
         return (float) (plotRect.y + (1.0 - fraction(value, yMin, yMax)) * plotRect.height);
-    }
-
-    private static double fraction(double v, float min, float max) {
-        double span = (double) max - min;
-        // 退化范围在 ① 的 Axis 构造里已被 withMinimumSpan() 稳定化，不会走到这里；
-        // 这里再兜一次，免得除零产生 NaN 后一路传到顶点位置上。
-        if (span == 0.0) {
-            return 0.0;
-        }
-        return (v - min) / span;
     }
 }

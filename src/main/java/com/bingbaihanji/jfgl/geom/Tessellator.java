@@ -1,8 +1,9 @@
 package com.bingbaihanji.jfgl.geom;
 
-import java.util.Arrays;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.Arrays;
 
 /**
  * 把简单多边形（可凹、无自相交）三角化为三角形列表。
@@ -72,236 +73,6 @@ public final class Tessellator {
     }
 
     /**
-     * 返回当前结果中的三角形个数。
-     *
-     * @return 三角形个数
-     */
-    public int triangleCount() {
-        return triangleCount;
-    }
-
-    /**
-     * 返回当前结果的紧凑副本。
-     *
-     * <p>每次调用都分配并复制一个新数组；热路径上请改用 {@link #rawTriangles()}。
-     *
-     * @return 扁平三角形数组，长度为 {@code triangleCount() * 6}
-     */
-    public float[] triangles() {
-        return Arrays.copyOf(triangles, triangleCount * 6);
-    }
-
-    /**
-     * 返回内部三角形数组本身，<strong>不复制</strong>。每 6 个 float 一个三角形
-     * （{@code x0,y0,x1,y1,x2,y2}），有效数据是前 {@code triangleCount() * 6} 个 float，
-     * 后面是上一次调用遗留的无效数据。
-     *
-     * <p>给热路径用：调用方（{@code RenderBatch} 一侧）可以直接遍历这 {@code count * 6} 个 float
-     * 写顶点，省掉一次整表复制。作为代价，数组长度通常<strong>大于</strong>有效数据长度，
-     * 千万不要把整个数组当成三角形列表。
-     *
-     * <p><strong>不得保留</strong>：这是内部缓冲，内容只在下一次 {@link #reset()} /
-     * {@link #tessellate} / {@link #tessellateWithHoles} 调用之前有效，且扩容时会换一块新数组。
-     * 需要稳定副本请用 {@link #triangles()}。
-     *
-     * @return 内部三角形数组（数组长度 ≥ {@code triangleCount() * 6}）
-     */
-    public float[] rawTriangles() {
-        return triangles;
-    }
-
-    /** 清空上一次三角化的结果。 */
-    public void reset() {
-        triangleCount = 0;
-    }
-
-    /**
-     * 三角化一个简单多边形。
-     *
-     * <p>输入<strong>始终</strong>按闭合环处理：填充的是多边形内部，首尾之间天然有边，
-     * 因此没有「是否闭合」这个开关——一个被忽略的参数只会让填开放折线的调用方
-     * 以为自己传的 {@code false} 起了作用。需要描边（含开放折线的端点封口）请用
-     * {@link StrokeGenerator}。
-     *
-     * @param points 扁平顶点数组 {@code [x0,y0, x1,y1, ...]}
-     * @param count  顶点个数
-     */
-    public void tessellate(float[] points, int count) {
-        reset();
-        if (count < 3) {
-            return;
-        }
-        ensureScratch(count);
-        for (int i = 0; i < count; i++) {
-            scratchX[i] = points[i * 2];
-            scratchY[i] = points[i * 2 + 1];
-        }
-
-        if (signedArea(scratchX, scratchY, count) < 0f) {
-            reverse(scratchX, scratchY, count);
-        }
-
-        if (isConvex(scratchX, scratchY, count)) {
-            for (int i = 1; i + 1 < count; i++) {
-                emit(scratchX[0], scratchY[0],
-                     scratchX[i], scratchY[i],
-                     scratchX[i + 1], scratchY[i + 1]);
-            }
-            return;
-        }
-
-        earClip(scratchX, scratchY, count);
-    }
-
-    /**
-     * 三角化带孔洞的多边形。
-     *
-     * <p>实现方式：把每个洞用一条"桥"接到当前轮廓上——即插入一对方向相反的重合边，
-     * 使带洞多边形变成单个简单多边形，再走既有的耳切法。桥接点取当前轮廓上
-     * 与洞的最右顶点距离最近的<b>可见</b>顶点（连线不与任何边真正相交）。
-     *
-     * <p>每个洞都针对<b>已经合并了先前洞</b>的轮廓重新寻找桥接点，因此支持任意多个洞。
-     * 某个洞当下的桥如果会被别的洞挡住，就先合并别的洞、下一轮再处理它
-     * （桥接点用"当前轮廓上最近的可见顶点"，可见性同时避开尚未合并的洞）。
-     * 洞被处理时会统一取与外轮廓相反的绕向（外轮廓逆时针则洞顺时针），
-     * 因此调用方传入洞的顺/逆时针都不影响结果。
-     *
-     * <p>洞超出外轮廓、洞之间相交等病态输入不会抛异常也不会死循环，结果是尽力而为的。
-     * 注意：洞越多，桥接越容易互相挡住，病态输入下丢面积的概率越高——两三洞的常规图形
-     * （环形图、条形图的挖空）不受影响。
-     *
-     * @param outer      外轮廓的扁平顶点数组 {@code [x0,y0, x1,y1, ...]}
-     * @param outerCount 外轮廓顶点数
-     * @param holes      每个洞的扁平顶点数组
-     * @param holeCounts 每个洞的顶点数
-     */
-    public void tessellateWithHoles(float[] outer, int outerCount,
-                                    float[][] holes, int[] holeCounts) {
-        reset();
-        if (outerCount < 3) {
-            return;
-        }
-        if (holes == null || holes.length == 0) {
-            tessellate(outer, outerCount);
-            checkArea(outer, outerCount, null, null);
-            return;
-        }
-
-        int holeNum = Math.min(holes.length, holeCounts.length);
-        int capacity = outerCount + 8;
-        for (int h = 0; h < holeNum; h++) {
-            if (isUsableHole(holes, holeCounts, h)) {
-                capacity += holeCounts[h] + 2; // 洞顶点 + 重合双边的终点
-            }
-        }
-
-        float[] mergedX = new float[capacity];
-        float[] mergedY = new float[capacity];
-        int n = 0;
-        for (int i = 0; i < outerCount; i++) {
-            mergedX[n] = outer[i * 2];
-            mergedY[n] = outer[i * 2 + 1];
-            n++;
-        }
-        // 外轮廓统一为逆时针，洞才能以顺时针"挖去"
-        if (signedArea(mergedX, mergedY, n) < 0f) {
-            reverse(mergedX, mergedY, n);
-        }
-
-        // 一个洞此刻可能找不到可见的桥接点（桥会穿过别的洞），
-        // 但把别的洞先合并进来以后就有了——所以反复扫描，直到没有洞能再合并为止
-        boolean[] done = new boolean[holeNum];
-        int pending = 0;
-        for (int h = 0; h < holeNum; h++) {
-            if (isUsableHole(holes, holeCounts, h)) {
-                pending++;
-            }
-        }
-        while (pending > 0) {
-            boolean progress = false;
-            for (int h = 0; h < holeNum; h++) {
-                if (done[h] || !isUsableHole(holes, holeCounts, h)) {
-                    continue;
-                }
-                prepareHole(holes[h], holeCounts[h]);
-                int merged = bridgeHole(mergedX, mergedY, n, holeX, holeY, holeCounts[h],
-                        holes, holeCounts, true);
-                if (merged >= 0) {
-                    n = merged;
-                    done[h] = true;
-                    pending--;
-                    progress = true;
-                }
-            }
-            if (!progress) {
-                // 剩下的洞对着当前轮廓怎么连都会被挡住：退化成"最近的顶点"，尽力而为
-                for (int h = 0; h < holeNum; h++) {
-                    if (done[h] || !isUsableHole(holes, holeCounts, h)) {
-                        continue;
-                    }
-                    prepareHole(holes[h], holeCounts[h]);
-                    n = bridgeHole(mergedX, mergedY, n, holeX, holeY, holeCounts[h],
-                            holes, holeCounts, false);
-                    done[h] = true;
-                    pending--;
-                }
-            }
-        }
-
-        float[] poly = new float[n * 2];
-        for (int i = 0; i < n; i++) {
-            poly[i * 2] = mergedX[i];
-            poly[i * 2 + 1] = mergedY[i];
-        }
-        tessellate(poly, n);
-        checkArea(outer, outerCount, holes, holeCounts);
-    }
-
-    /**
-     * 三角化之后自查面积：把输出三角形的总面积和"外轮廓减掉所有洞"的期望面积对一遍，
-     * 偏差超过 {@link #AREA_TOLERANCE} 就在日志里告警。
-     *
-     * <p>只用鞋带公式扫一遍，O(n)，相对耳切法可以忽略。
-     * <b>只告警不抛异常</b>：病态路径下渲染库宁可画出个大概并说清楚，
-     * 也好过整帧崩掉。
-     *
-     * @param outer      外轮廓的扁平顶点数组
-     * @param outerCount 外轮廓顶点数
-     * @param holes      每个洞的扁平顶点数组，可为 {@code null}
-     * @param holeCounts 每个洞的顶点数，可为 {@code null}
-     */
-    private void checkArea(float[] outer, int outerCount, float[][] holes, int[] holeCounts) {
-        if (outer == null || outerCount < 3) {
-            return;
-        }
-        double expected = polygonArea(outer, outerCount);
-        int holeNum = 0;
-        int holeLimit = holes == null ? 0 : holes.length;
-        for (int h = 0; h < holeLimit && h < holeCounts.length; h++) {
-            if (isUsableHole(holes, holeCounts, h)) {
-                expected -= polygonArea(holes[h], holeCounts[h]);
-                holeNum++;
-            }
-        }
-        if (expected <= EPSILON) {
-            return; // 退化成零面积，没有可比的基准
-        }
-        double actual = 0;
-        for (int i = 0; i < triangleCount * 6; i += 6) {
-            double x0 = triangles[i], y0 = triangles[i + 1];
-            double x1 = triangles[i + 2], y1 = triangles[i + 3];
-            double x2 = triangles[i + 4], y2 = triangles[i + 5];
-            actual += Math.abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)) * 0.5;
-        }
-        if (Math.abs(actual - expected) > expected * AREA_TOLERANCE) {
-            LOGGER.warn("三角化面积与输入不符：期望 {}，实际 {}（外轮廓 {} 个顶点，{} 个洞）。"
-                            + "带孔洞多边形的桥接点可能被别的洞全部挡住，结果是尽力而为的，"
-                            + "会少画一部分面积。",
-                    expected, actual, outerCount, holeNum);
-        }
-    }
-
-    /**
      * 用鞋带公式计算多边形的面积（取绝对值，顺/逆时针都适用）。
      *
      * @param pts   扁平顶点数组 {@code [x0,y0, x1,y1, ...]}
@@ -328,24 +99,6 @@ public final class Tessellator {
     private static boolean isUsableHole(float[][] holes, int[] holeCounts, int h) {
         return holes[h] != null && holeCounts[h] >= 3
                 && holes[h].length >= holeCounts[h] * 2;
-    }
-
-    /**
-     * 把一个洞的顶点复制到工作区，并归一化为与外轮廓相反的绕向
-     * （外轮廓逆时针，则洞取顺时针，才能被"挖去"）。
-     *
-     * @param hole 洞的扁平顶点数组
-     * @param hc   洞的顶点数
-     */
-    private void prepareHole(float[] hole, int hc) {
-        ensureHoleScratch(hc);
-        for (int i = 0; i < hc; i++) {
-            holeX[i] = hole[i * 2];
-            holeY[i] = hole[i * 2 + 1];
-        }
-        if (signedArea(holeX, holeY, hc) > 0f) {
-            reverse(holeX, holeY, hc);
-        }
     }
 
     /**
@@ -698,51 +451,6 @@ public final class Tessellator {
         return straddle1 && straddle2;
     }
 
-    // ------------------------------------------------------------------
-    // 耳切法
-    // ------------------------------------------------------------------
-
-    /**
-     * 对逆时针简单多边形做耳切三角化。
-     *
-     * <p>遇到病态输入（自相交、共线堆积等）找不到耳时直接放弃剩余部分，
-     * 保证不会死循环。
-     *
-     * @param px   顶点 x 坐标（会被原地破坏）
-     * @param py   顶点 y 坐标（会被原地破坏）
-     * @param count 顶点个数
-     */
-    private void earClip(float[] px, float[] py, int count) {
-        int remaining = count;
-        int guard = 0;
-        int maxIterations = count * count + 8;
-
-        while (remaining > 3 && guard++ < maxIterations) {
-            boolean clipped = false;
-            for (int i = 0; i < remaining; i++) {
-                int prev = (i - 1 + remaining) % remaining;
-                int next = (i + 1) % remaining;
-
-                if (!isEar(px, py, remaining, prev, i, next)) {
-                    continue;
-                }
-                emit(px[prev], py[prev], px[i], py[i], px[next], py[next]);
-                removeAt(px, py, i, remaining);
-                remaining--;
-                clipped = true;
-                break;
-            }
-            if (!clipped) {
-                // 病态输入（自相交等）：放弃剩余部分，避免死循环
-                break;
-            }
-        }
-
-        if (remaining == 3) {
-            emit(px[0], py[0], px[1], py[1], px[2], py[2]);
-        }
-    }
-
     /**
      * 判断顶点 {@code b} 是否为耳（凸角且三角形内不含其他顶点）。
      *
@@ -892,10 +600,6 @@ public final class Tessellator {
         }
     }
 
-    // ------------------------------------------------------------------
-    // 辅助
-    // ------------------------------------------------------------------
-
     /**
      * 用鞋带公式计算多边形的有符号面积。
      *
@@ -922,10 +626,18 @@ public final class Tessellator {
      */
     private static void reverse(float[] px, float[] py, int n) {
         for (int i = 0, j = n - 1; i < j; i++, j--) {
-            float tx = px[i]; px[i] = px[j]; px[j] = tx;
-            float ty = py[i]; py[i] = py[j]; py[j] = ty;
+            float tx = px[i];
+            px[i] = px[j];
+            px[j] = tx;
+            float ty = py[i];
+            py[i] = py[j];
+            py[j] = ty;
         }
     }
+
+    // ------------------------------------------------------------------
+    // 耳切法
+    // ------------------------------------------------------------------
 
     /**
      * 判断逆时针多边形是否为凸多边形。
@@ -943,6 +655,299 @@ public final class Tessellator {
             }
         }
         return true;
+    }
+
+    /**
+     * 返回当前结果中的三角形个数。
+     *
+     * @return 三角形个数
+     */
+    public int triangleCount() {
+        return triangleCount;
+    }
+
+    /**
+     * 返回当前结果的紧凑副本。
+     *
+     * <p>每次调用都分配并复制一个新数组；热路径上请改用 {@link #rawTriangles()}。
+     *
+     * @return 扁平三角形数组，长度为 {@code triangleCount() * 6}
+     */
+    public float[] triangles() {
+        return Arrays.copyOf(triangles, triangleCount * 6);
+    }
+
+    /**
+     * 返回内部三角形数组本身，<strong>不复制</strong>。每 6 个 float 一个三角形
+     * （{@code x0,y0,x1,y1,x2,y2}），有效数据是前 {@code triangleCount() * 6} 个 float，
+     * 后面是上一次调用遗留的无效数据。
+     *
+     * <p>给热路径用：调用方（{@code RenderBatch} 一侧）可以直接遍历这 {@code count * 6} 个 float
+     * 写顶点，省掉一次整表复制。作为代价，数组长度通常<strong>大于</strong>有效数据长度，
+     * 千万不要把整个数组当成三角形列表。
+     *
+     * <p><strong>不得保留</strong>：这是内部缓冲，内容只在下一次 {@link #reset()} /
+     * {@link #tessellate} / {@link #tessellateWithHoles} 调用之前有效，且扩容时会换一块新数组。
+     * 需要稳定副本请用 {@link #triangles()}。
+     *
+     * @return 内部三角形数组（数组长度 ≥ {@code triangleCount() * 6}）
+     */
+    public float[] rawTriangles() {
+        return triangles;
+    }
+
+    /** 清空上一次三角化的结果。 */
+    public void reset() {
+        triangleCount = 0;
+    }
+
+    /**
+     * 三角化一个简单多边形。
+     *
+     * <p>输入<strong>始终</strong>按闭合环处理：填充的是多边形内部，首尾之间天然有边，
+     * 因此没有「是否闭合」这个开关——一个被忽略的参数只会让填开放折线的调用方
+     * 以为自己传的 {@code false} 起了作用。需要描边（含开放折线的端点封口）请用
+     * {@link StrokeGenerator}。
+     *
+     * @param points 扁平顶点数组 {@code [x0,y0, x1,y1, ...]}
+     * @param count  顶点个数
+     */
+    public void tessellate(float[] points, int count) {
+        reset();
+        if (count < 3) {
+            return;
+        }
+        ensureScratch(count);
+        for (int i = 0; i < count; i++) {
+            scratchX[i] = points[i * 2];
+            scratchY[i] = points[i * 2 + 1];
+        }
+
+        if (signedArea(scratchX, scratchY, count) < 0f) {
+            reverse(scratchX, scratchY, count);
+        }
+
+        if (isConvex(scratchX, scratchY, count)) {
+            for (int i = 1; i + 1 < count; i++) {
+                emit(scratchX[0], scratchY[0],
+                        scratchX[i], scratchY[i],
+                        scratchX[i + 1], scratchY[i + 1]);
+            }
+            return;
+        }
+
+        earClip(scratchX, scratchY, count);
+    }
+
+    /**
+     * 三角化带孔洞的多边形。
+     *
+     * <p>实现方式：把每个洞用一条"桥"接到当前轮廓上——即插入一对方向相反的重合边，
+     * 使带洞多边形变成单个简单多边形，再走既有的耳切法。桥接点取当前轮廓上
+     * 与洞的最右顶点距离最近的<b>可见</b>顶点（连线不与任何边真正相交）。
+     *
+     * <p>每个洞都针对<b>已经合并了先前洞</b>的轮廓重新寻找桥接点，因此支持任意多个洞。
+     * 某个洞当下的桥如果会被别的洞挡住，就先合并别的洞、下一轮再处理它
+     * （桥接点用"当前轮廓上最近的可见顶点"，可见性同时避开尚未合并的洞）。
+     * 洞被处理时会统一取与外轮廓相反的绕向（外轮廓逆时针则洞顺时针），
+     * 因此调用方传入洞的顺/逆时针都不影响结果。
+     *
+     * <p>洞超出外轮廓、洞之间相交等病态输入不会抛异常也不会死循环，结果是尽力而为的。
+     * 注意：洞越多，桥接越容易互相挡住，病态输入下丢面积的概率越高——两三洞的常规图形
+     * （环形图、条形图的挖空）不受影响。
+     *
+     * @param outer      外轮廓的扁平顶点数组 {@code [x0,y0, x1,y1, ...]}
+     * @param outerCount 外轮廓顶点数
+     * @param holes      每个洞的扁平顶点数组
+     * @param holeCounts 每个洞的顶点数
+     */
+    public void tessellateWithHoles(float[] outer, int outerCount,
+                                    float[][] holes, int[] holeCounts) {
+        reset();
+        if (outerCount < 3) {
+            return;
+        }
+        if (holes == null || holes.length == 0) {
+            tessellate(outer, outerCount);
+            checkArea(outer, outerCount, null, null);
+            return;
+        }
+
+        int holeNum = Math.min(holes.length, holeCounts.length);
+        int capacity = outerCount + 8;
+        for (int h = 0; h < holeNum; h++) {
+            if (isUsableHole(holes, holeCounts, h)) {
+                capacity += holeCounts[h] + 2; // 洞顶点 + 重合双边的终点
+            }
+        }
+
+        float[] mergedX = new float[capacity];
+        float[] mergedY = new float[capacity];
+        int n = 0;
+        for (int i = 0; i < outerCount; i++) {
+            mergedX[n] = outer[i * 2];
+            mergedY[n] = outer[i * 2 + 1];
+            n++;
+        }
+        // 外轮廓统一为逆时针，洞才能以顺时针"挖去"
+        if (signedArea(mergedX, mergedY, n) < 0f) {
+            reverse(mergedX, mergedY, n);
+        }
+
+        // 一个洞此刻可能找不到可见的桥接点（桥会穿过别的洞），
+        // 但把别的洞先合并进来以后就有了——所以反复扫描，直到没有洞能再合并为止
+        boolean[] done = new boolean[holeNum];
+        int pending = 0;
+        for (int h = 0; h < holeNum; h++) {
+            if (isUsableHole(holes, holeCounts, h)) {
+                pending++;
+            }
+        }
+        while (pending > 0) {
+            boolean progress = false;
+            for (int h = 0; h < holeNum; h++) {
+                if (done[h] || !isUsableHole(holes, holeCounts, h)) {
+                    continue;
+                }
+                prepareHole(holes[h], holeCounts[h]);
+                int merged = bridgeHole(mergedX, mergedY, n, holeX, holeY, holeCounts[h],
+                        holes, holeCounts, true);
+                if (merged >= 0) {
+                    n = merged;
+                    done[h] = true;
+                    pending--;
+                    progress = true;
+                }
+            }
+            if (!progress) {
+                // 剩下的洞对着当前轮廓怎么连都会被挡住：退化成"最近的顶点"，尽力而为
+                for (int h = 0; h < holeNum; h++) {
+                    if (done[h] || !isUsableHole(holes, holeCounts, h)) {
+                        continue;
+                    }
+                    prepareHole(holes[h], holeCounts[h]);
+                    n = bridgeHole(mergedX, mergedY, n, holeX, holeY, holeCounts[h],
+                            holes, holeCounts, false);
+                    done[h] = true;
+                    pending--;
+                }
+            }
+        }
+
+        float[] poly = new float[n * 2];
+        for (int i = 0; i < n; i++) {
+            poly[i * 2] = mergedX[i];
+            poly[i * 2 + 1] = mergedY[i];
+        }
+        tessellate(poly, n);
+        checkArea(outer, outerCount, holes, holeCounts);
+    }
+
+    // ------------------------------------------------------------------
+    // 辅助
+    // ------------------------------------------------------------------
+
+    /**
+     * 三角化之后自查面积：把输出三角形的总面积和"外轮廓减掉所有洞"的期望面积对一遍，
+     * 偏差超过 {@link #AREA_TOLERANCE} 就在日志里告警。
+     *
+     * <p>只用鞋带公式扫一遍，O(n)，相对耳切法可以忽略。
+     * <b>只告警不抛异常</b>：病态路径下渲染库宁可画出个大概并说清楚，
+     * 也好过整帧崩掉。
+     *
+     * @param outer      外轮廓的扁平顶点数组
+     * @param outerCount 外轮廓顶点数
+     * @param holes      每个洞的扁平顶点数组，可为 {@code null}
+     * @param holeCounts 每个洞的顶点数，可为 {@code null}
+     */
+    private void checkArea(float[] outer, int outerCount, float[][] holes, int[] holeCounts) {
+        if (outer == null || outerCount < 3) {
+            return;
+        }
+        double expected = polygonArea(outer, outerCount);
+        int holeNum = 0;
+        int holeLimit = holes == null ? 0 : holes.length;
+        for (int h = 0; h < holeLimit && h < holeCounts.length; h++) {
+            if (isUsableHole(holes, holeCounts, h)) {
+                expected -= polygonArea(holes[h], holeCounts[h]);
+                holeNum++;
+            }
+        }
+        if (expected <= EPSILON) {
+            return; // 退化成零面积，没有可比的基准
+        }
+        double actual = 0;
+        for (int i = 0; i < triangleCount * 6; i += 6) {
+            double x0 = triangles[i], y0 = triangles[i + 1];
+            double x1 = triangles[i + 2], y1 = triangles[i + 3];
+            double x2 = triangles[i + 4], y2 = triangles[i + 5];
+            actual += Math.abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)) * 0.5;
+        }
+        if (Math.abs(actual - expected) > expected * AREA_TOLERANCE) {
+            LOGGER.warn("三角化面积与输入不符：期望 {}，实际 {}（外轮廓 {} 个顶点，{} 个洞）。"
+                            + "带孔洞多边形的桥接点可能被别的洞全部挡住，结果是尽力而为的，"
+                            + "会少画一部分面积。",
+                    expected, actual, outerCount, holeNum);
+        }
+    }
+
+    /**
+     * 把一个洞的顶点复制到工作区，并归一化为与外轮廓相反的绕向
+     * （外轮廓逆时针，则洞取顺时针，才能被"挖去"）。
+     *
+     * @param hole 洞的扁平顶点数组
+     * @param hc   洞的顶点数
+     */
+    private void prepareHole(float[] hole, int hc) {
+        ensureHoleScratch(hc);
+        for (int i = 0; i < hc; i++) {
+            holeX[i] = hole[i * 2];
+            holeY[i] = hole[i * 2 + 1];
+        }
+        if (signedArea(holeX, holeY, hc) > 0f) {
+            reverse(holeX, holeY, hc);
+        }
+    }
+
+    /**
+     * 对逆时针简单多边形做耳切三角化。
+     *
+     * <p>遇到病态输入（自相交、共线堆积等）找不到耳时直接放弃剩余部分，
+     * 保证不会死循环。
+     *
+     * @param px   顶点 x 坐标（会被原地破坏）
+     * @param py   顶点 y 坐标（会被原地破坏）
+     * @param count 顶点个数
+     */
+    private void earClip(float[] px, float[] py, int count) {
+        int remaining = count;
+        int guard = 0;
+        int maxIterations = count * count + 8;
+
+        while (remaining > 3 && guard++ < maxIterations) {
+            boolean clipped = false;
+            for (int i = 0; i < remaining; i++) {
+                int prev = (i - 1 + remaining) % remaining;
+                int next = (i + 1) % remaining;
+
+                if (!isEar(px, py, remaining, prev, i, next)) {
+                    continue;
+                }
+                emit(px[prev], py[prev], px[i], py[i], px[next], py[next]);
+                removeAt(px, py, i, remaining);
+                remaining--;
+                clipped = true;
+                break;
+            }
+            if (!clipped) {
+                // 病态输入（自相交等）：放弃剩余部分，避免死循环
+                break;
+            }
+        }
+
+        if (remaining == 3) {
+            emit(px[0], py[0], px[1], py[1], px[2], py[2]);
+        }
     }
 
     /**
@@ -986,9 +991,12 @@ public final class Tessellator {
             triangles = Arrays.copyOf(triangles, triangles.length * 2);
         }
         int o = triangleCount * 6;
-        triangles[o] = x0;      triangles[o + 1] = y0;
-        triangles[o + 2] = x1;  triangles[o + 3] = y1;
-        triangles[o + 4] = x2;  triangles[o + 5] = y2;
+        triangles[o] = x0;
+        triangles[o + 1] = y0;
+        triangles[o + 2] = x1;
+        triangles[o + 3] = y1;
+        triangles[o + 4] = x2;
+        triangles[o + 5] = y2;
         triangleCount++;
     }
 }

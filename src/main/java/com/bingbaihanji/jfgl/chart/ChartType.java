@@ -46,17 +46,6 @@ public enum ChartType {
     /** 瀑布图：滚动的一列一列，由独立渲染器实现。 */
     WATERFALL(0);
 
-    private static final class Flag {
-        static final int CONNECTS = 1;
-        static final int MARKERS = 2;
-        static final int STEPPED = 4;
-        static final int FILLS = 8;
-        static final int BARS = 16;
-
-        private Flag() {
-        }
-    }
-
     private final int flags;
 
     ChartType(int flags) {
@@ -97,5 +86,21 @@ public enum ChartType {
      */
     public boolean polylineFamily() {
         return connectsSamples() || drawsMarkers() || drawsBars();
+    }
+
+    private static final class Flag {
+
+        static final int CONNECTS = 1;
+
+        static final int MARKERS = 2;
+
+        static final int STEPPED = 4;
+
+        static final int FILLS = 8;
+
+        static final int BARS = 16;
+
+        private Flag() {
+        }
     }
 }

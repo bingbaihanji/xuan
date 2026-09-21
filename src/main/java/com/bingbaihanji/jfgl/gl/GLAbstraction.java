@@ -13,6 +13,13 @@ import java.nio.ByteBuffer;
 public interface GLAbstraction extends Disposable {
 
     /**
+     * {@code GL_FRAMEBUFFER_COMPLETE} 的枚举值。
+     *
+     * <p>放在接口上是为了让调用方不必为了比较一个状态码而引入 LWJGL 的常量。
+     */
+    int FRAMEBUFFER_COMPLETE = 0x8CD5;
+
+    /**
      * 初始化 OpenGL 状态。
      */
     void initialize();
@@ -228,13 +235,6 @@ public interface GLAbstraction extends Disposable {
      * @param pixels  数据，长度必须为 {@code width * height}，按行存储
      */
     void uploadR8SubImage(int texture, int x, int y, int width, int height, byte[] pixels);
-
-    /**
-     * {@code GL_FRAMEBUFFER_COMPLETE} 的枚举值。
-     *
-     * <p>放在接口上是为了让调用方不必为了比较一个状态码而引入 LWJGL 的常量。
-     */
-    int FRAMEBUFFER_COMPLETE = 0x8CD5;
 
     /**
      * 创建帧缓冲对象（FBO）。

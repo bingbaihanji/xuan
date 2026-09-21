@@ -23,25 +23,6 @@ package com.bingbaihanji.jfgl.geom;
  */
 public final class Path {
 
-    /** 路径命令类型。 */
-    public enum Type {
-
-        /** 移动当前点但不绘制。 */
-        MOVE_TO,
-
-        /** 从当前点到目标点绘制直线。 */
-        LINE_TO,
-
-        /** 绘制二次贝塞尔曲线。 */
-        QUAD_TO,
-
-        /** 绘制三次贝塞尔曲线。 */
-        CUBIC_TO,
-
-        /** 通过绘制直线回到子路径起点来关闭当前子路径。 */
-        CLOSE
-    }
-
     /** 每条命令最多携带的点数（三次贝塞尔为 3）。 */
     public static final int MAX_POINTS_PER_COMMAND = 3;
 
@@ -225,9 +206,18 @@ public final class Path {
         types[ci] = (byte) type.ordinal();
         pointCounts[ci] = (byte) points;
         int base = ci * MAX_POINTS_PER_COMMAND * 2;
-        if (points > 0) { coords[base] = x0; coords[base + 1] = y0; }
-        if (points > 1) { coords[base + 2] = x1; coords[base + 3] = y1; }
-        if (points > 2) { coords[base + 4] = x2; coords[base + 5] = y2; }
+        if (points > 0) {
+            coords[base] = x0;
+            coords[base + 1] = y0;
+        }
+        if (points > 1) {
+            coords[base + 2] = x1;
+            coords[base + 3] = y1;
+        }
+        if (points > 2) {
+            coords[base + 4] = x2;
+            coords[base + 5] = y2;
+        }
         return this;
     }
 
@@ -251,5 +241,24 @@ public final class Path {
         types = newTypes;
         pointCounts = newCounts;
         coords = newCoords;
+    }
+
+    /** 路径命令类型。 */
+    public enum Type {
+
+        /** 移动当前点但不绘制。 */
+        MOVE_TO,
+
+        /** 从当前点到目标点绘制直线。 */
+        LINE_TO,
+
+        /** 绘制二次贝塞尔曲线。 */
+        QUAD_TO,
+
+        /** 绘制三次贝塞尔曲线。 */
+        CUBIC_TO,
+
+        /** 通过绘制直线回到子路径起点来关闭当前子路径。 */
+        CLOSE
     }
 }

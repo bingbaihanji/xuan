@@ -27,17 +27,6 @@ import java.util.List;
  */
 public final class WindowRange {
 
-    /**
-     * 一段连续的实例。
-     *
-     * @param firstInstance  起始物理槽位（供 {@code glDrawArraysInstancedBaseInstance}
-     *                       的 {@code baseInstance} 用）
-     * @param firstDataIndex 起始数据下标（绝对序号，供顶点着色器算 x）
-     * @param instanceCount  实例数
-     */
-    public record Segment(int firstInstance, long firstDataIndex, int instanceCount) {
-    }
-
     private WindowRange() {
     }
 
@@ -81,5 +70,16 @@ public final class WindowRange {
         return List.of(
                 new Segment(firstSlot, lo, headCount),
                 new Segment(0, lo + headCount, count - headCount));
+    }
+
+    /**
+     * 一段连续的实例。
+     *
+     * @param firstInstance  起始物理槽位（供 {@code glDrawArraysInstancedBaseInstance}
+     *                       的 {@code baseInstance} 用）
+     * @param firstDataIndex 起始数据下标（绝对序号，供顶点着色器算 x）
+     * @param instanceCount  实例数
+     */
+    public record Segment(int firstInstance, long firstDataIndex, int instanceCount) {
     }
 }

@@ -26,16 +26,8 @@ import java.util.List;
  */
 public final class SeriesUploadPlan {
 
-    /**
-     * 一段连续的上传。
-     *
-     * @param byteOffset 相对缓冲起点的字节偏移
-     * @param byteLength 字节数
-     */
-    public record Range(int byteOffset, int byteLength) {
-    }
-
     private final List<Range> ranges;
+
     private final int totalBytes;
 
     private SeriesUploadPlan(List<Range> ranges, int totalBytes) {
@@ -85,5 +77,14 @@ public final class SeriesUploadPlan {
     /** 要上传的总字节数。 */
     public int totalBytes() {
         return totalBytes;
+    }
+
+    /**
+     * 一段连续的上传。
+     *
+     * @param byteOffset 相对缓冲起点的字节偏移
+     * @param byteLength 字节数
+     */
+    public record Range(int byteOffset, int byteLength) {
     }
 }

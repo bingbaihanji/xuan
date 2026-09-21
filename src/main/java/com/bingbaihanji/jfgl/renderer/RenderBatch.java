@@ -12,21 +12,7 @@ import com.bingbaihanji.jfgl.util.Disposable;
 import java.util.List;
 import java.util.Objects;
 
-import static org.lwjgl.opengl.GL11.GL_FLOAT;
-import static org.lwjgl.opengl.GL11.GL_ONE;
-import static org.lwjgl.opengl.GL11.GL_ONE_MINUS_SRC_ALPHA;
-import static org.lwjgl.opengl.GL11.GL_SCISSOR_TEST;
-import static org.lwjgl.opengl.GL11.GL_TEXTURE_2D;
-import static org.lwjgl.opengl.GL11.GL_TRIANGLES;
-import static org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE;
-import static org.lwjgl.opengl.GL11.GL_UNSIGNED_INT;
-import static org.lwjgl.opengl.GL11.glBindTexture;
-import static org.lwjgl.opengl.GL11.glBlendFunc;
-import static org.lwjgl.opengl.GL11.glDeleteTextures;
-import static org.lwjgl.opengl.GL11.glDisable;
-import static org.lwjgl.opengl.GL11.glDrawArrays;
-import static org.lwjgl.opengl.GL11.glEnable;
-import static org.lwjgl.opengl.GL11.glScissor;
+import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL13.GL_TEXTURE0;
 import static org.lwjgl.opengl.GL13.glActiveTexture;
 import static org.lwjgl.opengl.GL20.glEnableVertexAttribArray;
@@ -86,19 +72,19 @@ public final class RenderBatch implements Disposable {
 
     /** 顶点着色器：位置已在 CPU 端烘焙到 NDC，这里只做透传。 */
     private static final String VERTEX_SHADER = """
-            #version 330 core
-            layout(location = 0) in vec2 aPos;
-            layout(location = 1) in vec2 aUV;
-            layout(location = 2) in vec4 aColor;
-            layout(location = 3) in uint aId;
-            out vec2 vUV;
-            out vec4 vColor;
-            void main() {
-                gl_Position = vec4(aPos, 0.0, 1.0);
-                vUV = aUV;
-                vColor = aColor;
-            }
-            """;
+                                                #version 330 core
+                                                layout(location = 0) in vec2 aPos;
+                                                layout(location = 1) in vec2 aUV;
+                                                layout(location = 2) in vec4 aColor;
+                                                layout(location = 3) in uint aId;
+                                                out vec2 vUV;
+                                                out vec4 vColor;
+                                                void main() {
+                                                    gl_Position = vec4(aPos, 0.0, 1.0);
+                                                    vUV = aUV;
+                                                    vColor = aColor;
+                                                }
+                                                """;
 
     /**
      * 片段着色器：采样纹理后与顶点色相乘。
@@ -107,15 +93,15 @@ public final class RenderBatch implements Disposable {
      * 全管线只需要这一个 fragment shader。
      */
     private static final String FRAGMENT_SHADER = """
-            #version 330 core
-            in vec2 vUV;
-            in vec4 vColor;
-            uniform sampler2D uTex;
-            out vec4 fragColor;
-            void main() {
-                fragColor = texture(uTex, vUV) * vColor;
-            }
-            """;
+                                                  #version 330 core
+                                                  in vec2 vUV;
+                                                  in vec4 vColor;
+                                                  uniform sampler2D uTex;
+                                                  out vec4 fragColor;
+                                                  void main() {
+                                                      fragColor = texture(uTex, vUV) * vColor;
+                                                  }
+                                                  """;
 
     /**
      * ID pass 的顶点着色器：只把拾取 ID 透传下去，位置同样已在 CPU 端烘焙好。
@@ -127,25 +113,25 @@ public final class RenderBatch implements Disposable {
      * 对应不存在的对象。
      */
     private static final String PICK_VERTEX_SHADER = """
-            #version 330 core
-            layout(location = 0) in vec2 aPos;
-            layout(location = 3) in uint aId;
-            flat out uint vId;
-            void main() {
-                gl_Position = vec4(aPos, 0.0, 1.0);
-                vId = aId;
-            }
-            """;
+                                                     #version 330 core
+                                                     layout(location = 0) in vec2 aPos;
+                                                     layout(location = 3) in uint aId;
+                                                     flat out uint vId;
+                                                     void main() {
+                                                         gl_Position = vec4(aPos, 0.0, 1.0);
+                                                         vId = aId;
+                                                     }
+                                                     """;
 
     /** ID pass 的片段着色器：直接写出 ID，不看颜色、不看 alpha、不采样纹理。 */
     private static final String PICK_FRAGMENT_SHADER = """
-            #version 330 core
-            flat in uint vId;
-            out uint fragId;
-            void main() {
-                fragId = vId;
-            }
-            """;
+                                                       #version 330 core
+                                                       flat in uint vId;
+                                                       out uint fragId;
+                                                       void main() {
+                                                           fragId = vId;
+                                                       }
+                                                       """;
 
     /**
      * SDF 文本的片段着色器。
@@ -165,19 +151,19 @@ public final class RenderBatch implements Disposable {
      * （与渲染管线文档里那条"混合因子顺序不能调换"是同一类问题）。
      */
     private static final String SDF_FRAGMENT_SHADER = """
-            #version 330 core
-            in vec2 vUV;
-            in vec4 vColor;
-            uniform sampler2D uTex;
-            out vec4 fragColor;
-            void main() {
-                float d  = texture(uTex, vUV).r;
-                float sd = d - 0.5;
-                float w  = fwidth(d);
-                float a  = smoothstep(-w, w, sd);
-                fragColor = vColor * a;
-            }
-            """;
+                                                      #version 330 core
+                                                      in vec2 vUV;
+                                                      in vec4 vColor;
+                                                      uniform sampler2D uTex;
+                                                      out vec4 fragColor;
+                                                      void main() {
+                                                          float d  = texture(uTex, vUV).r;
+                                                          float sd = d - 0.5;
+                                                          float w  = fwidth(d);
+                                                          float a  = smoothstep(-w, w, sd);
+                                                          fragColor = vColor * a;
+                                                      }
+                                                      """;
 
     /** GL 抽象层，资源类操作（VAO/VBO/纹理/着色器）都经它转发。 */
     private final GLAbstraction gl;
@@ -191,23 +177,8 @@ public final class RenderBatch implements Disposable {
     /** 拾取缓冲，与颜色 pass 同尺寸。 */
     private final PickBuffer pickBuffer;
 
-    /** 本帧的拾取缓冲是否已被清空（每帧最多清一次，懒执行）。 */
-    private boolean pickBufferCleared = false;
-
-    /** 本帧渲染过 ID pass 后为 true；{@link #beginFrame} 时复位。 */
-    private boolean pickBufferValid = false;
-
-    /** 累计执行过的 ID pass 次数，仅供校验器断言「跳过优化」确实生效。 */
-    private int pickPassCount = 0;
-
     /** 可增长的顶点缓冲，每帧整体覆盖上传。 */
     private final VertexBuffer vertexBuffer;
-
-    /** 顶点数组对象，记录属性指针与（未来的）索引缓冲绑定。 */
-    private int vao;
-
-    /** 1×1 不透明白色纹理的 ID，纯色绘制时绑定，使 {@code texture(uTex, vUV)} 恒为 1。 */
-    private int whiteTexture;
 
     /** SDF 文本使用的着色器程序。 */
     private final ShaderProgram sdfShader;
@@ -220,6 +191,21 @@ public final class RenderBatch implements Disposable {
 
     /** 字形图集，与颜色 pass 用同一张纹理。 */
     private final GlyphAtlas glyphAtlas;
+
+    /** 本帧的拾取缓冲是否已被清空（每帧最多清一次，懒执行）。 */
+    private boolean pickBufferCleared = false;
+
+    /** 本帧渲染过 ID pass 后为 true；{@link #beginFrame} 时复位。 */
+    private boolean pickBufferValid = false;
+
+    /** 累计执行过的 ID pass 次数，仅供校验器断言「跳过优化」确实生效。 */
+    private int pickPassCount = 0;
+
+    /** 顶点数组对象，记录属性指针与（未来的）索引缓冲绑定。 */
+    private int vao;
+
+    /** 1×1 不透明白色纹理的 ID，纯色绘制时绑定，使 {@code texture(uTex, vUV)} 恒为 1。 */
+    private int whiteTexture;
 
     /** 视口高度，用于把裁剪矩形从 y 向下翻转为 GL 的 y 向上。 */
     private int viewportHeight;

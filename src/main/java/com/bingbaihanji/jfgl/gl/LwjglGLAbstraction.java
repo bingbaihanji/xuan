@@ -22,6 +22,27 @@ import java.nio.IntBuffer;
  */
 public class LwjglGLAbstraction implements GLAbstraction {
 
+    /**
+     * 为区域读回分配缓冲。
+     *
+     * <p><strong>不能用 {@link MemoryStack}</strong>：它默认只有 64 KB
+     * （{@code Configuration.STACK_SIZE} 默认 64），而这里需要
+     * {@code pixels * 4} 字节。128×128 恰好是临界点，再大一点就抛
+     * {@link OutOfMemoryError}——框选稍大一点即废，且抛的是 {@code Error}。
+     *
+     * <p>返回直接缓冲交给 GC：{@code pickRect} 是用户触发的低频查询（框选），
+     * 不是每帧路径，为此维护可复用缓冲池是不必要的复杂度。
+     *
+     * <p>包级可见且不碰 GL，<strong>专为可测</strong>：真正的方法需要 GL 上下文，
+     * 在单测里调用会让 JVM 直接 abort。
+     *
+     * @param pixels 像素个数，必须非负
+     * @return 容量为 {@code pixels} 的直接 IntBuffer
+     */
+    static IntBuffer allocateReadBuffer(int pixels) {
+        return BufferUtils.createIntBuffer(pixels);
+    }
+
     @Override
     public void initialize() {
         // GL context is already current when called from OpenGLFX events
@@ -267,27 +288,6 @@ public class LwjglGLAbstraction implements GLAbstraction {
             GL11.glReadPixels(x, y, 1, 1, GL30.GL_RED_INTEGER, GL11.GL_UNSIGNED_INT, buffer);
             return buffer.get(0);
         }
-    }
-
-    /**
-     * 为区域读回分配缓冲。
-     *
-     * <p><strong>不能用 {@link MemoryStack}</strong>：它默认只有 64 KB
-     * （{@code Configuration.STACK_SIZE} 默认 64），而这里需要
-     * {@code pixels * 4} 字节。128×128 恰好是临界点，再大一点就抛
-     * {@link OutOfMemoryError}——框选稍大一点即废，且抛的是 {@code Error}。
-     *
-     * <p>返回直接缓冲交给 GC：{@code pickRect} 是用户触发的低频查询（框选），
-     * 不是每帧路径，为此维护可复用缓冲池是不必要的复杂度。
-     *
-     * <p>包级可见且不碰 GL，<strong>专为可测</strong>：真正的方法需要 GL 上下文，
-     * 在单测里调用会让 JVM 直接 abort。
-     *
-     * @param pixels 像素个数，必须非负
-     * @return 容量为 {@code pixels} 的直接 IntBuffer
-     */
-    static IntBuffer allocateReadBuffer(int pixels) {
-        return BufferUtils.createIntBuffer(pixels);
     }
 
     @Override

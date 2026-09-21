@@ -57,10 +57,13 @@ public final class TickGenerator {
 
     private static final DateTimeFormatter FORMAT_SECOND =
             DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ROOT).withZone(ZoneOffset.UTC);
+
     private static final DateTimeFormatter FORMAT_MINUTE =
             DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT).withZone(ZoneOffset.UTC);
+
     private static final DateTimeFormatter FORMAT_DAY =
             DateTimeFormatter.ofPattern("MM-dd", Locale.ROOT).withZone(ZoneOffset.UTC);
+
     private static final DateTimeFormatter FORMAT_YEAR =
             DateTimeFormatter.ofPattern("yyyy-MM", Locale.ROOT).withZone(ZoneOffset.UTC);
 

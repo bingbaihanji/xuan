@@ -55,6 +55,38 @@ public final class ArrayChartData implements ChartData {
         this.values = deepCopy(values);
     }
 
+    private static void validate(double[][] values, int dims) {
+        if (values == null) {
+            throw new IllegalArgumentException("values 不能为 null");
+        }
+        if (values.length != dims) {
+            throw new IllegalArgumentException(
+                    "值的维度数与声明不符：声明 " + dims + " 维，实际 " + values.length + " 维");
+        }
+        if (values[0] == null) {
+            throw new IllegalArgumentException("第 0 维的数据是 null");
+        }
+        int count = values[0].length;
+        for (int d = 1; d < values.length; d++) {
+            if (values[d] == null) {
+                throw new IllegalArgumentException("第 " + d + " 维的数据是 null");
+            }
+            if (values[d].length != count) {
+                throw new IllegalArgumentException(
+                        "各维度的长度必须一致：第 0 维是 " + count + "，第 " + d + " 维是 "
+                                + values[d].length);
+            }
+        }
+    }
+
+    private static double[][] deepCopy(double[][] source) {
+        double[][] copy = new double[source.length][];
+        for (int d = 0; d < source.length; d++) {
+            copy[d] = Arrays.copyOf(source[d], source[d].length);
+        }
+        return copy;
+    }
+
     /**
      * 整体替换数据。这是静态路径唯一的变更入口。
      *
@@ -97,37 +129,5 @@ public final class ArrayChartData implements ChartData {
             return DirtyRange.EMPTY;
         }
         return new DirtyRange(0, itemCount());
-    }
-
-    private static void validate(double[][] values, int dims) {
-        if (values == null) {
-            throw new IllegalArgumentException("values 不能为 null");
-        }
-        if (values.length != dims) {
-            throw new IllegalArgumentException(
-                    "值的维度数与声明不符：声明 " + dims + " 维，实际 " + values.length + " 维");
-        }
-        if (values[0] == null) {
-            throw new IllegalArgumentException("第 0 维的数据是 null");
-        }
-        int count = values[0].length;
-        for (int d = 1; d < values.length; d++) {
-            if (values[d] == null) {
-                throw new IllegalArgumentException("第 " + d + " 维的数据是 null");
-            }
-            if (values[d].length != count) {
-                throw new IllegalArgumentException(
-                        "各维度的长度必须一致：第 0 维是 " + count + "，第 " + d + " 维是 "
-                                + values[d].length);
-            }
-        }
-    }
-
-    private static double[][] deepCopy(double[][] source) {
-        double[][] copy = new double[source.length][];
-        for (int d = 0; d < source.length; d++) {
-            copy[d] = Arrays.copyOf(source[d], source[d].length);
-        }
-        return copy;
     }
 }

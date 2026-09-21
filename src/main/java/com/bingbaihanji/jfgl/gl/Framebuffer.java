@@ -18,17 +18,17 @@ public final class Framebuffer implements Disposable {
     /** GL 抽象层。 */
     private final GLAbstraction gl;
 
-    /** FBO 的 ID。 */
-    private int framebuffer;
-
-    /** 颜色附件纹理的 ID。 */
-    private int texture;
-
     /** 宽度（像素）。 */
     private final int width;
 
     /** 高度（像素）。 */
     private final int height;
+
+    /** FBO 的 ID。 */
+    private int framebuffer;
+
+    /** 颜色附件纹理的 ID。 */
+    private int texture;
 
     /** 是否已释放，保证 {@link #dispose()} 幂等。 */
     private boolean disposed = false;

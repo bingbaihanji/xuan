@@ -19,6 +19,7 @@ public final class Flattener {
 
     /** 每条曲线最少细分段数，避免容差过大时退化成一条直线。 */
     private static final int MIN_SEGMENTS = 4;
+
     /** 每条曲线最多细分段数，防止病态输入产生海量顶点。 */
     private static final int MAX_SEGMENTS = 256;
 
@@ -38,6 +39,59 @@ public final class Flattener {
     private int subPathCount = 0;
 
     /**
+     * 计算三次贝塞尔曲线到其弦的最大偏差上界：(3/4)·max(|P0−2P1+P2|, |P1−2P2+P3|)。
+     *
+     * <p>这是基于控制多边形二阶差分（second difference）的标准保守上界：曲线按参数等分成
+     * n 段后，每一段到其弦的偏差不超过该上界的 {@code 1/n^2}，因此可直接用于反解段数。
+     * 上界恒不小于真实最大偏差（例如控制点 (0,0)、(0,100)、(100,100)、(100,0) 时上界为
+     * 106.07，而真实最大偏差为 75），故不会细分不足。
+     *
+     * @param x0  起点的 x 坐标
+     * @param y0  起点的 y 坐标
+     * @param c1x 第一个控制点的 x 坐标
+     * @param c1y 第一个控制点的 y 坐标
+     * @param c2x 第二个控制点的 x 坐标
+     * @param c2y 第二个控制点的 y 坐标
+     * @param x1  终点的 x 坐标
+     * @param y1  终点的 y 坐标
+     * @return 曲线到弦的最大偏差上界（世界单位）
+     */
+    private static float cubicMaxDeviationBound(float x0, float y0, float c1x, float c1y,
+                                                float c2x, float c2y, float x1, float y1) {
+        float d1x = x0 - 2f * c1x + c2x;
+        float d1y = y0 - 2f * c1y + c2y;
+        float d2x = c1x - 2f * c2x + x1;
+        float d2y = c1y - 2f * c2y + y1;
+        float n1 = (float) Math.sqrt(d1x * d1x + d1y * d1y);
+        float n2 = (float) Math.sqrt(d2x * d2x + d2y * d2y);
+        return 0.75f * Math.max(n1, n2);
+    }
+
+    /**
+     * 把世界单位的偏差换算成设备像素偏差后求所需段数。
+     *
+     * <p>误差随段数按 {@code n^-exponent} 衰减，故 {@code n = (d / tol)^(1/exponent)}，
+     * 结果被限制在 [{@value #MIN_SEGMENTS}, {@value #MAX_SEGMENTS}] 之间。
+     * 段数随 {@code scale} 单调不减：放大时细分更密，缩小时不浪费顶点。
+     *
+     * @param worldDeviation 世界单位下的最大偏差
+     * @param scale          当前变换的缩放因子（设备像素 / 世界单位）
+     * @param tolerance      允许的最大偏差（设备像素）
+     * @param exponent       误差衰减指数；二次与三次贝塞尔的弦逼近偏差都按 {@code n^-2} 衰减，均取 2
+     * @return 该曲线应细分的段数
+     */
+    private static int segmentsForDeviation(float worldDeviation, float scale,
+                                            float tolerance, float exponent) {
+        float deviceDeviation = worldDeviation * Math.abs(scale);
+        if (deviceDeviation <= tolerance) {
+            return MIN_SEGMENTS;
+        }
+        // 误差随段数按 n^-exponent 衰减：n = (d / tol)^(1/exponent)
+        double n = Math.pow(deviceDeviation / tolerance, 1.0 / exponent);
+        return Math.max(MIN_SEGMENTS, Math.min(MAX_SEGMENTS, (int) Math.ceil(n)));
+    }
+
+    /**
      * 清空结果，保留已分配的数组容量。
      *
      * <p>此方法不释放内部数组，因此可被复用的实例在稳态下不会产生分配。
@@ -52,7 +106,7 @@ public final class Flattener {
      *
      * @return 已产生的顶点数量
      */
-    public int pointCount() { return count; }
+    public int pointCount() {return count;}
 
     /**
      * 返回第 {@code i} 个顶点的 x 坐标。
@@ -60,7 +114,7 @@ public final class Flattener {
      * @param i 顶点下标，须小于 {@link #pointCount()}
      * @return 顶点的 x 坐标
      */
-    public float x(int i) { return xs[i]; }
+    public float x(int i) {return xs[i];}
 
     /**
      * 返回第 {@code i} 个顶点的 y 坐标。
@@ -68,7 +122,7 @@ public final class Flattener {
      * @param i 顶点下标，须小于 {@link #pointCount()}
      * @return 顶点的 y 坐标
      */
-    public float y(int i) { return ys[i]; }
+    public float y(int i) {return ys[i];}
 
     /**
      * 把折线顶点按扁平的 {@code [x0,y0, x1,y1, ...]} 顺序复制到 {@code dst}，
@@ -102,7 +156,7 @@ public final class Flattener {
      *
      * @return 由 {@code moveTo} 开启的子路径数量
      */
-    public int subPathCount() { return subPathCount; }
+    public int subPathCount() {return subPathCount;}
 
     /**
      * 返回第 {@code i} 条子路径的起点在顶点数组中的下标。
@@ -110,7 +164,7 @@ public final class Flattener {
      * @param i 子路径下标，须小于 {@link #subPathCount()}
      * @return 该子路径起点对应的顶点下标
      */
-    public int subPathStart(int i) { return subPathStarts[i]; }
+    public int subPathStart(int i) {return subPathStarts[i];}
 
     /**
      * 平坦化路径。结果会被 {@link #reset()} 后重新填充。
@@ -156,16 +210,17 @@ public final class Flattener {
                         float t = s / (float) segs;
                         float u = 1f - t;
                         appendPoint(u * u * currentX + 2f * u * t * cx + t * t * ex,
-                                    u * u * currentY + 2f * u * t * cy + t * t * ey);
+                                u * u * currentY + 2f * u * t * cy + t * t * ey);
                     }
-                    currentX = ex; currentY = ey;
+                    currentX = ex;
+                    currentY = ey;
                 }
                 case CUBIC_TO -> {
                     float c1x = path.commandX(i, 0), c1y = path.commandY(i, 0);
                     float c2x = path.commandX(i, 1), c2y = path.commandY(i, 1);
                     float ex = path.commandX(i, 2), ey = path.commandY(i, 2);
                     int segs = cubicSegments(currentX, currentY, c1x, c1y, c2x, c2y, ex, ey,
-                                             scale, tolerance);
+                            scale, tolerance);
                     for (int s = 1; s <= segs; s++) {
                         float t = s / (float) segs;
                         float u = 1f - t;
@@ -175,7 +230,8 @@ public final class Flattener {
                                 + 3f * u * t * t * c2y + t * t * t * ey;
                         appendPoint(x, y);
                     }
-                    currentX = ex; currentY = ey;
+                    currentX = ex;
+                    currentY = ey;
                 }
                 case CLOSE -> {
                     if (hasSubPath && (currentX != startX || currentY != startY)) {
@@ -248,59 +304,6 @@ public final class Flattener {
                               float scale, float tolerance) {
         float deviation = cubicMaxDeviationBound(x0, y0, c1x, c1y, c2x, c2y, x1, y1);
         return segmentsForDeviation(deviation, scale, tolerance, 2f);
-    }
-
-    /**
-     * 计算三次贝塞尔曲线到其弦的最大偏差上界：(3/4)·max(|P0−2P1+P2|, |P1−2P2+P3|)。
-     *
-     * <p>这是基于控制多边形二阶差分（second difference）的标准保守上界：曲线按参数等分成
-     * n 段后，每一段到其弦的偏差不超过该上界的 {@code 1/n^2}，因此可直接用于反解段数。
-     * 上界恒不小于真实最大偏差（例如控制点 (0,0)、(0,100)、(100,100)、(100,0) 时上界为
-     * 106.07，而真实最大偏差为 75），故不会细分不足。
-     *
-     * @param x0  起点的 x 坐标
-     * @param y0  起点的 y 坐标
-     * @param c1x 第一个控制点的 x 坐标
-     * @param c1y 第一个控制点的 y 坐标
-     * @param c2x 第二个控制点的 x 坐标
-     * @param c2y 第二个控制点的 y 坐标
-     * @param x1  终点的 x 坐标
-     * @param y1  终点的 y 坐标
-     * @return 曲线到弦的最大偏差上界（世界单位）
-     */
-    private static float cubicMaxDeviationBound(float x0, float y0, float c1x, float c1y,
-                                                float c2x, float c2y, float x1, float y1) {
-        float d1x = x0 - 2f * c1x + c2x;
-        float d1y = y0 - 2f * c1y + c2y;
-        float d2x = c1x - 2f * c2x + x1;
-        float d2y = c1y - 2f * c2y + y1;
-        float n1 = (float) Math.sqrt(d1x * d1x + d1y * d1y);
-        float n2 = (float) Math.sqrt(d2x * d2x + d2y * d2y);
-        return 0.75f * Math.max(n1, n2);
-    }
-
-    /**
-     * 把世界单位的偏差换算成设备像素偏差后求所需段数。
-     *
-     * <p>误差随段数按 {@code n^-exponent} 衰减，故 {@code n = (d / tol)^(1/exponent)}，
-     * 结果被限制在 [{@value #MIN_SEGMENTS}, {@value #MAX_SEGMENTS}] 之间。
-     * 段数随 {@code scale} 单调不减：放大时细分更密，缩小时不浪费顶点。
-     *
-     * @param worldDeviation 世界单位下的最大偏差
-     * @param scale          当前变换的缩放因子（设备像素 / 世界单位）
-     * @param tolerance      允许的最大偏差（设备像素）
-     * @param exponent       误差衰减指数；二次与三次贝塞尔的弦逼近偏差都按 {@code n^-2} 衰减，均取 2
-     * @return 该曲线应细分的段数
-     */
-    private static int segmentsForDeviation(float worldDeviation, float scale,
-                                            float tolerance, float exponent) {
-        float deviceDeviation = worldDeviation * Math.abs(scale);
-        if (deviceDeviation <= tolerance) {
-            return MIN_SEGMENTS;
-        }
-        // 误差随段数按 n^-exponent 衰减：n = (d / tol)^(1/exponent)
-        double n = Math.pow(deviceDeviation / tolerance, 1.0 / exponent);
-        return Math.max(MIN_SEGMENTS, Math.min(MAX_SEGMENTS, (int) Math.ceil(n)));
     }
 
     /**

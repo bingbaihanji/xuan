@@ -29,40 +29,8 @@ import java.util.Arrays;
  */
 public final class StrokeGenerator {
 
-    /** 端点样式。 */
-    public enum Cap {
-
-        /** 平端点：轮廓恰好止于线段端点，不向外延伸。 */
-        BUTT,
-
-        /** 圆端点：以端点为圆心补一个半径等于半线宽的半圆。 */
-        ROUND,
-
-        /** 方端点：在端点处沿切线方向向外延伸半个线宽。 */
-        SQUARE
-    }
-
-    /** 接头样式。 */
-    public enum Join {
-
-        /** 尖角接头：延伸到两条偏移线的交点，超过 miter limit 时回退为 {@link #BEVEL}。 */
-        MITER,
-
-        /** 圆角接头：用半径等于半线宽的圆弧补角。 */
-        ROUND,
-
-        /** 斜接接头：用连接两条偏移线的弦切掉尖角。 */
-        BEVEL
-    }
-
     /** 未指定细分段数时，圆端点与圆角接头使用的默认段数。 */
     private static final int DEFAULT_ROUND_SEGMENTS = 8;
-
-    /** 输出三角形顶点数组，布局：每个三角形 6 个 float（x0,y0,x1,y1,x2,y2）。 */
-    private float[] triangles = new float[3 * 6 * 4];
-
-    /** 已写入的三角形数量。 */
-    private int triangleCount = 0;
 
     /**
      * {@link #strokeDashed} 切分实线格时复用的端点对 {@code [ax,ay,bx,by]}。
@@ -71,6 +39,29 @@ public final class StrokeGenerator {
      * 每帧调用一次 {@code strokeDashed} 却按格分配数组的话，热路径就在持续制造垃圾。
      */
     private final float[] dashSegment = new float[4];
+
+    /** 输出三角形顶点数组，布局：每个三角形 6 个 float（x0,y0,x1,y1,x2,y2）。 */
+    private float[] triangles = new float[3 * 6 * 4];
+
+    /** 已写入的三角形数量。 */
+    private int triangleCount = 0;
+
+    /**
+     * 找到第一个非退化段的下标，用于闭合路径的首尾接头。
+     *
+     * @return 第一个长度不为零的段下标；全部退化时返回 {@code -1}
+     */
+    private static int firstValidSegment(float[] points, int count, int segmentCount) {
+        for (int i = 0; i < segmentCount; i++) {
+            int b = (i + 1) % count;
+            float dx = points[b * 2] - points[i * 2];
+            float dy = points[b * 2 + 1] - points[i * 2 + 1];
+            if (dx * dx + dy * dy > 1e-12f) {
+                return i;
+            }
+        }
+        return -1;
+    }
 
     /**
      * 返回已生成的三角形数量。
@@ -350,23 +341,6 @@ public final class StrokeGenerator {
     }
 
     /**
-     * 找到第一个非退化段的下标，用于闭合路径的首尾接头。
-     *
-     * @return 第一个长度不为零的段下标；全部退化时返回 {@code -1}
-     */
-    private static int firstValidSegment(float[] points, int count, int segmentCount) {
-        for (int i = 0; i < segmentCount; i++) {
-            int b = (i + 1) % count;
-            float dx = points[b * 2] - points[i * 2];
-            float dy = points[b * 2 + 1] - points[i * 2 + 1];
-            if (dx * dx + dy * dy > 1e-12f) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    /**
      * 在折线拐点处补出接头三角形，填掉相邻两段偏移轮廓之间的缝隙。
      *
      * @param px            拐点坐标 x
@@ -524,5 +498,31 @@ public final class StrokeGenerator {
         triangles[o + 4] = x2;
         triangles[o + 5] = y2;
         triangleCount++;
+    }
+
+    /** 端点样式。 */
+    public enum Cap {
+
+        /** 平端点：轮廓恰好止于线段端点，不向外延伸。 */
+        BUTT,
+
+        /** 圆端点：以端点为圆心补一个半径等于半线宽的半圆。 */
+        ROUND,
+
+        /** 方端点：在端点处沿切线方向向外延伸半个线宽。 */
+        SQUARE
+    }
+
+    /** 接头样式。 */
+    public enum Join {
+
+        /** 尖角接头：延伸到两条偏移线的交点，超过 miter limit 时回退为 {@link #BEVEL}。 */
+        MITER,
+
+        /** 圆角接头：用半径等于半线宽的圆弧补角。 */
+        ROUND,
+
+        /** 斜接接头：用连接两条偏移线的弦切掉尖角。 */
+        BEVEL
     }
 }

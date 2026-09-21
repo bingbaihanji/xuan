@@ -53,6 +53,9 @@ public final class VertexWriter {
     /** 已定稿的命令，顺序即提交顺序。 */
     private final List<DrawCommand> finishedCommands = new ArrayList<>();
 
+    /** 顶点数上限；生产环境为 {@link #MAX_VERTEX_CAPACITY}，测试可调小以便覆盖兜底路径。 */
+    private final int maxVertexCapacity;
+
     /** 顶点缓冲区（直接内存、小端序）。 */
     private ByteBuffer buffer;
 
@@ -61,9 +64,6 @@ public final class VertexWriter {
 
     /** 缓冲区可容纳的顶点数。 */
     private int capacityVertices;
-
-    /** 顶点数上限；生产环境为 {@link #MAX_VERTEX_CAPACITY}，测试可调小以便覆盖兜底路径。 */
-    private final int maxVertexCapacity;
 
     /**
      * 达到此顶点数时触发扩容或帧中途 flush（置位 {@link #flushRequested}）。
@@ -122,6 +122,17 @@ public final class VertexWriter {
         this.capacityVertices = Math.min(Math.max(1, initialVertexCapacity), this.maxVertexCapacity);
         this.buffer = allocate(this.capacityVertices);
         this.flushThresholdVertices = this.capacityVertices - PRIMITIVE_RESERVE_VERTICES - 1;
+    }
+
+    /**
+     * 分配一块直接内存缓冲区，小端序。
+     *
+     * @param vertices 可容纳的顶点数
+     * @return 新分配的缓冲区
+     */
+    private static ByteBuffer allocate(int vertices) {
+        return ByteBuffer.allocateDirect(vertices * VertexFormat.STRIDE_BYTES)
+                .order(ByteOrder.LITTLE_ENDIAN);
     }
 
     /**
@@ -440,16 +451,5 @@ public final class VertexWriter {
         // 注意 put(int,ByteBuffer,int,int) 是按源缓冲区的 limit 而非 capacity 校验长度的。
         buffer.put(0, old, 0, Math.min(oldCapacityBytes, buffer.capacity()));
         flushThresholdVertices = capacityVertices - PRIMITIVE_RESERVE_VERTICES - 1;
-    }
-
-    /**
-     * 分配一块直接内存缓冲区，小端序。
-     *
-     * @param vertices 可容纳的顶点数
-     * @return 新分配的缓冲区
-     */
-    private static ByteBuffer allocate(int vertices) {
-        return ByteBuffer.allocateDirect(vertices * VertexFormat.STRIDE_BYTES)
-                .order(ByteOrder.LITTLE_ENDIAN);
     }
 }

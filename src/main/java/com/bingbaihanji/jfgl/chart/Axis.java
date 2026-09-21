@@ -60,6 +60,15 @@ public final class Axis {
         this.windowMax = normalized.max();
     }
 
+    /**
+     * 把范围稳定化成一根轴能用的窗口：对数轴钳到正下限，其余扩成最小可视跨度。
+     *
+     * <p>规格 §10 的两条"不除零/不产生 NaN"就落在这里，而且只有这一处。
+     */
+    private static AxisRange normalize(AxisType type, AxisRange range) {
+        return type == AxisType.LOGARITHMIC ? range.withPositiveMin() : range.withMinimumSpan();
+    }
+
     /** 轴类型。 */
     public AxisType type() {
         return type;
@@ -176,14 +185,5 @@ public final class Axis {
             return (logValue - logMin) / (logMax - logMin);
         }
         return (value - windowMin) / (windowMax - windowMin);
-    }
-
-    /**
-     * 把范围稳定化成一根轴能用的窗口：对数轴钳到正下限，其余扩成最小可视跨度。
-     *
-     * <p>规格 §10 的两条"不除零/不产生 NaN"就落在这里，而且只有这一处。
-     */
-    private static AxisRange normalize(AxisType type, AxisRange range) {
-        return type == AxisType.LOGARITHMIC ? range.withPositiveMin() : range.withMinimumSpan();
     }
 }

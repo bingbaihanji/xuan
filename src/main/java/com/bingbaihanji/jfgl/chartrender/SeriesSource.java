@@ -38,19 +38,11 @@ import com.bingbaihanji.jfgl.chart.RingChartData;
  */
 interface SeriesSource {
 
-    /** 已写入的样本总数（<b>单调增长</b>，不是"可见样本数"）。 */
-    long writeCount();
-
-    /** 取某个维度上第 {@code absoluteIndex} 个样本的值；超出有效范围返回 NaN，不抛异常。 */
-    double valueAt(int dim, long absoluteIndex);
-
-    /** 环容量（2 的幂）。 */
-    int capacity();
-
     /** 按数据的实际类型选实现。 */
     static SeriesSource of(ChartData data) {
         if (data instanceof RingChartData ring) {
             return new SeriesSource() {
+
                 @Override
                 public long writeCount() {
                     // 不是 itemCount()：那个在环满之后停住。
@@ -78,6 +70,7 @@ interface SeriesSource {
         if (data instanceof ArrayChartData array) {
             int cap = capacityFor(array.itemCount());
             return new SeriesSource() {
+
                 @Override
                 public long writeCount() {
                     // 静态数据没有"写入"这回事：点数就是写入总数，且它恒定不变。
@@ -118,4 +111,13 @@ interface SeriesSource {
         int c = Integer.highestOneBit(m);
         return c < m ? c << 1 : c;
     }
+
+    /** 已写入的样本总数（<b>单调增长</b>，不是"可见样本数"）。 */
+    long writeCount();
+
+    /** 取某个维度上第 {@code absoluteIndex} 个样本的值；超出有效范围返回 NaN，不抛异常。 */
+    double valueAt(int dim, long absoluteIndex);
+
+    /** 环容量（2 的幂）。 */
+    int capacity();
 }

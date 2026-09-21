@@ -91,9 +91,6 @@ public final class PickRegistry {
     /** 已回收、可供复用的 ID（LIFO）。由 {@link #lock} 护住。 */
     private final Deque<Integer> freeIds = new ArrayDeque<>();
 
-    /** 下一个待分配的 ID。由 {@link #lock} 护住。 */
-    private int nextId = 1;
-
     /** ID 上界（含）。 */
     private final int maxId;
 
@@ -104,6 +101,9 @@ public final class PickRegistry {
      * 不加在 {@link #resolve} 上——那是热路径，靠 {@link ConcurrentHashMap} 本身就够。
      */
     private final Object lock = new Object();
+
+    /** 下一个待分配的 ID。由 {@link #lock} 护住。 */
+    private int nextId = 1;
 
     /** 用默认上界创建注册表。 */
     public PickRegistry() {
