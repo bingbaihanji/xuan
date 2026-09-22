@@ -4,6 +4,8 @@ import com.bingbaihanji.jfgl.chart.Series;
 import com.bingbaihanji.jfgl.gl.GLAbstraction;
 import com.bingbaihanji.jfgl.gl.ShaderProgram;
 
+import java.util.function.Consumer;
+
 /**
  * {@link GLRenderContext} 的实现。
  *
@@ -24,6 +26,14 @@ final class GLRenderContextImpl implements GLRenderContext {
 
     private final ShaderProgram lineShader;
 
+    private final ShaderProgram pickShader;
+
+    /**
+     * 拾取缓冲的借用入口，由 {@code ChartRenderer} 收进来的
+     * {@code RenderBatch.withPickPass}。图表路径只转发，不自己绑 FBO 也不自己清缓冲。
+     */
+    private final Consumer<Runnable> pickPass;
+
     private final ChartRenderLayout layout;
 
     private final int viewportWidth;
@@ -36,18 +46,16 @@ final class GLRenderContextImpl implements GLRenderContext {
     /** 当前系列的常驻缓冲，由 {@code ChartRenderer} 每换一个系列注入一次。 */
     private SeriesBuffer currentBuffer;
 
-    /**
-     * 当前系列的拾取 ID；0 表示不参与拾取。
-     *
-     * <p>本期（Task 10/11）还没有拾取 pass，所以它暂时没有读取方；
-     * ID 的分配与注销都已经落在 {@link ChartRenderer} 里，Task 13 只需要读这一项。
-     */
+    /** 当前系列的拾取 ID；0 表示不参与拾取。由 {@code ChartRenderer} 每换一个系列注入一次。 */
     private int pickId;
 
-    GLRenderContextImpl(GLAbstraction gl, ShaderProgram lineShader, ChartRenderLayout layout,
+    GLRenderContextImpl(GLAbstraction gl, ShaderProgram lineShader, ShaderProgram pickShader,
+                        Consumer<Runnable> pickPass, ChartRenderLayout layout,
                         int viewportWidth, int viewportHeight) {
         this.gl = gl;
         this.lineShader = lineShader;
+        this.pickShader = pickShader;
+        this.pickPass = pickPass;
         this.layout = layout;
         this.viewportWidth = viewportWidth;
         this.viewportHeight = viewportHeight;
@@ -76,6 +84,11 @@ final class GLRenderContextImpl implements GLRenderContext {
     @Override
     public ShaderProgram lineShader() {
         return lineShader;
+    }
+
+    @Override
+    public ShaderProgram pickShader() {
+        return pickShader;
     }
 
     @Override
@@ -109,5 +122,23 @@ final class GLRenderContextImpl implements GLRenderContext {
                             + "而画面完全正常、不报错。");
         }
         return currentBuffer;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public int pickId() {
+        return pickId;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>一行转发，不做任何判断：<b>进 ID pass 之前该开的东西由渲染器自己负责</b>
+     * （尤其是 {@code GL_SCISSOR_TEST}——图表路径不在 {@code RenderBatch.submit} 里，
+     * 而那边是 {@code submit} 替它开的）。本类这里只做"借用"这一个动作。
+     */
+    @Override
+    public void withPickPass(Runnable body) {
+        pickPass.accept(body);
     }
 }

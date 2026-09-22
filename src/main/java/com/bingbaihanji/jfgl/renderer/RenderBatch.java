@@ -526,8 +526,11 @@ public final class RenderBatch implements Disposable {
      * 是 {@code PickVerifier} 用来断言"无拾取对象时整趟跳过"的计数器。往它里面加计数会
      * 污染已有的断言，而症状是"拾取校验器突然失败"，排查方向会指向 ID pass 本身。
      *
-     * <p><strong>调用方必须自己设置 scissor</strong>：被裁掉的部分不可拾取，与画面一致。
-     * 本方法不做这件事，因为裁剪矩形取决于调用方的几何。
+     * <p><strong>调用方必须自己设置 scissor，并确保 {@code GL_SCISSOR_TEST} 已启用。</strong>
+     * {@code glScissor} 只在裁剪测试开启时生效——忘了开的表现是裁剪静默失效：
+     * 被裁掉的部分变成可拾取，而画面完全正常，只有点击落在错误的对象上。
+     * 本方法不替调用方开关裁剪测试，因为它无法知道调用方想要哪个裁剪矩形。
+     * 本批处理自己的 {@code submit()} 路径在进入绘制循环前已经开好了。
      *
      * @param body 要执行的绘制，不得为 null
      */

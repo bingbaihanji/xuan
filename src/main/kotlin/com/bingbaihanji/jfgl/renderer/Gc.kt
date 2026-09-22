@@ -119,6 +119,11 @@ class Gc internal constructor(private val batch: RenderBatch) {
      * <p>它持有 GL 资源，而 [RenderBatch] 不认识它（[ChartRenderer] 在更上层的包里），
      * 所以释放由 [disposeCharts] 转一手，调用方是 `FXGLTransfer` 的 `onDispose`。
      *
+     * <p>两个依赖都是**刻意从这里传进去**的：图表的拾取因此与普通图元共用同一套
+     * ——[pickRegistry]（ID 空间只有一本，两本会撞号）与 `batch::withPickPass`
+     * （拾取缓冲只有一块）。于是 [pick] / [pickRect] 对数据系列同样有效，
+     * 命中的 `payload` 就是那个 `Series` 对象。
+     *
      * <p>典型用法（z 序：网格 → 数据 → 标注）：
      * ```
      * gc.beginFrame(w, h)
@@ -129,7 +134,9 @@ class Gc internal constructor(private val batch: RenderBatch) {
      * gc.endFrame()
      * ```
      */
-    private val chartsLazy = lazy { ChartRenderer(batch.glAbstraction(), pickRegistry) }
+    private val chartsLazy = lazy {
+        ChartRenderer(batch.glAbstraction(), pickRegistry, batch::withPickPass)
+    }
 
     /** 图表绘制入口。见 [chartsLazy]。 */
     val charts: ChartRenderer by chartsLazy

@@ -34,17 +34,22 @@ import static org.lwjgl.opengl.GL20.glVertexAttribPointer;
  * 于是每个样本只占 4 字节，而"线段的两端"这件事完全由属性的偏移表达，
  * 不需要在缓冲里把每个点写两遍。
  *
- * <h2>它自己不画拾取 pass</h2>
- * <p>本期（Task 10/11）只画颜色。拾取由 Task 13 接上，路径已经留好：
- * 拾取号由 {@code ChartRenderer} 从 {@code Gc} 的注册表里取，
- * 顶点着色器里的 {@code uPickId} 就是给它留的。
+ * <h2>它画两个 pass：颜色的，和 ID 的</h2>
+ * <p>颜色画完之后就着同一份 VAO 与同一批实例再画一遍 ID pass，只换程序
+ * （{@code SeriesShaders.LINE_VERTEX} 两处共用）。ID 走 {@code uPickId} 这个
+ * <b>int</b> uniform，按<b>系列</b>发号——发号成本与点数无关。
+ *
+ * <p>ID pass 把线撑粗到 {@link #PICK_TOLERANCE_PX}：画的线只有 1~2px，
+ * 要求用户精确点中不合理。它只影响 ID pass，不影响画面。
  *
  * <h2>GL 状态由它自己负责，因为它不在 {@code RenderBatch.submit} 里</h2>
  * <p>它是在批处理之外<b>当场就画</b>的（见 {@code Gc.flush} 的说明），因此
  * {@code submit} 里那套"进中性状态、出来还原"的收尾它得自己做：
  * <ul>
  *   <li><b>裁剪</b>：{@code glScissor} 只在 {@code GL_SCISSOR_TEST} 启用时生效，
- *       而 submit 结束时是关着的。本类自己按进入时的状态启用/还原。</li>
+ *       而 submit 结束时是关着的。本类自己按进入时的状态启用/还原。
+ *       <b>ID pass 用的也是这个裁剪盒</b>（{@code withPickPass} 的契约要求
+ *       {@code GL_SCISSOR_TEST} 已启用），于是被裁掉的部分不可拾取，与画面一致。</li>
  *   <li><b>混合</b>：片段着色器输出的是<b>预乘色</b>，因此混合因子必须是
  *       {@code GL_ONE / GL_ONE_MINUS_SRC_ALPHA}。不启用混合的话，
  *       半透明系列会直接拿 {@code rgb * a} 覆盖掉背景——压在网格上的那一条
@@ -61,6 +66,19 @@ final class LineSeriesRenderer implements SeriesRenderer {
             0f, 1f,
             1f, 1f,
     };
+
+    /**
+     * 拾取容差（半宽，设备像素）。
+     *
+     * <p>画出来的线只有 1~2px 宽，要求用户精确点中是不合理的。
+     * <strong>这是刻意行为，不是 bug</strong>——与"全透明图元仍可拾取"
+     * "文本的可拾取范围比墨迹大一圈"同类，有测试钉着。
+     * 它只影响 ID pass，<strong>不影响画面</strong>。
+     *
+     * <p>顶点着色器里的 {@code max(uHalfWidth, uPickTolerance)} 让两个 pass 共用一个
+     * 顶点程序：绘制时传 0，取到的就是真实线宽；拾取时传它，线被撑粗成一条"热区"。
+     */
+    private static final float PICK_TOLERANCE_PX = 4f;
 
     private final GLAbstraction gl;
 
@@ -187,6 +205,52 @@ final class LineSeriesRenderer implements SeriesRenderer {
         }
 
         shader.unuse();
+
+        // ID pass：同一份 VAO、同一批实例，只换程序。
+        // 拾取 ID 走 uniform 而不是顶点属性——图表的数据布局里没有 id 字段，
+        // 而且按系列发号意味着发号成本与点数无关（一条百万点的曲线只注册一个 ID）。
+        //
+        // 插在 shader.unuse() 与 bindVao(0) 之间是有意的：此刻 VAO 与两个实例属性指针
+        // 都还是绘制时那套，只换程序就够；搬到 bindVao(0) 之后就得把 configureDataAttributes
+        // 再走一遍，那两份配置迟早会分叉，而分叉的表现是"拾取的位置和画面不一致"。
+        int pickId = c.pickId();
+        if (pickId != 0) {
+            ShaderProgram pick = c.pickShader();
+            pick.use();
+            // 这一套 uniform 必须与上面的绘制循环**逐个对齐**：少设任何一个，
+            // 拾取的位置就和画面不一致——那是"点到的地方不是看到的地方"，
+            // 正是本项目最怕的静默缺陷。uColor 不设：拾取着色器里它被优化掉，
+            // 设了是静默的无操作，不设更诚实。
+            pick.setUniform("uPlotRect", plot.x, plot.y, plot.width, plot.height);
+            pick.setUniform("uViewport", (float) c.viewportWidth(), (float) c.viewportHeight());
+            pick.setUniform("uValueRange", layout.yMin(), layout.yMax());
+            pick.setUniform("uPxPerSample", (float) (plot.width / (windowEnd - windowStart)));
+            pick.setUniform("uHalfWidth", series.lineWidth() * 0.5f);
+            // 容差：绘制时是 0，拾取时放宽（理由见 PICK_TOLERANCE_PX）。
+            pick.setUniform("uPickTolerance", PICK_TOLERANCE_PX);
+            // 必须是 int 的那个 setUniform（glUniform1i）：对 uint uniform 用它报
+            // GL_INVALID_OPERATION 且**值保持 0**，而 0 正是"什么都没命中"。
+            pick.setUniform("uPickId", pickId);
+
+            // 裁剪盒在进入本方法时就设好了（见上面那三行），到这里还没还原，
+            // 所以 withPickPass 那条"调用方必须确保 GL_SCISSOR_TEST 已启用"的契约天然满足，
+            // 被裁掉的部分因此不可拾取，与画面一致。
+            //
+            // 这一次显式的 setScissorTo 是**冗余**的（绘制路径刚设过同一个矩形，
+            // 实测把它删掉一条断言都不会变），留着是因为契约要求 ID pass 自己确保 scissor：
+            // 一个显式调用比"依赖上面那一行还生效"更难被后人改坏。
+            setScissorTo(plot, c.viewportHeight());
+            c.withPickPass(() -> {
+                for (WindowRange.Segment seg : segments) {
+                    pick.setUniform("uFirstRelIndex",
+                            (float) (seg.firstDataIndex() - windowFloor - (windowStart - windowFloor)));
+                    gl.drawArraysInstancedBaseInstance(
+                            GL_TRIANGLE_STRIP, 0, 4, seg.instanceCount(), seg.firstInstance());
+                }
+            });
+            pick.unuse();
+        }
+
         gl.bindVao(0);
         gl.disableBlend();
         gl.setScissorEnabled(scissorWasOn);

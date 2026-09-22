@@ -19,6 +19,7 @@ import javafx.stage.Stage
 import org.lwjgl.opengl.GL11.*
 import org.lwjgl.opengl.GL30.GL_FRAMEBUFFER_BINDING
 import java.nio.ByteBuffer
+import kotlin.jvm.java
 import kotlin.system.exitProcess
 
 /**
@@ -49,12 +50,30 @@ import kotlin.system.exitProcess
  *       没接住的异常会让 JVM 以 0 正常退出，校验器报一个<b>静默的绿</b>。</li>
  * </ol>
  *
+ * <p>Task 13 <b>接拾取</b>又补了两组（第 14、15 节），它们守的是同一类东西——
+ * <b>拾取坏了画面一点都不会变坏</b>，只会让点击落在错误的对象上：
+ *
+ * <ol>
+ *   <li><b>拾取的 ID 与容差</b>（[PICK_PROBE_PLOT_X] 那一节）。断言的量是"读回的 ID 是哪一个"，
+ *       而不是"有没有返回坐标"；容差那两条必须成对——只有"旁边 3px 仍命中"会被
+ *       "线本来就有 8px 粗"的实现骗过去，只有"旁边 20px 不命中"又拦不住"永远返回 0"。
+ *       另有一条钉住裁剪在 ID pass 里同样生效（[PICK_PROBE_FAR_Y] 附近那条）。</li>
+ *   <li><b>跨环绕时 {@code baseInstance} 真的生效</b>（[WRAP_WINDOW_START] 那一节）。
+ *       实例属性按 {@code gl_InstanceID} 取，而它<b>每次从 0 开始</b>；如果测试场景
+ *       从不跨环绕点，那么 {@code baseInstance} 恒为 0，传对传错都一样。这是唯一能把
+ *       "实现了"与"生效了"分开的场景。</li>
+ * </ol>
+ *
  * <h2>观察期与校验期</h2>
  *
  * <p>第 1 条需要"滚动若干帧"才成立（一帧是量不出增量的），第 3 条需要"前后两帧"，
  * 所以本校验器不再是"到第 5 帧就断言"：前 [STREAM_FRAMES] 帧是<b>观察期</b>
- * （三张实验图每帧都画、逐帧记数、按需抓快照），之后场景回到 Task 10/11 那个原样的场景，
+ * （五张实验图每帧都画、逐帧记数、按需抓快照），之后场景回到 Task 10/11 那个原样的场景，
  * 在 [TOTAL_FRAMES] 帧上做全部断言。这样前 15 条断言的场景与期望值<b>一字未改</b>。
+ *
+ * <p>Task 13 的两张实验图（拾取探针与跨环绕）也只在观察期画：**"画面恰好只有这 7 种颜色"
+ * 是不许改弱的既有断言**，在画面里常驻一种新颜色会让它失败，而这两张图要验的事
+ * 只需要"某一帧画过"。
  *
  * <h2>运行</h2>
  *
@@ -290,12 +309,97 @@ private const val CROSS_PERSIST_VALUE = 0.2
 private const val CROSS_TRANSIENT_ROW_LO = 10
 private const val CROSS_TRANSIENT_ROW_HI = 22
 
+// ---------------------------------------------------------------------------
+// Task 13 的两张实验图
+//
+// 它们**只在观察期画**（与上面三张一样），原因是"画面只有这 7 种颜色"那条断言
+// 是 Task 10/11 留下的、不许改弱的断言：在画面里常驻一种新颜色会让它失败。
+// 而这两张图要验的东西（拾取容差、跨环绕）都只需要"某一帧画过"。
+// ---------------------------------------------------------------------------
+
+// ---- 四、拾取实验：容差与系列级 ID ----
+
+/**
+ * 拾取探针图的绘图区：主绘图区**上方**那块空地（流式图到 x = 320 为止、跨帧图从 x = 710 起）。
+ */
+private const val PICK_PROBE_PLOT_X = 340f
+private const val PICK_PROBE_PLOT_Y = 10f
+private const val PICK_PROBE_PLOT_W = 360f
+
+/**
+ * 拾取探针图的绘图区高度。
+ *
+ * <p>**取 81（奇数）不是随手写的。**探针系列的线宽是 1，它的四边形在竖直方向恰好 1px：
+ * 中心落在整数行上时四边形是 {@code [49.5, 50.5]}，**两个像素的中心都正好压在边界上**，
+ * 能不能光栅化出像素由实现的填充规则决定——那会让"线画了 1px"变成一件说不清的事。
+ * 奇数高度把数据值 0.5 映射到 **50.5**，四边形于是恰好覆盖整行 50，没有边界上的暧昧。
+ */
+private const val PICK_PROBE_PLOT_H = 81f
+
+/** 探针图的样本数（只决定每段多宽；形状是一条水平线）。 */
+private const val PICK_PROBE_POINTS = 11
+
+/** 探针线的数据值。0.5 → 屏幕 y = 10 + (1 - 0.5) × 81 = 50.5。 */
+private const val PICK_PROBE_VALUE = 0.5
+
+/** 探针线宽：**1px**。这是"容差"那两条断言的前提——线宽一粗，它们就恒真了。 */
+private const val PICK_PROBE_LINE_WIDTH = 1f
+
+/** 三个探测点的 x：第 4 段的中间（每段 36px，数据 4 在 x = 484、数据 5 在 x = 520）。 */
+private const val PICK_PROBE_X = 502f
+
+/** 探测点 1：线上（行 50 被四边形精确覆盖）。 */
+private const val PICK_PROBE_ON_LINE_Y = 50f
+
+/** 探测点 2：线**旁 3px**（行 53 的中心 53.5 距线的中心 50.5 恰好 3px）。 */
+private const val PICK_PROBE_BESIDE_Y = 53f
+
+/** 探测点 3：线旁 20px，必须落空。 */
+private const val PICK_PROBE_FAR_Y = 70f
+
+/**
+ * 拾取容差（半宽，设备像素）。
+ *
+ * <p>**与 `LineSeriesRenderer.PICK_TOLERANCE_PX` 是同一个数**，在这里重写一遍是为了让
+ * "线旁 3px 仍命中、20px 不命中"这两条断言**能就地算出期望值**，而不是把 4 这个数
+ * 散落在断言里。它只影响 ID pass，不影响画面。
+ */
+private const val PICK_TOLERANCE_PX = 4
+
+// ---- 五、跨环绕实验：baseInstance 必须生效 ----
+
+/** 跨环绕实验的绘图区：画面右下角（缺口图到 x = 620 为止，y 到 710）。 */
+private const val WRAP_PLOT_X = 630f
+private const val WRAP_PLOT_Y = 610f
+private const val WRAP_PLOT_W = 330f
+private const val WRAP_PLOT_H = 100f
+
+/** 环容量：**刻意取小**，三帧就写满两圈以上。 */
+private const val WRAP_CAPACITY = 8
+
+/** 写入总数。20 > 8 × 2，环已经绕过两圈以上，槽位与数据下标彻底错开。 */
+private const val WRAP_TOTAL = 20
+
+/**
+ * x 轴窗口。左端 12 **落在环绕点（下标 16 = 槽位 0）之前**，于是这一屏必然跨过环绕点，
+ * `WindowRange` 会给出**两段**实例（槽位 4..7 与槽位 0..2）。
+ *
+ * <p>这正是"少了 `baseInstance` 就画错"的触发条件：实例属性按 {@code gl_InstanceID} 取，
+ * 而它**每次都从 0 开始**（`baseInstance` 不影响它，只影响属性取哪一份数据）。
+ * 少了它，第一段拿到的是槽位 0..3 的数据（下标 16..19），整条线上移 4 个样本——
+ * **画面里是一条连续的线，只是它显示的值全错了**。
+ */
+private const val WRAP_WINDOW_START = 12.0
+private const val WRAP_WINDOW_END = 20.0
+
 /**
  * 校验器的启动入口。
  *
  * <p>函数名不叫 `main`：同包的 [PipelineExample] 已有顶层 `main()`，两个同名顶层函数会让
  * `import com.bingbaihanji.jfgl.example.main` 报"重载歧义"。用 `@JvmName("main")`
  * 把 JVM 方法名钉回 `main`，上面文档里的命令行因此照常可用。
+ *
+ * <p>另外三个校验器（Pipeline / Pick / Text）用的是同一个写法，本文件保持一致。
  */
 @JvmName("main")
 fun chartVerifyMain() {
@@ -303,6 +407,12 @@ fun chartVerifyMain() {
 }
 
 class ChartVerifierApp : Application() {
+//    companion object{
+//        @JvmStatic
+//        fun main(args: Array<String>) {
+//            launch(ChartVerifierApp::class.java, *args)
+//        }
+//    }
 
     private var transfer: FXGLTransfer? = null
 
@@ -365,6 +475,19 @@ class ChartVerifierApp : Application() {
 
     /** 跨帧实验里"短暂"系列的色。它必须在它消失之后一个像素都不剩。 */
     private val crossTransientRgb = 0xFF0080
+
+    // ---- Task 13 的两张实验图的颜色 ----
+    // 两者互相不同、也与上面所有颜色不同；它们不在画面的常驻颜色集合里，
+    // 因为那两张图只在观察期画（见上面 Task 13 那一段的说明）。
+
+    /** 拾取探针图的折线色（线宽 1）。 */
+    private val pickProbeRgb = 0x40C0C0
+
+    /** 跨环绕实验的折线色。 */
+    private val wrapRgb = 0xFF4000
+
+    private val pickProbeArgb = pickProbeRgb or (0xFF shl 24)
+    private val wrapArgb = wrapRgb or (0xFF shl 24)
 
     private val streamArgb = streamRgb or (0xFF shl 24)
     private val gapArgb = gapRgb or (0xFF shl 24)
@@ -497,9 +620,90 @@ class ChartVerifierApp : Application() {
      */
     private val crossChartWithout: Chart = buildCrossChart(false)
 
+    // -----------------------------------------------------------------------
+    // Task 13 的两张实验图
+    // -----------------------------------------------------------------------
+
+    private val pickProbeRect = Rect(PICK_PROBE_PLOT_X, PICK_PROBE_PLOT_Y,
+        PICK_PROBE_PLOT_W, PICK_PROBE_PLOT_H)
+
+    private val wrapRect = Rect(WRAP_PLOT_X, WRAP_PLOT_Y, WRAP_PLOT_W, WRAP_PLOT_H)
+
+    /**
+     * 拾取探针图的数据：11 个点、**全部同一个值**，于是画出来是一条水平线。
+     *
+     * <p>水平是刻意的：线段的"垂直方向"因此就是屏幕竖直方向，"线旁 3px"这句话
+     * 才有唯一的意思，不必再去算一条斜线的法向。
+     */
+    private val pickProbeData = ArrayChartData(
+        arrayOf(
+            AxisRange(0.0, (PICK_PROBE_POINTS - 1).toDouble(), "样本", ""),
+            AxisRange(0.0, 1.0, "值", "")
+        ),
+        arrayOf(
+            DoubleArray(PICK_PROBE_POINTS) { it.toDouble() },
+            DoubleArray(PICK_PROBE_POINTS) { PICK_PROBE_VALUE }
+        )
+    )
+
+    /** 拾取探针系列：线宽 1，颜色只在这张图里出现。 */
+    private val pickProbeSeries = Series("拾取探针", pickProbeData, ChartType.LINE)
+        .color(pickProbeArgb).lineWidth(PICK_PROBE_LINE_WIDTH)
+
+    private val pickProbeChart: Chart = buildPickProbeChart()
+
+    /**
+     * 跨环绕实验的数据：环容量 8，写 20 个样本，值是**绝对下标本身**（0..19）。
+     *
+     * <p>值取下标本身是为了让"画对了"与"画错了"在画面上长得完全不同：
+     * 画对了，窗口里是一条斜率恒定的直线；少了 `baseInstance`，第一段会取到
+     * 高 4 个样本的值——**同一段 x 范围上是一条同样平滑、但整体平移了 20px 的线**，
+     * 并在两段交界处留下一个 20px 的跳变。
+     */
+    private val wrapData = RingChartData(
+        arrayOf(
+            AxisRange(0.0, WRAP_TOTAL.toDouble(), "样本", ""),
+            AxisRange(0.0, WRAP_TOTAL.toDouble(), "值", "")
+        ),
+        WRAP_CAPACITY
+    )
+
+    private val wrapSeries = Series("跨环绕", wrapData, ChartType.LINE)
+        .color(wrapArgb).lineWidth(3f)
+
+    private val wrapChart: Chart = buildWrapChart()
+
+    /** 跨环绕实验的数据是否已经写完（只写一次，像真实采集那样）。 */
+    private var wrapWritten = false
+
     // ---- 观察期抓下来的快照（校验期才断言，见 [captureObservations]）----
 
     private var streamSnapshot: Shot? = null
+
+    /** 拾取探针图那一块的快照：用来钉住"线确实只画了 1px"。 */
+    private var pickProbeSnapshot: Shot? = null
+
+    /** 跨环绕实验那一块的快照：用来钉住"跨环绕处是一条连续的线"。 */
+    private var wrapSnapshot: Shot? = null
+
+    /**
+     * 探针图上三个探测点的拾取结果，在探针图还画着的那一帧记录下来。
+     *
+     * <p>为什么必须当场记：这三条断言问的是**探针图**（线宽 1），而它只在观察期画
+     * （理由见 [PICK_PROBE_PLOT_X] 那一段）。校验帧上它已经不在画面里，
+     * 那时再问只会得到"没命中"，而那与"拾取坏了"长得一模一样。
+     */
+    private var pickProbeCaptured = false
+
+    /** 探测点 1（线上）读回的 ID，以及它的 payload 是不是那个系列对象。 */
+    private var pickOnLineId = 0
+    private var pickOnLinePayloadOk = false
+
+    /** 探测点 2（线旁 3px）读回的 ID。容差生效时它必须与线上那个相同。 */
+    private var pickBesideId = 0
+
+    /** 探测点 3（线旁 20px）读回的 ID。它必须是 0（什么都没命中）。 */
+    private var pickFarId = 0
 
     private var gapSnapshot: Shot? = null
 
@@ -597,6 +801,50 @@ class ChartVerifierApp : Application() {
         }
         return chart
     }
+
+    /**
+     * 造拾取探针图：一条线宽 1 的水平线，见 [PICK_PROBE_VALUE] 与 [PICK_PROBE_PLOT_H]。
+     */
+    private fun buildPickProbeChart(): Chart {
+        val xAxis = Axis(AxisType.LINEAR, pickProbeData.axisRange(0))
+            .setDisplayLength(PICK_PROBE_PLOT_W.toDouble())
+            .setWindow(0.0, (PICK_PROBE_POINTS - 1).toDouble())
+        val yAxis = Axis(AxisType.LINEAR, pickProbeData.axisRange(1))
+            .setDisplayLength(PICK_PROBE_PLOT_H.toDouble())
+        val chart = Chart(xAxis, yAxis)
+        chart.addLayer("拾取探针").add(pickProbeSeries)
+        return chart
+    }
+
+    /**
+     * 造跨环绕实验图：x 轴窗口跨过环绕点，见 [WRAP_WINDOW_START]。
+     *
+     * <p>y 轴窗口就是数据范围 [0, [WRAP_TOTAL]]，于是每个样本占
+     * {@code WRAP_PLOT_H / WRAP_TOTAL = 5px}——"错位 4 个样本"= 20px 这句话能就地算出来。
+     */
+    private fun buildWrapChart(): Chart {
+        val xAxis = Axis(AxisType.LINEAR, wrapData.axisRange(0))
+            .setDisplayLength(WRAP_PLOT_W.toDouble())
+            .setWindow(WRAP_WINDOW_START, WRAP_WINDOW_END)
+        val yAxis = Axis(AxisType.LINEAR, wrapData.axisRange(1))
+            .setDisplayLength(WRAP_PLOT_H.toDouble())
+        val chart = Chart(xAxis, yAxis)
+        chart.addLayer("跨环绕").add(wrapSeries)
+        return chart
+    }
+
+    /** 跨环绕实验里数据下标 → 屏幕 x。 */
+    private fun wrapX(index: Double): Double = WRAP_PLOT_X +
+            (index - WRAP_WINDOW_START) / (WRAP_WINDOW_END - WRAP_WINDOW_START) * WRAP_PLOT_W
+
+    /** 跨环绕实验里数值 → 屏幕 y（与 ChartRenderLayout 同一条映射，值越大越靠上）。 */
+    private fun wrapY(value: Double): Double = WRAP_PLOT_Y + (1.0 - value / WRAP_TOTAL) * WRAP_PLOT_H
+
+    /** 跨环绕实验里屏幕 x 处那条线**应该**落在哪一行（x 是设备像素）。 */
+    private fun wrapLineRowAt(x: Double): Double = wrapY(
+        WRAP_WINDOW_START + (x - WRAP_PLOT_X) *
+                (WRAP_WINDOW_END - WRAP_WINDOW_START) / WRAP_PLOT_W
+    )
 
     override fun start(stage: Stage) {
         val bridge = FXGLTransfer()
@@ -750,6 +998,9 @@ class ChartVerifierApp : Application() {
             drawStreamingChart(gc)
             drawGapChart(gc)
             drawCrossChart(gc, n)
+            // Task 13 的两张实验图，同样只在观察期画。理由见文件上方"Task 13 的两张实验图"。
+            drawPickProbeChart(gc)
+            drawWrapChart(gc)
         }
 
         // 4) 标注：在图表**之后**画的普通图元。它必须盖在数据系列之上——
@@ -799,6 +1050,26 @@ class ChartVerifierApp : Application() {
         gc.charts.draw(shown, crossRect, gc.width, gc.height)
     }
 
+    /** 拾取探针图：一条线宽 1 的水平线，见 [PICK_PROBE_PLOT_H]。 */
+    private fun drawPickProbeChart(gc: Gc) {
+        gc.charts.draw(pickProbeChart, pickProbeRect, gc.width, gc.height)
+    }
+
+    /**
+     * 跨环绕实验图：**先把 20 个样本写进环里**（只写一次），再画。
+     *
+     * <p>写在这里而不是 `start()` 里：{@code RingChartData} 的硬前提是"只有一个写者"，
+     * 而 GL 线程就是这里的那个写者（与上面流式实验同一个做法）。写一次就够——
+     * 这一屏要验的是"环绕过之后槽位与下标错开了"，与帧数无关。
+     */
+    private fun drawWrapChart(gc: Gc) {
+        if (!wrapWritten) {
+            repeat(WRAP_TOTAL) { wrapData.append(it.toDouble(), it.toDouble()) }
+            wrapWritten = true
+        }
+        gc.charts.draw(wrapChart, wrapRect, gc.width, gc.height)
+    }
+
     /**
      * 移动方块的左上角 x：每帧在两个位置之间来回。
      *
@@ -829,11 +1100,16 @@ class ChartVerifierApp : Application() {
      *
      * <p>取的都是小区域（几百 × 几十像素）：观测不该把校验器本身的开销变成主要矛盾。
      */
-    private fun captureObservations(h: Int) {
+    private fun captureObservations(bridge: FXGLTransfer, h: Int) {
         // 观察期的最后一帧：流式图与缺口图都还在画，各抓一张。
         if (frame == STREAM_FRAMES) {
             streamSnapshot = grab(h, streamRect)
             gapSnapshot = grab(h, gapRect)
+            // Task 13 的两张实验图也在这一帧上取样：它们**只在观察期画**，
+            // 校验帧上已经不在画面里了（理由见各自的常量说明）。
+            pickProbeSnapshot = grab(h, pickProbeRect)
+            wrapSnapshot = grab(h, wrapRect)
+            capturePickProbes(bridge)
         }
         // 移除之前的那一帧（`frame` 是"已完成帧数"，所以它等于下标 + 1）。
         if (frame == CROSS_REMOVE_FRAME) {
@@ -844,6 +1120,28 @@ class ChartVerifierApp : Application() {
         if (frame == CROSS_REMOVE_FRAME + 2) {
             crossSnapshotAfter = grab(h, crossRect)
         }
+    }
+
+    /**
+     * 在探针图还画着的那一帧，把三个探测点的拾取结果记下来。
+     *
+     * <p>**为什么不在校验帧问。**探针图（线宽 1）只在观察期画，校验帧的画面上没有它；
+     * 那时去问只会得到"什么都没命中"，而那个结果与"拾取坏了"完全一样——
+     * 一条恒真的反证断言。所以在这里当场问，把答复存下来到校验帧再判定。
+     *
+     * <p>此刻的拾取缓冲里是**本帧刚画进去的内容**：`RenderBatch.beginFrame` 每个渲染趟
+     * 把它标成无效，图表路径的 `withPickPass` 再把它标回有效（见 `RenderBatch` 的
+     * 那两条注释）。本槽位在 `onRender` 回调里，而 `onFrame` 已经跑完（见 `FXGLTransfer`），
+     * 所以读到的是本帧的 ID，不是上一帧的。
+     */
+    private fun capturePickProbes(bridge: FXGLTransfer) {
+        val gc = bridge.gc() ?: return
+        val onLine = gc.pick(PICK_PROBE_X, PICK_PROBE_ON_LINE_Y)
+        pickOnLineId = onLine?.id() ?: 0
+        pickOnLinePayloadOk = onLine?.payload() === pickProbeSeries
+        pickBesideId = gc.pick(PICK_PROBE_X, PICK_PROBE_BESIDE_Y)?.id() ?: 0
+        pickFarId = gc.pick(PICK_PROBE_X, PICK_PROBE_FAR_Y)?.id() ?: 0
+        pickProbeCaptured = true
     }
 
     /**
@@ -925,7 +1223,7 @@ class ChartVerifierApp : Application() {
         }
 
         // ---- 观察期：只抓快照、只记数，不做任何断言 ----
-        captureObservations(h)
+        captureObservations(bridge, h)
         if (frame < TOTAL_FRAMES) return
 
         val buf = ByteBuffer.allocateDirect(w * h * 4)
@@ -1220,6 +1518,231 @@ class ChartVerifierApp : Application() {
                 "流式色 ${streamShot.count(streamRgb)} px（局部 ${streamShot.w}×${streamShot.h}）")
         }
 
+        // ---- 14. ★ 拾取：系列级 ID、容差与裁剪 ----
+        //
+        // 拾取是本仓库里最危险的一类子系统：**错误的拾取不会让任何画面变坏**，
+        // 只会让点击落在错误的对象上。所以这里断言的量必须是"读回的 ID 是哪一个"，
+        // 不能是"有没有返回一个坐标"——后者对"永远返回同一个 ID"同样成立。
+        //
+        // **为什么这些断言不落在「斜坡」那条线上。**同一块绘图区里还压着一条
+        // `lineWidth = 0` 的「退化」系列（见 buildChart 的说明）：它走同一份数据、
+        // 拾取容差同样是 4px，而且**画在斜坡之后**——于是斜坡线上的每一个像素
+        // 都被它盖住，拾取到的是那个**肉眼看不见**的系列。这是"拾取只由几何决定、
+        // 与可见性无关"（与 Gc 那边"全透明图元仍可拾取"同一条规则）的直接后果，
+        // 本任务不改变它，只把断言挪到没有被隐形系列压住的曲线上。
+        //
+        // 系列对象按**名字**从装配结果里取：写成 layers()[0].series()[0] 的话，
+        // 装配顺序一改就会静默指到另一个系列上，而症状看起来像是"拾取串号了"。
+        println("\n-- ★ 拾取：系列级 ID、容差与裁剪 --")
+        val zigSeries = zigzagChart.layers().first().series().first { it.name() == "折返" }
+        val spillSeries = chart.layers().first().series().first { it.name() == "溢出" }
+
+        // gc() 在这里不会为 null（都画了 100 多帧了），但**不能写成 `?: return`**：
+        // 那样一旦为 null，整个校验体就静默跳过、退出码还是 0——正是本文件最忌讳的
+        // "静默的绿"。所以把它当成一条断言来报。
+        val gc = bridge.gc()
+        if (gc == null) {
+            report("前提：拾取查询需要 GL 上下文（Gc）", false,
+                "bridge.gc() 返回 null：拾取那一组断言无法进行")
+        } else {
+            fun describePayload(p: Any?): String = when {
+                p === null -> "null（没命中，或 ID 没注册）"
+                p === zigSeries -> "「折返」那个 Series 对象"
+                p === spillSeries -> "「溢出」那个 Series 对象"
+                else -> "另一个对象（${p::class.simpleName}）"
+            }
+
+            // 折返图线段 1→2 的中点，与上一节那条"实例属性"断言是同一个点。
+            val zigHit = gc.pick(segMidX.toFloat(), segMidY.toFloat())
+            val zigId = zigHit?.id() ?: 0
+            report("曲线上的像素命中该系列（payload 就是那个 Series 对象）",
+                zigId != 0 && zigHit?.payload() === zigSeries,
+                "($segMidX,$segMidY) 实际 ID=$zigId（期望非 0），" +
+                        "payload=${describePayload(zigHit?.payload())}")
+
+            // 系列级 ID：同一条曲线的**两个不同位置**必须读到同一个号。
+            // 按点发号（每个样本一个 ID）会让这两处读到不同的号——那样"点中一条曲线"
+            // 得到的号与点中另一处得到的号不同，而画面上什么都看不出来。
+            val zigMidX2 = ((zigX(3.0) + zigX(4.0)) / 2.0).toInt()
+            val zigId2 = gc.pick(zigMidX2.toFloat(), segMidY.toFloat())?.id() ?: 0
+            report("系列级 ID：同一条曲线上两个不同位置读到同一个 ID",
+                zigId != 0 && zigId == zigId2,
+                "($segMidX,$segMidY) ID=$zigId，($zigMidX2,$segMidY) ID=$zigId2" +
+                        "（期望相等且非 0）")
+
+            // 拾取四边形必须**落在画面里那条线上**——这是"点到的地方就是看到的地方"。
+            // 主图的斜坡是**斜的**、而且它的实例区间不从槽位 0 开始（窗口 [10,90] →
+            // baseInstance = 10），所以 ID pass 一旦漏掉 baseInstance，它的拾取四边形会
+            // 整体挪到别的样本上，这两个点就都落空。**平直的曲线（溢出）抓不到这个**：
+            // 它的值在一大片下标上完全相同，挪了也还落在原地。
+            // 命中的是压在斜坡上的那个隐形式（见本节开头），这里只要求"两处都命中、
+            // 且是同一个号"——不去钉具体是哪一个，因为那属于另一个决定。
+            val rampHitA = gc.pick(400f, 300f)
+            val rampHitB = gc.pick(250f, 380f)
+            val rampIdA = rampHitA?.id() ?: 0
+            val rampIdB = rampHitB?.id() ?: 0
+            report("斜坡线上两个不同位置都命中同一个系列（拾取四边形与画面同一条线）",
+                rampIdA != 0 && rampIdA == rampIdB,
+                "(400,300) ID=$rampIdA（${describePayload(rampHitA?.payload())}），" +
+                        "(250,380) ID=$rampIdB（${describePayload(rampHitB?.payload())}）" +
+                        "——期望相等且非 0")
+
+            // 两条曲线不串号。零号是"什么都没命中"，所以两个号都必须非 0 才有意义；
+            // 而"号不同"还不够——它们各自还得解析回**自己**那个 Series 对象。
+            // 溢出系列在 x=400 处是值 0.85 → 屏幕 y = 160 的水平线。
+            val spillHit = gc.pick(400f, 160f)
+            val spillId = spillHit?.id() ?: 0
+            report("两条曲线不串号：折返与溢出的 ID 互不相同，且各自解析回自己",
+                zigId != 0 && spillId != 0 && zigId != spillId &&
+                        zigHit?.payload() === zigSeries && spillHit?.payload() === spillSeries,
+                "折返 ID=$zigId（payload=${describePayload(zigHit?.payload())}），" +
+                        "溢出 ID=$spillId（payload=${describePayload(spillHit?.payload())}）")
+
+            // 裁剪在 ID pass 里同样生效：被裁掉的部分不可拾取，与画面一致。
+            // 探测点是**溢出系列被裁掉的那一段**：值从 1.2 跌到 0.85 的那一条陡线
+            // （数据下标 30→31，屏幕 x 250→257.5），值 1.2 对应屏幕 y = 20，
+            // **整段在绘图区上方**。它的拾取四边形（容差 4px → x 约 246..261）
+            // 会覆盖 (253,60) 一带，而 ID pass 一旦丢掉 scissor，那一片就会带上溢出的 ID
+            // ——**画面完全正常，只有点击落在错误的对象上**。
+            // 它不是橡皮图章：上面"溢出系列在绘图区内存在"保证了这个系列真的在画；
+            // 而且实测过——把 ID pass 的 scissor 测试关掉，这一条立刻失败（见最终报告）。
+            val outsideId = gc.pick(253f, 60f)?.id() ?: 0
+            report("拾取也受裁剪约束：绘图区之外不可拾取", outsideId == 0,
+                "(253,60) ID=$outsideId，期望 0——非 0 说明 ID pass 没有按 scissor 裁剪")
+        }
+
+        // 容差那一组问的是**探针图**（线宽 1），所以用的是观察期当场记下的三个 ID，
+        // 见 [capturePickProbes]：探针图只在观察期画，校验帧上它已经不在画面里了。
+        val probeShot = pickProbeSnapshot
+        if (!pickProbeCaptured || probeShot == null) {
+            report("前提：探针图的快照与三个探测点的拾取结果都取到了", false,
+                "pickProbeCaptured=$pickProbeCaptured，pickProbeSnapshot=${probeShot != null}")
+        } else {
+            // 局部坐标：快照就是探针图那一块，左上角为原点。
+            val probeCol = (PICK_PROBE_X - PICK_PROBE_PLOT_X).toInt()
+            val probeRow = (PICK_PROBE_ON_LINE_Y - PICK_PROBE_PLOT_Y).toInt()
+
+            // **前提**：线确实只画了 1px 高。少了这一条，下面"线旁 3px 仍命中"
+            // 对"线本来就有 8px 粗"的实现同样成立——那它就是一条橡皮图章。
+            val thin = probeShot.countIn(probeCol - 3, probeRow - 8, probeCol + 3, probeRow + 8,
+                pickProbeRgb)
+            report("前提：探针线确实只画了 1px 高（否则容差那两条恒真）", thin == 7,
+                "以探测点为中心 7 列 × 17 行里有 $thin px，期望 7（每列恰好 1 px）")
+
+            report("探针线上的一点命中探针系列（否则下面两条恒真）",
+                pickOnLineId != 0 && pickOnLinePayloadOk,
+                "线上 ID=$pickOnLineId，payload 是探针系列=$pickOnLinePayloadOk")
+
+            // 容差：线只有 1px 宽，要求用户精确点中是不合理的。
+            // **这是刻意行为，不是 bug**——与"全透明图元仍可拾取"
+            // "文本的可拾取范围比墨迹大一圈"同类。
+            val besidePx = (PICK_PROBE_BESIDE_Y - PICK_PROBE_ON_LINE_Y).toInt()
+            report("拾取容差：线旁 ${besidePx}px 仍命中（线画 1px）",
+                pickBesideId != 0 && pickBesideId == pickOnLineId,
+                "线上 ID=$pickOnLineId，线旁 ${besidePx}px ID=$pickBesideId" +
+                        "（期望相等且非 0；容差是 $PICK_TOLERANCE_PX px 半宽）")
+
+            // 成对：容差不能是"无边界"。少了这一条，"容差开成 100px"照样通过，
+            // 而那会让整个绘图区都变成某条曲线的热区。
+            val farPx = (PICK_PROBE_FAR_Y - PICK_PROBE_ON_LINE_Y).toInt()
+            report("拾取不越界：线旁 ${farPx}px 不命中",
+                pickFarId == 0,
+                "线旁 ${farPx}px（行 ${PICK_PROBE_FAR_Y.toInt()}）ID=$pickFarId，期望 0")
+        }
+
+        // ---- 15. ★ baseInstance：跨环绕时取的是正确的那一段实例 ----
+        //
+        // 这一条守的是 `drawArraysInstancedBaseInstance` 的**最后一个参数**。
+        // 实例属性按 `gl_InstanceID` 取，而它**每次都从 0 开始**（`baseInstance` 不影响它，
+        // 只影响属性取哪一份数据）。少了它，跨环绕那一屏的第一段会取到环里**别的槽位**
+        // 的数据：线照样画得出来、照样平滑，只是显示的值全错，而且不报错。
+        //
+        // 判别式是**位置**：窗口左端在数据下标 12（环绕点是 16），正确实现下
+        // x = 640 处的线在局部 y ≈ 38.8；少了 baseInstance 时第一段整体上移 4 个样本
+        // （每个样本 5px），那里是局部 y ≈ 18.8。两者差 20px，一眼可辨。
+        println("\n-- ★ 跨环绕：baseInstance 必须生效 --")
+        val wrapShot = wrapSnapshot
+        if (wrapShot == null) {
+            report("前提：跨环绕实验的快照抓到了", false, "wrapSnapshot 为 null")
+        } else {
+            val probeX = 640.0
+            val col = (probeX - WRAP_PLOT_X).toInt()
+            val rowOn = wrapLineRowAt(probeX) - WRAP_PLOT_Y
+            // 少传 baseInstance 时第一段取到的是槽位 0..3（数据 16..19），
+            // 而不是槽位 4..7（数据 12..15）：整段线因此上移 4 个样本。
+            val shiftRows = (WRAP_WINDOW_START.toInt() and (WRAP_CAPACITY - 1)) *
+                    (WRAP_PLOT_H / WRAP_TOTAL)
+            val rowWrong = rowOn - shiftRows
+
+            val onCount = wrapShot.countIn(col - 2, rowOn.toInt() - 5, col + 2, rowOn.toInt() + 5,
+                wrapRgb)
+            val wrongCount = wrapShot.countIn(col - 2, rowWrong.toInt() - 5, col + 2,
+                rowWrong.toInt() + 5, wrapRgb)
+            report("跨环绕处那条线画在它该在的行上（局部 y≈${"%.1f".format(rowOn)}）", onCount > 0,
+                "x=$probeX 附近 ${onCount} px，期望 > 0（线的中心在屏幕 y=${"%.1f".format(rowOn + WRAP_PLOT_Y)}，" +
+                        "即局部行 ${"%.1f".format(rowOn)}）")
+            report("少了 baseInstance 时线会落到的那一块是空的", wrongCount == 0,
+                "x=$probeX 附近局部行 ${rowWrong.toInt()}（= 正确位置上方 $shiftRows px）" +
+                        "有 $wrongCount px，期望 0——非 0 说明第一段取的是别的槽位的数据")
+
+            // 整段都在画（不是只有左边那一段）。
+            val rightX = 910.0
+            val rightRow = wrapLineRowAt(rightX) - WRAP_PLOT_Y
+            val rightCount = wrapShot.countIn((rightX - WRAP_PLOT_X).toInt() - 5,
+                rightRow.toInt() - 5, (rightX - WRAP_PLOT_X).toInt() + 5, rightRow.toInt() + 5,
+                wrapRgb)
+            report("窗口右端也在画（证明整段都在，不是只有一段）", rightCount > 0,
+                "x=$rightX 附近 $rightCount px，期望 > 0")
+
+            // 逐列取最上面的那个折线像素，看它是不是一条**连续、单调**的线。
+            //
+            // ⚠️ 扫描**刻意避开局部 x 123..165**（屏幕 x 753.75..795），那是跨环绕点
+            // 那一个实例的位置：它两端分别落在环的最后一个槽位与槽位 0 上，
+            // 而"同一个缓冲、偏移差 4 字节"这一招在槽位 7→8 处取到的是**缓冲末尾那个
+            // 恒为 0 的余量 float**，不是槽位 0 的值。所以那里现在会画出一条掉到 0
+            // （绘图区底部）的斜线——**这是 Task 8-11 遗留的缺陷，不是 baseInstance 的问题，
+            // 也不属于本任务的范围**（修它要动 SeriesBuffer 的上传计划，见最终报告）。
+            // 本任务能保证的是：两段正常的实例都取到了正确的那一段数据。
+            fun straightness(from: Int, to: Int): Triple<Int, Int, Int> {
+                var missing = 0
+                var worst = 0
+                var reverse = 0
+                var previous = -1
+                for (x in from until to) {
+                    var row = -1
+                    for (y in 0 until wrapShot.h) {
+                        if (wrapShot.at(x, y) == wrapRgb) {
+                            row = y
+                            break
+                        }
+                    }
+                    if (row < 0) {
+                        missing++
+                        continue
+                    }
+                    if (previous >= 0) {
+                        val jump = kotlin.math.abs(row - previous)
+                        if (jump > worst) worst = jump
+                        if (row > previous) reverse++
+                    }
+                    previous = row
+                }
+                return Triple(missing, worst, reverse)
+            }
+
+            val beforeWrap = straightness(1, 123)
+            val afterWrap = straightness(166, 288)
+            report("跨环绕点**两侧**各自都是一条连续、单调的线",
+                beforeWrap.first == 0 && afterWrap.first == 0 &&
+                        beforeWrap.second <= 2 && afterWrap.second <= 2 &&
+                        beforeWrap.third == 0 && afterWrap.third == 0,
+                "环绕点之前（局部 x 1..122）：缺 ${beforeWrap.first} 列，" +
+                        "最大跳变 ${beforeWrap.second} px，反向 ${beforeWrap.third} 处；" +
+                        "环绕点之后（局部 x 166..287）：缺 ${afterWrap.first} 列，" +
+                        "最大跳变 ${afterWrap.second} px，反向 ${afterWrap.third} 处" +
+                        "（期望：都不缺列、跳变 ≤ 2、无反向）")
+        }
+
         println("\n画面出现的颜色：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")
         println("背景 ${counts[background] ?: 0} px，绘图区底色 ${counts[plotBackground] ?: 0} px")
         println("斜坡 ${counts[rampRgb] ?: 0} px，溢出 ${counts[spillRgb] ?: 0} px")
@@ -1242,5 +1765,9 @@ class ChartVerifierApp : Application() {
     private companion object {
         /** 移动方块的边长。 */
         const val SQUARE = 40
+        @JvmStatic
+        fun main(args: Array<String>) {
+            launch(ChartVerifierApp::class.java, *args)
+        }
     }
 }

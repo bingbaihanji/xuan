@@ -14,6 +14,7 @@ import com.bingbaihanji.jfgl.util.Rect;
 
 import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * 图表绘制入口：把 {@code chart/} 的装配结果画成 GL 实例化绘制。
@@ -38,6 +39,12 @@ import java.util.Map;
  * <p>所有权链条是 {@code FXGLTransfer.onDispose → RenderBatch.dispose()}，
  * 而本类由 {@code Gc.charts} 懒创建、挂在这条链的下游。{@code RenderBatch} 不认识
  * 本类（它在更上层的包里），所以由 {@code FXGLTransfer} 经 {@code Gc} 转一手。
+ *
+ * <h2>拾取：每个系列一个 ID，而且用的是 {@code Gc} 的那本注册表</h2>
+ * <p>ID 在<b>渲染层</b>分配（{@code Series} 上没有 {@code pickId()}），
+ * 由渲染器的 ID pass 写进 {@code RenderBatch} 的拾取缓冲；命中之后
+ * {@code PickHit.payload()} 直接就是那个 {@code Series} 对象。
+ * 发号成本与点数无关——一条百万点的曲线也只注册一个 ID。
  *
  * <h2>不支持的图型明确报错</h2>
  * <p>热力图与瀑布图（{@code polylineFamily() == false}）本期没有渲染器；
@@ -72,12 +79,21 @@ public final class ChartRenderer implements Disposable {
     /**
      * 拾取用的着色器。
      *
-     * <p>本期（Task 10/11）还没有拾取 pass，所以它暂时没有消费者。仍然在这里创建，
-     * 是因为<b>构造期就编译链接一次</b>能把 {@code SeriesShaders.PICK_FRAGMENT} 的
-     * 语法/接口错误在启动时就暴露出来；留到 Task 13 才发现的话，那口锅会看起来像是
-     * Task 13 的。
+     * <p>与 {@link #lineShader} 共用一份顶点源码，只换片段着色器——与 {@code RenderBatch}
+     * 里"SDF 文本复用同一个顶点着色器"是同一个做法。消费者是
+     * {@link LineSeriesRenderer} 的 ID pass。
      */
     private final ShaderProgram pickShader;
+
+    /**
+     * 拾取缓冲的借用入口，透传给 {@link GLRenderContextImpl}。
+     *
+     * <p><strong>必须是 {@code RenderBatch.withPickPass}，不能自己开一个 FBO。</strong>
+     * 拾取缓冲与"本帧是否已清空""本帧是否有效"两个标志都归 {@code RenderBatch} 管，
+     * 另起一套的话，图层拾取的顺序会与 {@code Gc} 图元的拾取顺序对不上——
+     * 重叠处谁赢就错了，而画面完全正常。
+     */
+    private final Consumer<Runnable> pickPass;
 
     private boolean disposed = false;
 
@@ -88,10 +104,14 @@ public final class ChartRenderer implements Disposable {
      *
      * @param gl           GL 抽象层，应当就是 {@code RenderBatch} 用的那一个
      * @param pickRegistry 拾取 ID 注册表，应当是 {@code Gc.pickRegistry}（理由见字段说明）
+     * @param pickPass     拾取缓冲的借用入口，应当是 {@code RenderBatch::withPickPass}
+     *                     （理由见字段说明）
      */
-    public ChartRenderer(GLAbstraction gl, PickRegistry pickRegistry) {
+    public ChartRenderer(GLAbstraction gl, PickRegistry pickRegistry,
+                         Consumer<Runnable> pickPass) {
         this.gl = gl;
         this.pickRegistry = pickRegistry;
+        this.pickPass = pickPass;
         this.lineShader = gl.createShader(SeriesShaders.LINE_VERTEX, SeriesShaders.LINE_FRAGMENT);
         this.pickShader = gl.createShader(SeriesShaders.LINE_VERTEX, SeriesShaders.PICK_FRAGMENT);
         this.lineRenderer = new LineSeriesRenderer(gl);
@@ -125,7 +145,7 @@ public final class ChartRenderer implements Disposable {
         }
         ChartRenderLayout layout = new ChartRenderLayout(plotRect, axes[0], axes[1]);
         GLRenderContextImpl ctx = new GLRenderContextImpl(
-                gl, lineShader, layout, viewportWidth, viewportHeight);
+                gl, lineShader, pickShader, pickPass, layout, viewportWidth, viewportHeight);
 
         for (Layer layer : chart.layers()) {
             for (Series series : layer.series()) {
