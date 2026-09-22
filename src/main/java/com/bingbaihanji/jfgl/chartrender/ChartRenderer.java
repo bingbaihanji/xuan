@@ -147,6 +147,45 @@ public final class ChartRenderer implements Disposable {
     }
 
     /**
+     * 取走"这个系列自上一次取走以来<b>真正上传到 GPU</b> 的字节数"，同时把它清零。
+     *
+     * <h2>它为什么存在</h2>
+     * <p>② 的性能主张是「<b>每帧只上传新增的点，不是整个窗口</b>」。
+     * 这条主张在画面上<b>没有任何痕迹</b>：增量上传与每帧全量重传画出来的图
+     * <b>逐像素相同</b>，{@code ChartVerifier} 已有的十五条断言一条也分不开它们。
+     * 没有这个入口，"只传新增"就只是注释里的一句承诺——与
+     * {@code RenderBatch.pickPassCount()} 是同一类东西：<b>为一个断言而存在的观测口</b>，
+     * 生产代码不该依赖它。
+     *
+     * <h2>为什么是"取走"而不是"读一眼"</h2>
+     * <p>{@link SeriesBuffer#uploadedBytesThisFrame()} 只在有人调用
+     * {@link SeriesBuffer#beginFrame()} 时才清零，而绘制路径<b>不调用</b>它
+     * （往 {@link #draw} 里加一次清零属于改渲染路径，本任务明确不做）。
+     * 所以"本帧"的语义就落在调用方身上：<b>取走并清零</b>——调用方每帧画完之后问一次，
+     * 拿到的就是"这一帧传了多少字节"。
+     *
+     * <p>写成"读一眼、不清零"会更糟：返回的会是<b>自渲染器创建以来的累计值</b>，
+     * 也就是一个看起来像"每帧字节数"、却随帧数线性增长的数——
+     * 比没有这个入口更容易让人得出错误结论。
+     *
+     * <p>因此：同一帧里问两次，第二次得到 0；从没被 {@link #draw} 画过的系列也返回 0。
+     * 两者都是这套语义的自然结果，不是缺陷。
+     *
+     * @param series 要问的系列，必须是 {@link #draw} 里用的<b>同一个对象</b>
+     *               （{@code Series} 没有值语义，缓冲用 IdentityHashMap 索引）
+     * @return 自上次取走以来上传的字节数；没画过时为 0
+     */
+    public int takeUploadedBytes(Series series) {
+        SeriesBuffer buffer = buffers.get(series);
+        if (buffer == null) {
+            return 0;
+        }
+        int bytes = buffer.uploadedBytesThisFrame();
+        buffer.beginFrame();
+        return bytes;
+    }
+
+    /**
      * 图型 → 渲染器。不支持的图型明确抛异常，不静默不画。
      *
      * <p>查表规则与 {@link ChartType} 的属性组合一一对应：
