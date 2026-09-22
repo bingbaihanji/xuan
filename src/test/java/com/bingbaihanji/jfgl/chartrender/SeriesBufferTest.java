@@ -105,14 +105,25 @@ class SeriesBufferTest {
     @Test
     void 跨环绕时产生两次子上传() {
         // 关键是**这一次上传**的新增样本要跨过环绕点，而不是"环曾经绕过"。
-        // 先把前 6 个点写进去且**不上传**，再写 4 个使总数到 10——
-        // 这样一次上传的新增样本是槽位 6,7,0,1，真的跨环绕。
+        // 先把前 6 个点写进去且**不上传**，再写 4 个使总数到 10——于是这一次上传
+        // 覆盖环里还留着的 8 个样本（绝对号 2..9 → 槽位 2..7 与 0,1），真的跨环绕。
         appendY(data, 1, 2, 3, 4, 5, 6);
         SeriesBuffer buf = new SeriesBuffer(gl, data);
         appendY(data, 7, 8, 9, 10);
         buf.uploadNewSamples();
 
-        assertEquals(2, gl.vboSubDataCalls.size(), "新增样本跨过环绕点必须切成两次子上传");
+        // **三次**而不是两次：两次样本子上传之外，还有一次槽位 0 的镜像
+        // （偏移 capacity*4 = 32）。它的理由见 SeriesUploadPlan.mirrorSourceIndex：
+        // 环已绕过之后，最后一个槽位上的那个实例（绝对号 7）的第二端读的正是那个位置，
+        // 而它必须等于槽位 0 上的样本（绝对号 8）。
+        assertEquals(3, gl.vboSubDataCalls.size(), "两次样本子上传 + 一次槽位 0 的镜像");
+        assertTrue(gl.vboSubDataCalls.get(0).endsWith("@8:24"), "槽位 2..7 的样本，实际 "
+                + gl.vboSubDataCalls.get(0));
+        assertTrue(gl.vboSubDataCalls.get(1).endsWith("@0:8"), "槽位 0,1 的样本，实际 "
+                + gl.vboSubDataCalls.get(1));
+        assertTrue(gl.vboSubDataCalls.get(2).endsWith("@32:4"),
+                "镜像写在偏移 capacity*4 上；少了它，跨环绕点那一个实例会画一条掉到 0 的斜线。实际 "
+                        + gl.vboSubDataCalls.get(2));
     }
 
     @Test
@@ -137,8 +148,11 @@ class SeriesBufferTest {
 
         buf.uploadNewSamples();
 
-        assertEquals(4, buf.uploadedBytesThisFrame(),
-                "环满之后新点照样要上传。这里若为 0，说明把 itemCount() 当成了写指针");
+        // 8 字节 = 新点 4 字节 + 槽位 0 的镜像 4 字节。写第 9 个点（下标 8）时正好
+        // 落进槽位 0，而环已经绕过——从这一刻起，最后一个槽位上的实例（下标 7）
+        // 的第二端就要读那个镜像（见 SeriesUploadPlan.mirrorSourceIndex）。
+        assertEquals(8, buf.uploadedBytesThisFrame(),
+                "环满之后新点照样要上传（这里若为 0，说明把 itemCount() 当成了写指针）");
     }
 
     @Test
@@ -222,11 +236,15 @@ class SeriesBufferTest {
         SeriesBuffer buf = new SeriesBuffer(gl, source, 8);
         buf.uploadNewSamples();
 
-        assertEquals(32, buf.uploadedBytesThisFrame(), "只传环里还留着的 8 个点");
-        assertEquals(List.of(2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L), source.requested,
+        // 36 = 8 个样本 * 4 + 镜像 4：环已绕过，槽位 0 上的样本（绝对号 8）还要再写一份
+        // 到偏移 capacity*4 上，供最后一个槽位上的实例读它的第二端。
+        assertEquals(36, buf.uploadedBytesThisFrame(), "环里还留着的 8 个点 * 4 + 镜像 4 字节");
+        assertEquals(List.of(2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 8L), source.requested,
                 "第一段的绝对号必须是 written - 点数。若从 range.byteOffset()/4 反推，"
-                        + "跨环绕的第二段会回到绝对号 0、1，于是把两个不同时刻的样本画到一起");
-        assertEquals(2, gl.vboSubDataCalls.size(), "绝对号 2..9 跨过环绕点，必须切成两段");
+                        + "跨环绕的第二段会回到绝对号 0、1，于是把两个不同时刻的样本画到一起。"
+                        + "**末尾那个 8 是槽位 0 的镜像**：槽位 0 上放的正是样本 8，"
+                        + "而环已绕过、它要再写一份到槽位 capacity 上");
+        assertEquals(3, gl.vboSubDataCalls.size(), "绝对号 2..9 跨过环绕点切成两段，外加镜像一次");
     }
 
     @Test

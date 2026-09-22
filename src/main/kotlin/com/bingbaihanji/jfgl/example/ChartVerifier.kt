@@ -1650,16 +1650,20 @@ class ChartVerifierApp : Application() {
                 "线旁 ${farPx}px（行 ${PICK_PROBE_FAR_Y.toInt()}）ID=$pickFarId，期望 0")
         }
 
-        // ---- 15. ★ baseInstance：跨环绕时取的是正确的那一段实例 ----
+        // ---- 15. ★ 跨环绕：baseInstance 生效，且那一个实例的第二端读到的是槽位 0 ----
         //
-        // 这一条守的是 `drawArraysInstancedBaseInstance` 的**最后一个参数**。
-        // 实例属性按 `gl_InstanceID` 取，而它**每次都从 0 开始**（`baseInstance` 不影响它，
-        // 只影响属性取哪一份数据）。少了它，跨环绕那一屏的第一段会取到环里**别的槽位**
-        // 的数据：线照样画得出来、照样平滑，只是显示的值全错，而且不报错。
+        // 这一组守两件都会"画出一条看着正常的假线"的事：
+        //   (a) `drawArraysInstancedBaseInstance` 的**最后一个参数**。实例属性按
+        //       `gl_InstanceID` 取，而它**每次都从 0 开始**（`baseInstance` 不影响它，
+        //       只影响属性取哪一份数据）。少了它，跨环绕那一屏的第一段会取到环里
+        //       **别的槽位**的数据：线照样画得出来、照样平滑，只是显示的值全错。
+        //   (b) 跨环绕点那一个实例的第二端：读的是偏移 `capacity*4`，那里必须放着
+        //       槽位 0 的值（环的槽位 capacity 就是槽位 0）。不写就是一条掉到 0 的斜线。
         //
-        // 判别式是**位置**：窗口左端在数据下标 12（环绕点是 16），正确实现下
+        // 判别式都是**位置**：窗口左端在数据下标 12（环绕点是 16），正确实现下
         // x = 640 处的线在局部 y ≈ 38.8；少了 baseInstance 时第一段整体上移 4 个样本
-        // （每个样本 5px），那里是局部 y ≈ 18.8。两者差 20px，一眼可辨。
+        // （每个样本 5px），那里是局部 y ≈ 18.8；少了镜像时 x 640 处仍对，
+        // 但局部 x 135..158 那一段会斜着穿到 y ≈ 45..90。三者差 20px 以上，一眼可辨。
         println("\n-- ★ 跨环绕：baseInstance 必须生效 --")
         val wrapShot = wrapSnapshot
         if (wrapShot == null) {
@@ -1694,15 +1698,38 @@ class ChartVerifierApp : Application() {
             report("窗口右端也在画（证明整段都在，不是只有一段）", rightCount > 0,
                 "x=$rightX 附近 $rightCount px，期望 > 0")
 
-            // 逐列取最上面的那个折线像素，看它是不是一条**连续、单调**的线。
+            // ---- 跨环绕点那一个实例：它的第二端必须读到**槽位 0 的值** ----
             //
-            // ⚠️ 扫描**刻意避开局部 x 123..165**（屏幕 x 753.75..795），那是跨环绕点
-            // 那一个实例的位置：它两端分别落在环的最后一个槽位与槽位 0 上，
-            // 而"同一个缓冲、偏移差 4 字节"这一招在槽位 7→8 处取到的是**缓冲末尾那个
-            // 恒为 0 的余量 float**，不是槽位 0 的值。所以那里现在会画出一条掉到 0
-            // （绘图区底部）的斜线——**这是 Task 8-11 遗留的缺陷，不是 baseInstance 的问题，
-            // 也不属于本任务的范围**（修它要动 SeriesBuffer 的上传计划，见最终报告）。
-            // 本任务能保证的是：两段正常的实例都取到了正确的那一段数据。
+            // 它两端分别落在环的最后一个槽位（7）与槽位 0 上，而"同一个缓冲、偏移差 4 字节"
+            // 这一招在这里读的是偏移 capacity*4 —— 缓冲末尾那个余量 float。
+            // 环的本质是"槽位 capacity 就是槽位 0"，所以那个位置**不是垃圾**，
+            // 它必须被写成槽位 0 的值（见 SeriesUploadPlan.mirrorSourceIndex）；
+            // 不写它就恒为 0，于是这里会画出一条**从正常值掉到 0 的斜线**——
+            // 不是乱码、不报错，看着还挺像一条信号。
+            val badColA = wrapX(15.0) - WRAP_PLOT_X      // 坏线的第一端：数据下标 15
+            val badColB = wrapX(16.0) - WRAP_PLOT_X      // 坏线的第二端：数据下标 16
+            val badRowA = wrapY(15.0) - WRAP_PLOT_Y      // 该处 y = 635 → 局部 25
+            val badRowB = wrapY(0.0) - WRAP_PLOT_Y       // 读到恒为 0 的余量 → 局部 100
+
+            fun colAtRow(row: Double): Double =
+                badColA + (row - badRowA) * (badColB - badColA) / (badRowB - badRowA)
+
+            // 取坏线的**中段**（局部行 45..90，两端各留 2 行余量）：
+            // 正确的线在那里是局部行 20..25，离得很远，所以这一块只可能被坏线占。
+            val dropRowLo = 45
+            val dropRowHi = 90
+            val dropColLo = colAtRow(dropRowLo + 2.0).toInt()
+            val dropColHi = colAtRow(dropRowHi - 2.0).toInt()
+            val dropCount = wrapShot.countIn(dropColLo, dropRowLo, dropColHi, dropRowHi, wrapRgb)
+            report("跨环绕处没有「掉到 0」的那条斜线（它的必经之路是空的）", dropCount == 0,
+                "局部 x $dropColLo..$dropColHi × y $dropRowLo..$dropRowHi 里有 $dropCount px，期望 0" +
+                        "——非 0 说明槽位 capacity（= 槽位 0）上那个镜像没写，" +
+                        "跨环绕的实例读到的是从未写过的余量 float（恒为 0）")
+
+            // 逐列取最上面的那个折线像素，看它是不是一条**连续、单调**的线。
+            // **整条线都要扫**：跨环绕点那一段（局部 x 123..165）曾经只能被避开
+            // （它当时是一条掉到 0 的斜线），镜像补上之后它就在线上了——
+            // 把范围改回来本身就是这次修复的判据之一。
             fun straightness(from: Int, to: Int): Triple<Int, Int, Int> {
                 var missing = 0
                 var worst = 0
@@ -1730,17 +1757,11 @@ class ChartVerifierApp : Application() {
                 return Triple(missing, worst, reverse)
             }
 
-            val beforeWrap = straightness(1, 123)
-            val afterWrap = straightness(166, 288)
-            report("跨环绕点**两侧**各自都是一条连续、单调的线",
-                beforeWrap.first == 0 && afterWrap.first == 0 &&
-                        beforeWrap.second <= 2 && afterWrap.second <= 2 &&
-                        beforeWrap.third == 0 && afterWrap.third == 0,
-                "环绕点之前（局部 x 1..122）：缺 ${beforeWrap.first} 列，" +
-                        "最大跳变 ${beforeWrap.second} px，反向 ${beforeWrap.third} 处；" +
-                        "环绕点之后（局部 x 166..287）：缺 ${afterWrap.first} 列，" +
-                        "最大跳变 ${afterWrap.second} px，反向 ${afterWrap.third} 处" +
-                        "（期望：都不缺列、跳变 ≤ 2、无反向）")
+            val whole = straightness(1, 288)
+            report("跨环绕点前后是一条连续、单调的线（含跨环绕那一段）",
+                whole.first == 0 && whole.second <= 2 && whole.third == 0,
+                "局部 x 1..287：缺 ${whole.first} 列，最大跳变 ${whole.second} px，" +
+                        "反向 ${whole.third} 处（期望：都不缺列、跳变 ≤ 2、无反向）")
         }
 
         println("\n画面出现的颜色：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")

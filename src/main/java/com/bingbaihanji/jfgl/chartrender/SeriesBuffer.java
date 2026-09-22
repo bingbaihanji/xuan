@@ -14,8 +14,14 @@ import java.nio.ByteOrder;
  * <p>每个样本 4 字节。线段的两端靠"同一个缓冲、偏移差 4 字节"的两个实例属性拿到
  * （见 {@code LineSeriesRenderer}），所以同一个 y 只存一次。
  *
- * <p><strong>缓冲比环容量多留一个 float</strong>：最后一个实例的第二端会指到界外。
- * 那个实例永远不画，但别让 GPU 有机会去读越界地址。
+ * <p><strong>缓冲比环容量多留一个 float，而且它不是垃圾</strong>：物理槽位 {@code capacity}
+ * 就是槽位 0（环的本质），所以"最后一个槽位上的那个实例"的第二端必须读到<b>槽位 0 的值</b>。
+ * 它会被真的画出来（窗口跨过环绕点时），因此这里每写一次槽位 0 就同步一次那个余量
+ * （见 {@link SeriesUploadPlan#mirrorSourceIndex()}）。
+ *
+ * <p>曾经这里写着"那个实例永远不画"——<b>那是错的</b>，而且错得安静：余量从来没被写过，
+ * 于是一条跨过环绕点的曲线会多出一段<b>从正常值掉到 0 的斜线</b>。它不报错、也不是乱码，
+ * 看着还挺像一条信号。
  *
  * <h2>容量在创建时定死，运行期永不扩容</h2>
  * <p>这是硬约束，不是优化。{@code VertexBuffer.grow()} 是"删旧建新"，
@@ -222,7 +228,24 @@ public final class SeriesBuffer implements Disposable {
             gl.uploadVboSubData(range.byteOffset(), scratch);
             gl.bindVbo(0);
         }
-        uploadedBytesThisFrame += plan.totalBytes();
+
+        // 槽位 0 的镜像：偏移 capacity*4 那个 float 不是垃圾，它是**槽位 0 的值**
+        // （环的槽位 capacity 就是槽位 0，见 SeriesUploadPlan.mirrorSourceIndex）。
+        //
+        // 不写它的后果：环写满之后，跨环绕点的那一个实例会画一条从正常值掉到 0 的斜线
+        // ——不报错、不是乱码，看着还挺像一条信号。
+        long mirror = plan.mirrorSourceIndex();
+        if (mirror != SeriesUploadPlan.NO_MIRROR) {
+            ByteBuffer one = ByteBuffer.allocateDirect(Float.BYTES).order(ByteOrder.nativeOrder());
+            one.putFloat((float) source.valueAt(VALUE_DIM, mirror));
+            one.flip();
+            gl.bindVbo(vbo);
+            gl.uploadVboSubData(capacity * Float.BYTES, one);
+            gl.bindVbo(0);
+        }
+
+        // 口径是"真正写进缓冲的字节数"，所以镜像那 4 字节也要算进去。
+        uploadedBytesThisFrame += plan.totalUploadBytes();
         uploadedCount = written;
     }
 

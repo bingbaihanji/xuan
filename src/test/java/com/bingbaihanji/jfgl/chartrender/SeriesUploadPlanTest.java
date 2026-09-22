@@ -32,6 +32,9 @@ class SeriesUploadPlanTest {
         assertEquals(1, plan.ranges().size());
         assertEquals(new SeriesUploadPlan.Range(0, 12), plan.ranges().get(0));
         assertEquals(12, plan.totalBytes());
+        // 环还没绕过：槽位 capacity-1 是空的，没有实例要读镜像。
+        assertEquals(SeriesUploadPlan.NO_MIRROR, plan.mirrorSourceIndex());
+        assertEquals(12, plan.totalUploadBytes());
     }
 
     @Test
@@ -42,6 +45,10 @@ class SeriesUploadPlanTest {
         assertEquals(new SeriesUploadPlan.Range(24, 8), plan.ranges().get(0));
         assertEquals(new SeriesUploadPlan.Range(0, 8), plan.ranges().get(1));
         assertEquals(16, plan.totalBytes());
+        // 环已绕过：槽位 7 上的实例（绝对号 7）的第二端读偏移 32，那里必须是**槽位 0
+        // 上的样本**（绝对号 8）——它正好在本次上传的范围里（6..9）。
+        assertEquals(8L, plan.mirrorSourceIndex(), "要镜像的是槽位 0 上那个样本");
+        assertEquals(20, plan.totalUploadBytes(), "样本 16 字节 + 镜像 4 字节");
     }
 
     @Test
@@ -69,6 +76,10 @@ class SeriesUploadPlanTest {
         assertEquals(1, plan.ranges().size());
         assertEquals(new SeriesUploadPlan.Range(0, 32), plan.ranges().get(0));
         assertEquals(32, plan.totalBytes());
+        // 正好一整圈时**不需要**镜像：槽位 7 上的样本是绝对号 7，它的后继（8）还没采到，
+        // 那个实例画不出来。下一次上传写绝对号 8 时才会需要，而那一次它正好落在范围里。
+        assertEquals(SeriesUploadPlan.NO_MIRROR, plan.mirrorSourceIndex());
+        assertEquals(32, plan.totalUploadBytes());
     }
 
     @Test
@@ -76,6 +87,9 @@ class SeriesUploadPlanTest {
         // 从 0 增加到 20，容量 8：前面的会被覆盖，只有最后 8 个还在缓冲里
         SeriesUploadPlan plan = SeriesUploadPlan.between(0L, 20L, CAP);
         assertEquals(32, plan.totalBytes(), "超出容量的部分已经被覆盖，传了也是白传");
+        // 槽位 0 上现在放的是绝对号 16（最后一个不超过 19 的容量倍数），它在这次范围内
+        assertEquals(16L, plan.mirrorSourceIndex());
+        assertEquals(36, plan.totalUploadBytes());
     }
 
     @Test
