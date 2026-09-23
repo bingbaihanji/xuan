@@ -332,5 +332,14 @@ public final class FakeGLAbstraction implements GLAbstraction {
     @Override public void setVertexAttribDivisor(int index, int divisor) { throw new UnsupportedOperationException(); }
     @Override public void drawArraysInstancedBaseInstance(int mode, int first, int count,
                                                           int instanceCount, int baseInstance) { throw new UnsupportedOperationException(); }
+    // SSBO 一组（compute 用）。**一个都不放开**：当前没有任何单测会碰它们
+    // （D-③-1 的下一个任务是纯算术，再往后的都要真 GL 上下文）。每多放开一个方法，
+    // 就少一处"走偏了就报错"的护栏，而收益是零——后面哪个任务真的需要，那时再放开那一个。
+    @Override public int createBuffer() { throw new UnsupportedOperationException(); }
+    @Override public void bindShaderStorageBuffer(int buffer) { throw new UnsupportedOperationException(); }
+    @Override public void allocateBufferStorage(long sizeBytes) { throw new UnsupportedOperationException(); }
+    @Override public void uploadBufferSubData(long offsetBytes, ByteBuffer data) { throw new UnsupportedOperationException(); }
+    @Override public void bindBufferBase(int bindingIndex, int buffer) { throw new UnsupportedOperationException(); }
+    @Override public void deleteBuffer(int buffer) { throw new UnsupportedOperationException(); }
     @Override public void dispose() { /* 无资源可释放 */ }
 }

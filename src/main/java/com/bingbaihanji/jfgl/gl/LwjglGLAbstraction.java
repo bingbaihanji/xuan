@@ -8,6 +8,7 @@ import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.opengl.GL33;
 import org.lwjgl.opengl.GL42;
+import org.lwjgl.opengl.GL43;
 import org.lwjgl.system.MemoryStack;
 
 import java.nio.ByteBuffer;
@@ -117,6 +118,36 @@ public class LwjglGLAbstraction implements GLAbstraction {
     @Override
     public void deleteVbo(int vbo) {
         GL15.glDeleteBuffers(vbo);
+    }
+
+    @Override
+    public int createBuffer() {
+        return GL15.glGenBuffers();
+    }
+
+    @Override
+    public void bindShaderStorageBuffer(int buffer) {
+        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, buffer);
+    }
+
+    @Override
+    public void allocateBufferStorage(long sizeBytes) {
+        GL15.glBufferData(GL43.GL_SHADER_STORAGE_BUFFER, sizeBytes, GL15.GL_DYNAMIC_COPY);
+    }
+
+    @Override
+    public void uploadBufferSubData(long offsetBytes, ByteBuffer data) {
+        GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, offsetBytes, data);
+    }
+
+    @Override
+    public void bindBufferBase(int bindingIndex, int buffer) {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, bindingIndex, buffer);
+    }
+
+    @Override
+    public void deleteBuffer(int buffer) {
+        GL15.glDeleteBuffers(buffer);
     }
 
     @Override

@@ -46,7 +46,11 @@ class FakeGLAbstractionGuardTest {
             "drawArrays(int,int,int)", "drawElements(int,int)",
             "enableBlend()", "disableBlend()", "setBlendFunc(int,int)",
             "createShader(String,String)", "createTexture(int,int,int[])",
-            "setVertexAttribDivisor(int,int)", "drawArraysInstancedBaseInstance(int,int,int,int,int)");
+            "setVertexAttribDivisor(int,int)", "drawArraysInstancedBaseInstance(int,int,int,int,int)",
+            // SSBO 一组（compute 用）：现无单测会碰，按"按需放开"纪律一个都不放开
+            "createBuffer()", "bindShaderStorageBuffer(int)",
+            "allocateBufferStorage(long)", "uploadBufferSubData(long,ByteBuffer)",
+            "bindBufferBase(int,int)", "deleteBuffer(int)");
 
     /**
      * 真正实现或记录的方法签名（**不**抛 {@link UnsupportedOperationException} 的那些）。

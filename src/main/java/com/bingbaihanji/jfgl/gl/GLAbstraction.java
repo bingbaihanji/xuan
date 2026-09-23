@@ -152,6 +152,48 @@ public interface GLAbstraction extends Disposable {
     void deleteVbo(int vbo);
 
     /**
+     * 创建一个通用缓冲对象。
+     *
+     * <p>与 {@link #createVbo()} 分开，是因为用途不同：那个固定绑 {@code GL_ARRAY_BUFFER}
+     * 当顶点缓冲用，这个可以绑 {@code GL_SHADER_STORAGE_BUFFER} 给 compute 用。
+     *
+     * <p><strong>一个缓冲对象可以同时绑到多个靶子上</strong>——本项目的 FFT 正是靠这一点
+     * 让 compute 写的缓冲直接被实例属性读走，不需要任何 GPU 侧拷贝。
+     *
+     * @return 缓冲对象的名字
+     */
+    int createBuffer();
+
+    /** 把缓冲绑到 {@code GL_SHADER_STORAGE_BUFFER} 靶子。 */
+    void bindShaderStorageBuffer(int buffer);
+
+    /**
+     * 为当前绑定的缓冲分配存储。
+     *
+     * <p>用法固定为 {@code GL_DYNAMIC_COPY}（compute 写、compute 读）。
+     *
+     * @param sizeBytes 字节数
+     */
+    void allocateBufferStorage(long sizeBytes);
+
+    /**
+     * 写到当前绑定的缓冲的指定偏移处，<strong>不重新分配</strong>。
+     *
+     * <p>与 {@code uploadVboSubData} 同理：越界写入是未定义行为。
+     */
+    void uploadBufferSubData(long offsetBytes, ByteBuffer data);
+
+    /**
+     * 把缓冲绑到某个 SSBO 绑定点（{@code glBindBufferBase}）。
+     *
+     * @param bindingIndex 着色器里 {@code layout(std430, binding = N)} 的那个 N
+     */
+    void bindBufferBase(int bindingIndex, int buffer);
+
+    /** 删除缓冲对象。重复删除同一名字是未定义行为，调用方负责只删一次。 */
+    void deleteBuffer(int buffer);
+
+    /**
      * 执行数组绘制调用。
      *
      * @param mode  图元类型（如 GL_TRIANGLES）
