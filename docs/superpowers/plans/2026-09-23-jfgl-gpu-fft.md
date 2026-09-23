@@ -407,13 +407,45 @@ class FftWindowTest {
     }
 
     @Test
-    void 长度为一与二时不炸() {
+    void 退化长度明确报错而不是返回无穷大() {
+        // ★ 原稿这条写的是 `assertTrue(w.compensation(2) > 0.0)`——**对 HANN 是恒真的**：
+        //    它在 n=2 时两个系数都是 0，相干增益为 0，compensation 返回 Infinity，
+        //    而 `Infinity > 0.0` 照样成立。那是一条橡皮图章。
+        //
+        // 现在改成断言"它会响亮地失败"——因为静默返回一个无穷大，
+        // 那个值会一路传到顶点位置上，而画面只是"有点怪"。
         for (FftWindow w : FftWindow.values()) {
-            w.coefficient(0, 1);
-            w.coefficient(0, 2);
-            w.coefficient(1, 2);
-            assertTrue(w.compensation(2) > 0.0);
+            assertThrows(IllegalArgumentException.class, () -> w.coherentGain(1),
+                    w + " 在 n=1 上应当明确报错");
         }
+
+        // HANN 在 n=2 上两个系数都是 0（0.5-0.5·cos(0) 与 0.5-0.5·cos(2π)），
+        // 是会退化的那一类；其余窗在这个长度上仍然是正增益。
+        assertThrows(IllegalArgumentException.class, () -> FftWindow.HANN.coherentGain(2),
+                "HANN 在 n=2 上零增益，必须报错而不是返回 Infinity");
+        for (FftWindow w : FftWindow.values()) {
+            if (w != FftWindow.HANN) {
+                assertTrue(w.compensation(2) > 0.0 && Double.isFinite(w.compensation(2)),
+                        w + " 在 n=2 上应当给出正有限增益");
+            }
+        }
+    }
+
+    @Test
+    void 枚举序号必须与着色器的窗口编号一致() {
+        // ★ 这条钉的是一处**跨语言的位置耦合**：Java 侧用 ordinal() 传参，
+        //    GLSL 侧（FftKernel 的 windowAt）用硬编码的 0/1/2/3 分支。
+        //
+        // 一旦有人往枚举**中间**插一个窗，Java 侧 compensation 算的是新序号的窗，
+        // 而着色器乘的是另一个窗——**幅度读数差一点，画面上完全看不出来**。
+        //
+        // ⚠️ 而那条"换窗不改变读数"的断言**抓不到这个**：它观测的是"换窗后读数
+        //    是否相同"，**两边一起错的时候反而自洽**。那条防的是"补偿写错"，
+        //    防不了"两边一起错"。所以这里必须单独钉一次顺序。
+        assertEquals(0, FftWindow.RECTANGULAR.ordinal(), "着色器里 0 是矩形窗");
+        assertEquals(1, FftWindow.HANN.ordinal(), "着色器里 1 是 Hann");
+        assertEquals(2, FftWindow.HAMMING.ordinal(), "着色器里 2 是 Hamming");
+        assertEquals(3, FftWindow.BLACKMAN_HARRIS.ordinal(), "着色器里 3 是 BH");
     }
 }
 ```
@@ -507,13 +539,28 @@ public enum FftWindow {
      * 相干增益：系数的平均值。
      *
      * <p><b>由定义求和得到，不要替换成写死的常数。</b>
+     *
+     * @throws IllegalArgumentException {@code n < 2}，或该窗在这个长度上退化成非正/非有限的增益
+     *         （例如 HANN 在 {@code n = 2} 时两个系数都是 0——<b>那种窗会把信号整个抹掉，
+     *         补偿是无穷大，静默返回它会一路传到顶点位置上</b>）
      */
     public double coherentGain(int n) {
+        if (n < 2) {
+            throw new IllegalArgumentException(
+                    "窗长必须 ≥ 2，实际 " + n + "（n<2 时窗在多数定义下退化，本类一律拒绝）");
+        }
         double sum = 0.0;
         for (int i = 0; i < n; i++) {
             sum += coefficient(i, n);
         }
-        return sum / n;
+        double gain = sum / n;
+        if (!(gain > 0.0) || !Double.isFinite(gain)) {
+            throw new IllegalArgumentException(
+                    this + " 在 n=" + n + " 上的相干增益不是正有限数：" + gain
+                            + "。这种窗会把信号整个抹掉，补偿没有意义——"
+                            + "明确报错而不是返回无穷大（那会静默传到顶点位置上）。");
+        }
+        return gain;
     }
 
     /** 相干增益补偿：乘上它之后，谱峰回到不加窗时的高度。 */
@@ -568,6 +615,20 @@ Expected: 全部通过（7 条）。
 >
 > 理由与本项目一贯的判据一致：**静默返回一个无穷大，那个值会一路传到顶点位置上，
 > 而画面只是"有点怪"。**
+
+> ### 实施期补的第二条：枚举序号是跨语言的位置耦合，没有东西钉住它
+>
+> `FftWindow.ordinal()` 传给着色器的 `u_WindowKind`，而着色器侧是**硬编码的 0/1/2/3 分支**。
+> 现在对得上，**但两侧都没有任何东西钉住它**——往枚举中间插一个窗，
+> Java 侧算的是新序号的窗、着色器乘的是另一个窗，
+> **幅度读数差一点，画面上完全看不出来**。
+>
+> **⚠️ 而本计划 Task 4 那条"换窗不改变读数"的变异断言抓不到它**：
+> 它观测的是"换窗后读数是否相同"，**两边一起错的时候反而自洽**。
+> 那条防的是"补偿写错"，**防不了"两边一起错"**。
+>
+> 所以 `FftWindowTest` 里必须单独有一条顺序断言（见上面的代码块）。
+> **变异验证**：往枚举中间插一个哑成员，那条必须失败。
 
 **任何一条存活都要停下来如实报告。** 跑完务必还原，`git diff` 确认干净。
 
