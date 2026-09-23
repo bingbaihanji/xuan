@@ -1235,10 +1235,16 @@ ID pass 的接线。
 
 ```java
         // 1) 先跑 FFT，把结果写进 kernel 的输出缓冲
-        kernel.execute(buffer.vboId(), buffer.capacity(), ringStart, window);
+        kernel.execute(buffer.vboId(), ringStart, window);   // ringCapacity 已单源化
 
         // 2) 数据源换成 FFT 的输出缓冲，用 bin 数而不是样本数算可见区间
-        List<WindowRange.Segment> segments = WindowRange.computePoints(
+        //
+        // ⚠️ 实施期更正：**必须是线段版 `compute`，不是 `computePoints`。**
+        //    频谱是"相邻 bin 连线"，所以实例数 = binCount - 1（线段数）。
+        //    用 `computePoints` 会让上界变成 binCount，窗口覆盖到最后一个 bin 时
+        //    最后一个实例会读偏移 `binCount * 4`——**正好在缓冲末尾之外**，
+        //    而那是**越界读 SSBO，GL 不报错**。
+        List<WindowRange.Segment> segments = WindowRange.compute(
                 windowStart, windowEnd, kernel.binCount(), binCapacity);
 ```
 
