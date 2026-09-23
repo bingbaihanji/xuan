@@ -64,7 +64,8 @@ import kotlin.system.exitProcess
  * **一致性判据在"整条路径都坏了但坏得一致"时恒真。**
  *
  * <p>所以第五节那条一致性断言**必须与 CPU 参考并行**才有意义，本文件里它
- * 单独标了"弱断言"，真正把关的是同一节里与 CPU 参考比对的那两条。
+ * 单独标了"弱断言"，真正把关的是同一节里与 CPU 参考比对的**那三条**——
+ * 其中一条专门是"非矩形窗 + 跨接缝"的组合（见下）。
  *
  * <h3>三、`setUniform` 对不存在的 uniform 名字是静默无效</h3>
  *
@@ -102,7 +103,24 @@ import kotlin.system.exitProcess
  *       断言频谱仍然正确——**与 CPU 参考比对**，不是只看一致性。</li>
  *   <li>`MIN_N` 与 `MAX_N` 两个端点都跑。</li>
  *   <li>非法参数明确抛 `IllegalArgumentException`。</li>
+ *   <li>★ <strong>矩形窗下的绝对下限</strong>：所有非峰 bin ≤ 1e-6 倍峰高。
+ *       它不是"逐 bin 比对"的复述——那条的分母是**峰值**，于是真值远小于门槛的 bin
+ *       （末几个 bin 的真值是 1e-17 量级）**完全不设防**：把 Nyquist 那一处写入整个删掉，
+ *       没有这一条时全绿。夹具另把**输出缓冲预填成毒值**，没写到的 bin 因此必然现形。</li>
+ *   <li>★ <strong>「窗」×「跨接缝」的组合</strong>：非矩形窗 + 非零 `ringStart`。
+ *       单独跑"只用窗"或"只跨接缝"都盖不住 `windowAt(i)` → `windowAt(src)`
+ *       （窗按**环槽位**取）——矩形窗的 `windowAt` 恒等于 1.0，窗的下标取哪个都对。</li>
  * </ol>
+ *
+ * <h2>★ 条目数是这个校验器的对外契约</h2>
+ *
+ * <p>一共 **50 条**断言。被测对象构造失败时，各节的断言**照记**，只是判为失败、
+ * 细节写"无法评估……（原因见零节）"——条目数因此在任何失败模式下都是同一个数。
+ * 早退时干脆不记的话，日志里只剩几条，读的人会以为"它一共就这么几条"。
+ *
+ * <p>同样地，**恒真的断言一律不留**：曾经有两条（"四种窗的峰值读数两两一致"、
+ * "峰值随频率移动"）被写过又删掉——它们各自被别的断言算术蕴含，永远不会独立失败。
+ * 一条不会独立失败的断言只是把分母撑大，让人以为覆盖到了什么。
  *
  * <h2>顺带测性能（规格 R6）</h2>
  *
@@ -160,12 +178,81 @@ private const val RING_CAP = 4096
 private const val RING_CROSS_OFFSET = 137
 
 /**
+ * 跨接缝的第二个配置：**非矩形窗 + 跨缝 1400 个样本**。
+ *
+ * <p><strong>为什么非要有这一条组合</strong>：矩形窗的 `windowAt` 恒等于 1.0，
+ * **窗的下标取哪个都对**——所以"只跨接缝"与"只用窗"两节各自跑，都盖不住
+ * `windowAt(i)` → `windowAt(src)`（窗按**环槽位**取）这个错。
+ * 实测（复核时）：这个错在当时的出厂配置下 **47 条断言全绿**——而那是加本节这两条之前的事。
+ *
+ * <p>跨缝样本数取 1400（而不是 137）：误差随绕回的样本数增长，
+ * 137 个时只有 4.2e-5，1400 个时是 6.9e-4——比 [RING_REF_TOL] 高一个半数量级。
+ */
+private const val RING_CROSS_OFFSET_BIG = 1400
+
+/**
+ * 第五节"非零起点但不跨接缝"那一跑用的起点。
+ *
+ * <p>刻意**不用 0**：起点 0 与第一节 k0=400 是完全相同的测量（同输入、同窗、同起点），
+ * 两处打印的是同一个数——那不叫独立证据。1024 与它没有任何重合。
+ */
+private const val RING_PLAIN_START = 1024
+
+/**
  * 矩形窗下"其余 bin 都远小于峰"的门槛：相对峰高。
  *
  * <p>**只用于矩形窗。** 窗下的旁瓣能到 0.5（见文件头警告一），
  * 那个量级的判据在窗下是错的——窗下改用与 CPU 参考逐 bin 比对。
+ *
+ * <p>它比 [ABS_LIMIT] 松一个数量级，所以它管的是**形状**（峰是唯一的），
+ * 而 [ABS_LIMIT] 管的是**下限**（连 1e-6 量级的杂散都不许有）。
  */
 private const val REST_LIMIT = 1e-3
+
+/**
+ * ★ 矩形窗下的**绝对下限**：所有非峰 bin 都不得超过峰高的这个比例。
+ *
+ * <p><strong>为什么"逐 bin 比对"不能替代它</strong>：那一比的门槛是**相对峰值**的
+ * [CPU_REF_TOL]，于是**任何真值小于它的 bin 完全不设防**——实测末几个 bin 的真值只有
+ * 1e-17 量级，`|0 - 1e-17|` 永远小于门槛。**把 Nyquist 那一处写入整个删掉**
+ * （`k <= n/2` 改成 `k < n/2`），当时那 47 条断言可以**全绿**。
+ *
+ * <p>实测矩形窗的非峰最大是 **1.03e-07**（相对峰高），所以 1e-6 留了约 10 倍余量。
+ * **只在矩形窗下用**：窗下的非峰处是旁瓣（实测 0.5 / 0.43 / 0.68），加绝对判据会误报。
+ *
+ * <p>它要真能抓住"核没写到的 bin"，还得靠夹具把**输出缓冲也预填成** [POISON]
+ * ——否则那个 bin 留着上一次的残留，而"残留"看起来完全正常。
+ */
+private const val ABS_LIMIT = 1e-6
+
+/**
+ * 单位幅度余弦在**归一化之后**的谱峰：`1.0`（见"峰值读回 1.0"那条）。
+ *
+ * <p>绝对下限那条断言拿它当"峰高"，**不用观测到的最大值**——实测踩过：
+ * 核没写到的 bin 留着毒值 1e30，它成了观测最大值，于是"非峰 ≤ 1e-6 倍峰高"
+ * 变成 `1.0 ≤ 1e24`，**恒真**。（那个变异另有别的断言抓住，但这一条不能是橡皮图章。）
+ */
+private const val EXPECTED_PEAK = 1.0
+
+/**
+ * 第五节与 CPU 参考比对用的门槛，**比 [CPU_REF_TOL] 紧一个数量级**。
+ *
+ * <p>因为它要抓的错比"整体缩放错"小得多：把窗**按环槽位**取而不是按样本下标取
+ * （`windowAt(i)` → `windowAt(src)`），跨接缝时误差只有 **4.2e-5**（跨缝 137 个样本）
+ * 到 **6.9e-4**（跨缝 1400 个）——前者落在 [CPU_REF_TOL] 之内，**用那条门槛抓不住**。
+ *
+ * <p>实测这一节的正常误差是 1.16e-07（矩形窗）与 2e-07 量级（带窗），所以 1e-5
+ * 留了约两个数量级余量，同时比那个 4.2e-5 还紧。
+ */
+private const val RING_REF_TOL = 1e-5
+
+/**
+ * 被测对象构造失败时，本节每一条断言**仍然照记**，只是判为失败、细节写这一句。
+ *
+ * <p>条目数因此**不随失败模式漂移**——条目数是这个校验器的对外契约：
+ * 早退时若干脆不记，日志里就只剩几条断言，读的人会以为"它一共就这么几条"。
+ */
+private const val BLOCKED = "无法评估：FftKernel 没能构造出来（原因见零节的那条失败）"
 
 /**
  * 幅度读数（"单位幅度余弦读回 1.0"、"换窗不改变读数"）的相对容差。
@@ -315,6 +402,10 @@ class FftVerifierApp : Application() {
                     ?: "编译并链接通过——被测对象是可运行状态"
             )
 
+            /** 被测对象构造失败时各节的统一细节文案（把这里抓到的原因带过去）。 */
+            fun blocked(): String =
+                buildBlocker?.let { "$BLOCKED —— ${it.message?.trim()?.take(200)}" } ?: BLOCKED
+
             verifyUniformNames(::report, ::info)
 
             // ==================================================================
@@ -322,51 +413,94 @@ class FftVerifierApp : Application() {
             // ==================================================================
             println("\n-- 一、核心：纯正弦的峰值落在 k0 上，且与 CPU 参考逐 bin 相符（矩形窗）--")
 
-            if (main == null) {
-                println("  （下面的断言全部无法进行：FftKernel 构造失败，见上面的失败项。）")
-            } else {
-                for (k0 in K0_LIST) {
-                    // 输入过一遍 Float：GPU 里存的就是 float32，CPU 参考必须吃同一批数，
-                    // 否则比出来的是"输入取整误差"，不是变换误差。
-                    val x = cosineInput(N_MAIN, k0)
-                    val cpu = CpuReference(N_MAIN, FftWindow.RECTANGULAR).magnitude(x)
-                    val gpu = main.spectrum(x, 0, FftWindow.RECTANGULAR)
+            // 夹具自检（不经过任何生产代码）：输出缓冲能预填成毒值。
+            // 没有它，"核没写到的 bin 会现形"就是一句没有依据的话——那个 bin 会留着
+            // 上一次的残留，而残留看起来完全正常。
+            val outputPoisoned = main?.let {
+                it.poisonOutput()
+                abs(it.readOutputFloat(0) - POISON) <= POISON * 1e-6
+            } ?: false
+            report(
+                "夹具自检：输出缓冲能被预填成毒值（使「核没写到的 bin」必然留下毒值；这条不经过任何生产代码）",
+                outputPoisoned,
+                main?.let { "预填后读到 ${"%.6e".format(it.readOutputFloat(0))}，期望 $POISON" } ?: blocked()
+            )
 
-                    val peak = peakIndex(gpu)
-                    val peakMag = gpu[peak]
-                    val rest = maxExcept(gpu, peak)
-                    val err = maxRelError(gpu, cpu, cpu.max())
-
-                    println("\n  --- k0 = $k0 ---")
-                    println("  幅值最大的 4 个 bin：${topBins(gpu, 4)}")
-                    println("  |X[$k0]| = ${"%.6f".format(gpu[k0])}（期望 1.0）；" +
-                            "非峰最大 ${"%.3e".format(rest)}；与 CPU 参考最大相对偏差 ${"%.3e".format(err)}")
-
-                    // 位置：唯一能把"对的"与"错位的"分开的量。去掉了位反转的实现在这里必然倒下
-                    // （那正是旧 GPUFFT 的缺陷③）。
-                    report(
-                        "k0=$k0：唯一的峰落在 k = $k0（其余 ≤ ${REST_LIMIT} 倍峰高）",
-                        peak == k0 && rest <= peakMag * REST_LIMIT,
-                        "实际峰值在 k = $peak（|X|=${"%.6f".format(peakMag)}），非峰最大 ${"%.3e".format(rest)}" +
-                                "——半谱只有 N/2+1 个 bin，实余弦的共轭峰被折叠掉了，不要去找 k = N-$k0"
-                    )
-
-                    // 幅度：归一化 2/N 与"半谱把共轭峰折叠进来"这两件事一起钉住。
-                    report(
-                        "k0=$k0：峰值读回 1.0（半谱的 2/N 归一化）",
-                        abs(peakMag - 1.0) <= AMP_TOL,
-                        "|X[$k0]| = ${"%.6f".format(peakMag)}，期望 1.0 ± $AMP_TOL" +
-                                "——写成 1.0/n 会得到 0.5，漏掉窗补偿会得到 2.0 以上"
-                    )
-
-                    // 逐 bin：只断言峰值位置的话，一个整体缩放错的实现照样通过。
-                    report(
-                        "k0=$k0：与 CPU 参考（朴素 O(N²) DFT）逐 bin 的最大相对误差 ≤ $CPU_REF_TOL",
-                        err <= CPU_REF_TOL,
-                        "相对峰值 ${"%.3e".format(err)}（CPU 参考吃的是与 GPU 逐位相同的 float32 输入，" +
-                                "并且用同一套窗系数与同一个缩放）"
+            for (k0 in K0_LIST) {
+                // 输入过一遍 Float：GPU 里存的就是 float32，CPU 参考必须吃同一批数，
+                // 否则比出来的是"输入取整误差"，不是变换误差。
+                val x = cosineInput(N_MAIN, k0)
+                val r = main?.let {
+                    Reading(
+                        it.spectrum(x, 0, FftWindow.RECTANGULAR),
+                        CpuReference(N_MAIN, FftWindow.RECTANGULAR).magnitude(x)
                     )
                 }
+
+                println("\n  --- k0 = $k0 ---")
+                if (r != null) {
+                    println("  幅值最大的 4 个 bin：${topBins(r.mag, 4)}")
+                    println("  |X[$k0]| = ${"%.6f".format(r.mag[k0])}（期望 1.0）；" +
+                            "非峰最大 ${"%.3e".format(r.rest)}；与 CPU 参考最大相对偏差 ${"%.3e".format(r.err)}")
+                }
+
+                // 位置：唯一能把"对的"与"错位的"分开的量。去掉了位反转的实现在这里必然倒下
+                // （那正是旧 GPUFFT 的缺陷③）。
+                report(
+                    "k0=$k0：峰值落在 k = $k0",
+                    r != null && r.peak == k0,
+                    r?.let {
+                        "实际峰值在 k = ${it.peak}（|X|=${"%.6f".format(it.peakMag)}）" +
+                                "——峰跑到别的 bin 上就是错位：错位的频谱不报错、不崩，只是数据错。" +
+                                "半谱只有 N/2+1 个 bin，实余弦的共轭峰被折叠掉了，不要去找 k = N-$k0"
+                    } ?: blocked()
+                )
+
+                // 幅度：归一化 2/N 与"半谱把共轭峰折叠进来"这两件事一起钉住。
+                //
+                // ★ 这一条**不可替代**：CPU 参考与生产代码共用 `FftWindow.compensation`，
+                // 所以"整体缩放错"在逐 bin 比对里**两边同错、看不见**（CPU 参考自己也会
+                // 用同一个错的 u_Scale 去缩放）——只有"读回 1.0"钉得住绝对归一化。
+                report(
+                    "k0=$k0：峰值读回 1.0（半谱的 2/N 归一化）",
+                    r != null && abs(r.peakMag - 1.0) <= AMP_TOL,
+                    r?.let {
+                        "|X[$k0]| = ${"%.6f".format(it.peakMag)}，期望 1.0 ± $AMP_TOL" +
+                                "——写成 1.0/n 会得到 0.5，漏掉窗补偿会得到 2.0 以上"
+                    } ?: blocked()
+                )
+
+                // 逐 bin：只断言峰值位置的话，一个整体缩放错的实现照样通过。
+                report(
+                    "k0=$k0：与 CPU 参考（朴素 O(N²) DFT）逐 bin 的最大相对误差 ≤ $CPU_REF_TOL",
+                    r != null && r.err <= CPU_REF_TOL,
+                    r?.let {
+                        "相对峰值 ${"%.3e".format(it.err)}（CPU 参考吃的是与 GPU 逐位相同的 float32 输入，" +
+                                "并且用同一套窗系数与同一个缩放）"
+                    } ?: blocked()
+                )
+
+                // ★ 绝对下限。与上面那条**互补**：那条的分母是峰值，于是真值远小于
+                // CPU_REF_TOL 的 bin 完全不设防（"0 与 1e-17 之差"永远合格）。
+                //
+                // 两处刻意的选择：
+                //   · 分母锚在**期望的**峰高 [EXPECTED_PEAK]，不是观测最大值——否则一个
+                //     留着毒值的 bin 会把分母抬到 1e30，这条判据自己变成 `1.0 ≤ 1e24` 恒真；
+                //   · 另外单独数一遍毒值 bin，因为"核没写到它们"比"非峰偏大"更接近根因。
+                report(
+                    "k0=$k0：所有非峰 bin ≤ $ABS_LIMIT 倍峰高，且没有 bin 留着毒值（矩形窗的**绝对**下限）",
+                    r != null && r.poisonCount == 0 && r.rest <= EXPECTED_PEAK * ABS_LIMIT,
+                    r?.let {
+                        if (it.poisonCount > 0) {
+                            "有 ${it.poisonCount} 个 bin 的幅值在毒值量级——**核没有写到它们**，" +
+                                    "输出缓冲的预填就是为了让这件事现形"
+                        } else {
+                            "非峰最大 ${"%.3e".format(it.rest)}，门槛 ${"%.1e".format(EXPECTED_PEAK * ABS_LIMIT)}" +
+                                    "——正常实现这里是 1.03e-07 量级。上面那条逐 bin 比对看不见它：" +
+                                    "它的分母是峰值，真值远小于门槛的 bin 永远合格"
+                        }
+                    } ?: blocked()
+                )
             }
 
             // ==================================================================
@@ -380,52 +514,46 @@ class FftVerifierApp : Application() {
             // 所以这一节的把关判据是**与 CPU 参考（同一套窗系数、同一个缩放）逐 bin 比对**。
             println("\n-- 二、换窗不改变幅度读数（四种窗，k0=$WIN_K0）--")
 
-            if (main == null) {
-                println("  （无法进行：没有可运行的 FftKernel。）")
-            } else {
-                val peakByWindow = LinkedHashMap<FftWindow, Double>()
-                for (window in FftWindow.values()) {
-                    val x = cosineInput(N_MAIN, WIN_K0)
-                    val cpu = CpuReference(N_MAIN, window).magnitude(x)
-                    val gpu = main.spectrum(x, 0, window)
+            // 「换窗不改变读数」这条产品性质，由下面四条「峰值读回 1.0」共同承担——
+            // 四个窗都读回 1.0，它们当然两两一致。
+            //
+            // 曾经另写过一条「四窗峰值读数两两一致」的断言，**它是算术恒真的**：
+            // 四个值各被夹在 1 ± AMP_TOL 内，极差必 ≤ 2·AMP_TOL，而那条的阈值就是 2·AMP_TOL
+            // ——它不可能独立失败（"改哪一行只让它倒"的答案是"没有"）。已删除。
+            for (window in FftWindow.values()) {
+                val x = cosineInput(N_MAIN, WIN_K0)
+                val r = main?.let {
+                    Reading(it.spectrum(x, 0, window), CpuReference(N_MAIN, window).magnitude(x))
+                }
 
-                    val peak = peakIndex(gpu)
-                    val peakMag = gpu[peak]
-                    val err = maxRelError(gpu, cpu, cpu.max())
-                    peakByWindow[window] = peakMag
-
+                if (r != null) {
                     println(
-                        "  " + "[诊断] ${window.name}：峰值在 k=$peak，|X|=${"%.6f".format(peakMag)}；" +
-                                "非峰最大 ${"%.3e".format(maxExcept(gpu, peak))}（窗的主瓣/旁瓣，不是缺陷）；" +
-                                "与 CPU 参考最大相对偏差 ${"%.3e".format(err)}"
-                    )
-
-                    report(
-                        "${window.name} 窗：峰值仍在 k = $WIN_K0",
-                        peak == WIN_K0,
-                        "实际 k = $peak——窗是对称的，加了窗峰位不该动"
-                    )
-                    report(
-                        "${window.name} 窗：峰值读回 1.0（窗的相干增益补偿生效）",
-                        abs(peakMag - 1.0) <= AMP_TOL,
-                        "|X[$WIN_K0]| = ${"%.6f".format(peakMag)}，期望 1.0 ± $AMP_TOL" +
-                                "——不补偿的话它会变成 1/相干增益（Hann 约 2.0、BH 约 2.8）"
-                    )
-                    report(
-                        "${window.name} 窗：与 CPU 参考（同一套窗系数与缩放）逐 bin 比对 ≤ $CPU_REF_TOL",
-                        err <= CPU_REF_TOL,
-                        "相对峰值 ${"%.3e".format(err)}——窗下的把关量是它，" +
-                                "不是「非峰接近零」（那个阈值在窗下本来就不成立）"
+                        "  " + "[诊断] ${window.name}：峰值在 k=${r.peak}，|X|=${"%.6f".format(r.peakMag)}；" +
+                                "非峰最大 ${"%.3e".format(r.rest)}（窗的主瓣/旁瓣，不是缺陷）；" +
+                                "与 CPU 参考最大相对偏差 ${"%.3e".format(r.err)}"
                     )
                 }
 
-                val lo = peakByWindow.values.min()
-                val hi = peakByWindow.values.max()
                 report(
-                    "★ 四种窗的峰值读数两两一致（换窗不改变幅度读数）",
-                    hi - lo <= 2.0 * AMP_TOL,
-                    peakByWindow.entries.joinToString("；") { "${it.key.name}=${"%.6f".format(it.value)}" } +
-                            "；极差 ${"%.2e".format(hi - lo)}"
+                    "${window.name} 窗：峰值仍在 k = $WIN_K0",
+                    r != null && r.peak == WIN_K0,
+                    r?.let { "实际 k = ${it.peak}——窗是对称的，加了窗峰位不该动" } ?: blocked()
+                )
+                report(
+                    "${window.name} 窗：峰值读回 1.0（窗的相干增益补偿生效）",
+                    r != null && abs(r.peakMag - 1.0) <= AMP_TOL,
+                    r?.let {
+                        "|X[$WIN_K0]| = ${"%.6f".format(it.peakMag)}，期望 1.0 ± $AMP_TOL" +
+                                "——不补偿的话它会变成 1/相干增益（Hann 约 2.0、BH 约 2.8）"
+                    } ?: blocked()
+                )
+                report(
+                    "${window.name} 窗：与 CPU 参考（同一套窗系数与缩放）逐 bin 比对 ≤ $CPU_REF_TOL",
+                    r != null && r.err <= CPU_REF_TOL,
+                    r?.let {
+                        "相对峰值 ${"%.3e".format(it.err)}——窗下的把关量是它，" +
+                                "不是「非峰接近零」（那个阈值在窗下本来就不成立）"
+                    } ?: blocked()
                 )
             }
 
@@ -434,30 +562,40 @@ class FftVerifierApp : Application() {
             // ==================================================================
             println("\n-- 三、常输入（全同一个值 $CONST_INPUT）→ 峰只在 bin 0 --")
 
-            if (main == null) {
-                println("  （无法进行：没有可运行的 FftKernel。）")
-            } else {
+            run {
                 val x = DoubleArray(N_MAIN) { CONST_INPUT }
-                val cpu = CpuReference(N_MAIN, FftWindow.RECTANGULAR).magnitude(x)
-                val gpu = main.spectrum(x, 0, FftWindow.RECTANGULAR)
-
-                val peak = peakIndex(gpu)
-                val rest = maxExcept(gpu, 0)
-                val err = maxRelError(gpu, cpu, cpu.max())
+                val r = main?.let {
+                    Reading(
+                        it.spectrum(x, 0, FftWindow.RECTANGULAR),
+                        CpuReference(N_MAIN, FftWindow.RECTANGULAR).magnitude(x)
+                    )
+                }
                 val expected = 2.0 * CONST_INPUT
 
-                println("  [诊断] DC bin ${"%.6f".format(gpu[0])}；非峰最大 ${"%.3e".format(rest)}")
+                if (r != null) {
+                    println(
+                        "  [诊断] DC bin ${"%.6f".format(r.mag[0])}；非峰最大 ${"%.3e".format(r.rest)}"
+                    )
+                }
+
+                // 注意：这一条对"位反转缺失"是**免疫的**——常输入对任何置换都不变，
+                // 所以它天生看不见那类缺陷。它管的是 DC 路径与"别处不该有能量"。
                 report(
                     "常输入：唯一的峰在 bin 0（DC）",
-                    peak == 0 && rest <= gpu[0] * REST_LIMIT,
-                    "实际峰值在 k = $peak（|X|=${"%.6f".format(gpu[peak])}），非峰最大 ${"%.3e".format(rest)}" +
-                            "——常输入的谱只有一个直流分量，别处有能量就是错的"
+                    r != null && r.peak == 0 && r.rest <= r.mag[0] * REST_LIMIT,
+                    r?.let {
+                        "实际峰值在 k = ${it.peak}（|X|=${"%.6f".format(it.mag[it.peak])}），" +
+                                "非峰最大 ${"%.3e".format(it.rest)}" +
+                                "——常输入的谱只有一个直流分量，别处有能量就是错的"
+                    } ?: blocked()
                 )
                 report(
                     "常输入：|X[0]| = $expected（半谱的 2/N 归一化对 DC 就是 2 倍）且逐 bin 与 CPU 参考相符",
-                    abs(gpu[0] - expected) <= expected * AMP_TOL && err <= CPU_REF_TOL,
-                    "|X[0]| = ${"%.6f".format(gpu[0])}，期望 $expected；" +
-                            "与 CPU 参考最大相对偏差 ${"%.3e".format(err)}"
+                    r != null && abs(r.mag[0] - expected) <= expected * AMP_TOL && r.err <= CPU_REF_TOL,
+                    r?.let {
+                        "|X[0]| = ${"%.6f".format(it.mag[0])}，期望 $expected；" +
+                                "与 CPU 参考最大相对偏差 ${"%.3e".format(it.err)}"
+                    } ?: blocked()
                 )
             }
 
@@ -471,45 +609,33 @@ class FftVerifierApp : Application() {
             // "只有第一次算对"这类缺陷只有在这种场景里才现形。
             println("\n-- 四、场景会变：同一个 kernel 实例，频率/幅度/窗中途改变 --")
 
-            if (main == null) {
-                println("  （无法进行：没有可运行的 FftKernel。）")
-            } else {
-                val steps = listOf(
-                    Triple(100, 1.0, FftWindow.RECTANGULAR),
-                    Triple(400, 1.0, FftWindow.RECTANGULAR),
-                    Triple(400, 0.25, FftWindow.RECTANGULAR),
-                    Triple(900, 1.0, FftWindow.HANN),
-                )
-                val peaks = ArrayList<Int>()
-                val mags = ArrayList<Double>()
-
-                for ((i, s) in steps.withIndex()) {
-                    val (k0, amp, window) = s
-                    val x = cosineInput(N_MAIN, k0, amp)
-                    val cpu = CpuReference(N_MAIN, window).magnitude(x)
-                    val gpu = main.spectrum(x, 0, window)
-
-                    val peak = peakIndex(gpu)
-                    val peakMag = gpu[peak]
-                    val err = maxRelError(gpu, cpu, cpu.max())
-                    peaks.add(peak)
-                    mags.add(peakMag)
-
-                    report(
-                        "第 ${i + 1} 次：k0=$k0 幅度 $amp ${window.name} 窗 → 峰在 k=$peak，|X|=${"%.4f".format(peakMag)}",
-                        peak == k0 && abs(peakMag - amp) <= 2.0 * AMP_TOL && err <= CPU_REF_TOL,
-                        "期望峰在 k=$k0、高度 $amp；实际 k=$peak、高度 ${"%.6f".format(peakMag)}，" +
-                                "与 CPU 参考最大相对偏差 ${"%.3e".format(err)}"
-                    )
+            // 「场景会变」这条产品性质，由下面**四条 step 断言**共同承担：每一条都是
+            // **不同的输入**（频率 100/400/900、幅度 1.0/0.25、窗中途换成 Hann），
+            // 而 kernel 实例自始至终是同一个——一个"只有第一次算对"、或跨次泄漏状态的
+            // 实现，第 2/3/4 条必然倒下。
+            //
+            // 曾经另写过一条汇总断言（"峰值随频率移动、高度随幅度变化"），它的每个子句
+            // 都是这四条的子集（peak == k0 与 |peakMag - amp| 已经逐条断言过），
+            // **永远不会独立失败**。已删除。
+            val steps = listOf(
+                Triple(100, 1.0, FftWindow.RECTANGULAR),
+                Triple(400, 1.0, FftWindow.RECTANGULAR),
+                Triple(400, 0.25, FftWindow.RECTANGULAR),
+                Triple(900, 1.0, FftWindow.HANN),
+            )
+            for ((i, s) in steps.withIndex()) {
+                val (k0, amp, window) = s
+                val x = cosineInput(N_MAIN, k0, amp)
+                val r = main?.let {
+                    Reading(it.spectrum(x, 0, window), CpuReference(N_MAIN, window).magnitude(x))
                 }
-
                 report(
-                    "★ 峰值随输入频率移动（100 → 400 → 900），且高度随幅度变化（1.0 → 0.25）",
-                    peaks[0] == 100 && peaks[1] == 400 && peaks[3] == 900 &&
-                            abs(mags[1] - 1.0) <= 2.0 * AMP_TOL && abs(mags[2] - 0.25) <= 2.0 * AMP_TOL,
-                    "峰值序列 ${peaks.joinToString()}（期望 [100, 400, 400, 900]）；" +
-                            "高度序列 ${mags.joinToString { "%.4f".format(it) }}（期望 [1.0, 1.0, 0.25, 1.0]）" +
-                            "——场景不变的话，一个「只有第一次算对」的实现照样全绿"
+                    "场景会变·第 ${i + 1} 次：k0=$k0 幅度 $amp ${window.name} 窗 → 峰值落在正确的位置与高度",
+                    r != null && r.peak == k0 && abs(r.peakMag - amp) <= 2.0 * AMP_TOL && r.err <= CPU_REF_TOL,
+                    r?.let {
+                        "期望峰在 k=$k0、高度 $amp；实际 k=${it.peak}、高度 ${"%.6f".format(it.peakMag)}，" +
+                                "与 CPU 参考最大相对偏差 ${"%.3e".format(it.err)}"
+                    } ?: blocked()
                 )
             }
 
@@ -521,55 +647,92 @@ class FftVerifierApp : Application() {
             // `& (cap-1)` 取模。**这与 ② 的"槽位 0 镜像"是同一类问题**——那里没处理，
             // 产出过一段"掉到 0 的假信号"。
             //
-            // ⚠️ 这一节里"跨接缝与 ringStart=0 一致"那条是**弱断言**：整条路径都坏了
+            // ⚠️ 这一节里"两个起点彼此一致"那条是**弱断言**：整条路径都坏了
             // 但坏得一致时它恒真（实测：把 bindBufferBase 的 index/buffer 互换，
-            // 输出全是 0，而 `0 == 0` 照样 PASS）。真正把关的是**与 CPU 参考比对**那两条。
-            println("\n-- 五、跨环绕取样本（规格 R3）：ringStart 落在接缝附近 --")
+            // 输出全是 0，而 `0 == 0` 照样 PASS）。真正把关的是**与 CPU 参考比对**那三条。
+            //
+            // ⚠️ 而"与 CPU 参考比对"这条形式**本身**也有个洞：矩形窗的 `windowAt` 恒等于
+            // 1.0，**窗的下标取哪个都对**。所以"只跨接缝"与"只用窗"两节各自跑，
+            // 都盖不住 `windowAt(i)` → `windowAt(src)`（窗按环槽位取）——实测那个错
+            // 在当时的出厂配置下 47 条断言全绿。于是这里必须有**窗 × 跨接缝**的组合。
+            println("\n-- 五、跨环绕取样本（规格 R3）：起点落在接缝附近，且**窗 × 跨接缝**组合覆盖 --")
 
-            if (main == null) {
-                println("  （无法进行：没有可运行的 FftKernel。）")
-            } else {
-                val k0 = 400
-                val x = cosineInput(N_MAIN, k0)
-                val cpu = CpuReference(N_MAIN, FftWindow.RECTANGULAR).magnitude(x)
-                val start = RING_CAP - RING_CROSS_OFFSET
+            val k0 = 400
+            val x = cosineInput(N_MAIN, k0)
+            val startCross = RING_CAP - RING_CROSS_OFFSET
+            val startCrossBig = RING_CAP - RING_CROSS_OFFSET_BIG
+            val startPlain = RING_PLAIN_START
 
-                val gpuCross = main.spectrum(x, start, FftWindow.RECTANGULAR)
-                val gpuZero = main.spectrum(x, 0, FftWindow.RECTANGULAR)
+            // 夹具自检（不经过任何生产代码）：环里没被读到的槽位确实是毒值。
+            // 它给"取模写错会被暴露"那句担保——没有它，那句话就是没有依据的。
+            //
+            // 自检的槽位必须是**刚上传的这一份**（跨接缝 $startCross）不读的：
+            // 它读 [0,1910] ∪ [3959,4095]，所以 [1911,3958] 是没人碰的——取 2096。
+            //
+            // （这条自检第一次跑就抓住了我自己写错的一次：原先取的槽位落在 [0,1910] 里，
+            //   读回来是信号值 -0.989 而不是毒值。夹具自检的价值就在这里。）
+            main?.uploadRing(x, startCross)
+            val poisonSlot = 2096
+            val poisonValue = main?.readInputFloat(poisonSlot) ?: Double.NaN
+            report(
+                "夹具自检：环里未被读到的槽位（$poisonSlot）确实填了毒值（这条不经过任何生产代码）",
+                main != null && abs(poisonValue - POISON) <= POISON * 1e-6,
+                if (main == null) blocked() else "读到 ${"%.6e".format(poisonValue)}，期望 $POISON"
+            )
 
-                val errCross = maxRelError(gpuCross, cpu, cpu.max())
-                val errZero = maxRelError(gpuZero, cpu, cpu.max())
-
-                // 前提：毒值真的在环里。不然"取模写错会被发现"这句话没有依据
-                // （那个槽位不在本次读的 2048 个样本里）。
-                val poisonSlot = RING_CAP - 2000
-                val poisonThere = abs(main.readInputFloat(poisonSlot) - POISON) <= POISON * 1e-6
-                report(
-                    "前提：环里未被读到的槽位（$poisonSlot）确实填了毒值（取模写错会被它暴露）",
-                    poisonThere,
-                    "读到 ${"%.6e".format(main.readInputFloat(poisonSlot))}，期望 $POISON"
-                )
-
-                report(
-                    "★ 跨接缝（ringStart=$start：$RING_CROSS_OFFSET 个样本在环尾、其余绕回环首）的谱与 CPU 参考一致",
-                    errCross <= CPU_REF_TOL,
-                    "与 CPU 参考的最大相对误差 ${"%.3e".format(errCross)}" +
-                            "——这一条才是把关的：只看「与 ringStart=0 一致」的话，" +
-                            "「整条路径都坏但坏得一致」时它恒真"
-                )
-                report(
-                    "ringStart=0（不跨接缝）的谱与 CPU 参考一致",
-                    errZero <= CPU_REF_TOL,
-                    "与 CPU 参考的最大相对误差 ${"%.3e".format(errZero)}"
-                )
-                report(
-                    "跨接缝与 ringStart=0 的谱彼此一致（弱断言，只有与 CPU 参考并行才有意义）",
-                    maxAbsDiff(gpuCross, gpuZero) <= 1e-6,
-                    "两者最大绝对差 ${"%.3e".format(maxAbsDiff(gpuCross, gpuZero))}" +
-                            "——**单看这条抓不住「取模写错」**（输出全 0 时也成立），" +
-                            "它只防「两种起始位置给出两个不同的谱」"
+            val rCrossRect = main?.let {
+                Reading(
+                    it.spectrum(x, startCross, FftWindow.RECTANGULAR),
+                    CpuReference(N_MAIN, FftWindow.RECTANGULAR).magnitude(x)
                 )
             }
+            val rCrossWin = main?.let {
+                Reading(
+                    it.spectrum(x, startCrossBig, FftWindow.BLACKMAN_HARRIS),
+                    CpuReference(N_MAIN, FftWindow.BLACKMAN_HARRIS).magnitude(x)
+                )
+            }
+            val rPlain = main?.let {
+                Reading(
+                    it.spectrum(x, startPlain, FftWindow.RECTANGULAR),
+                    CpuReference(N_MAIN, FftWindow.RECTANGULAR).magnitude(x)
+                )
+            }
+
+            report(
+                "★ 跨接缝 · 矩形窗（ringStart=$startCross：$RING_CROSS_OFFSET 个样本绕回环首）：谱与 CPU 参考一致（≤ $RING_REF_TOL）",
+                rCrossRect != null && rCrossRect.err <= RING_REF_TOL,
+                rCrossRect?.let {
+                    "与 CPU 参考的最大相对误差 ${"%.3e".format(it.err)}——这一条才是把关的：" +
+                            "只看「与别的起点一致」的话，「整条路径都坏但坏得一致」时它恒真"
+                } ?: blocked()
+            )
+            report(
+                "★★ 跨接缝 · **非矩形窗**（ringStart=$startCrossBig：$RING_CROSS_OFFSET_BIG 个样本绕回环首，BH 窗）：谱与 CPU 参考一致（≤ $RING_REF_TOL）",
+                rCrossWin != null && rCrossWin.err <= RING_REF_TOL,
+                rCrossWin?.let {
+                    "与 CPU 参考的最大相对误差 ${"%.3e".format(it.err)}" +
+                            "——**矩形窗的 windowAt 恒等于 1.0，窗的下标取哪个都对**，所以「窗」与「跨接缝」" +
+                            "必须在这一条里组合起来才守得住：把 `windowAt(i)` 写成 `windowAt(src)`" +
+                            "（窗按环槽位取）在此处是 6.9e-4 量级的错，其余各条一条也看不见"
+                } ?: blocked()
+            )
+            report(
+                "ringStart=$startPlain（非零、不跨接缝）的谱与 CPU 参考一致（≤ $RING_REF_TOL）",
+                rPlain != null && rPlain.err <= RING_REF_TOL,
+                rPlain?.let {
+                    "与 CPU 参考的最大相对误差 ${"%.3e".format(it.err)}" +
+                            "——起点刻意不用 0：那时它与第一节 k0=400 是同一次测量的重放"
+                } ?: blocked()
+            )
+            report(
+                "跨接缝与 ringStart=$startPlain 的谱彼此一致（弱断言，只有与 CPU 参考并行才有意义）",
+                rCrossRect != null && rPlain != null && maxAbsDiff(rCrossRect.mag, rPlain.mag) <= 1e-6,
+                if (rCrossRect == null || rPlain == null) blocked()
+                else "两者最大绝对差 ${"%.3e".format(maxAbsDiff(rCrossRect.mag, rPlain.mag))}" +
+                        "——**单看这条抓不住「取模写错」**（输出全 0 时也成立），" +
+                        "它只防「两种起始位置给出两个不同的谱」"
+            )
 
             // ==================================================================
             // 六、端点长度：MIN_N 与 MAX_N
@@ -585,27 +748,26 @@ class FftVerifierApp : Application() {
             for (n in intArrayOf(FftKernel.MIN_N, FftKernel.MAX_N)) {
                 val k0 = n / 8
                 val endpoint = if (n == FftKernel.MAX_N) "上限" else "下限"
-                val h = try {
-                    harness(n)
+                var h: FftHarness? = null
+                var buildError: Throwable? = null
+                try {
+                    h = harness(n)
                 } catch (t: Throwable) {
-                    report("n=$n（$endpoint）：FftKernel 能构造", false, t.message?.trim() ?: t.toString())
-                    null
+                    buildError = t
                 }
-                if (h != null) {
-                    for (window in listOf(FftWindow.RECTANGULAR, FftWindow.BLACKMAN_HARRIS)) {
-                        val x = cosineInput(n, k0)
-                        val cpu = CpuReference(n, window).magnitude(x)
-                        val gpu = h.spectrum(x, 0, window)
-                        val peak = peakIndex(gpu)
-                        val peakMag = gpu[peak]
-                        val err = maxRelError(gpu, cpu, cpu.max())
-                        report(
-                            "n=$n（$endpoint）${window.name} 窗：峰在 k=$k0 且与 CPU 参考逐 bin 一致",
-                            peak == k0 && abs(peakMag - 1.0) <= AMP_TOL && err <= CPU_REF_TOL,
-                            "峰值在 k=$peak（期望 $k0）、|X|=${"%.6f".format(peakMag)}（期望 1.0）、" +
-                                    "与 CPU 参考最大相对偏差 ${"%.3e".format(err)}"
-                        )
+                for (window in listOf(FftWindow.RECTANGULAR, FftWindow.BLACKMAN_HARRIS)) {
+                    val x = cosineInput(n, k0)
+                    val r = h?.let {
+                        Reading(it.spectrum(x, 0, window), CpuReference(n, window).magnitude(x))
                     }
+                    report(
+                        "n=$n（$endpoint）${window.name} 窗：峰在 k=$k0 且与 CPU 参考逐 bin 一致",
+                        r != null && r.peak == k0 && abs(r.peakMag - 1.0) <= AMP_TOL && r.err <= CPU_REF_TOL,
+                        r?.let {
+                            "峰值在 k=${it.peak}（期望 $k0）、|X|=${"%.6f".format(it.peakMag)}（期望 1.0）、" +
+                                    "与 CPU 参考最大相对偏差 ${"%.3e".format(it.err)}"
+                        } ?: "$BLOCKED —— n=$n 的核没能构造出来：${buildError?.message?.trim()?.take(200)}"
+                    )
                 }
             }
 
@@ -656,10 +818,15 @@ class FftVerifierApp : Application() {
             // 构造失败（着色器编译不过）时**报一条失败就收**，别让异常逃出去：
             // 逃出去的话汇总行打不出来，人只看得到一句 "校验过程抛出异常" 加栈——
             // 而"着色器编译不过"这个原因在零节已经报过了，这里只该复述一句。
+            // 注意这一节**无论成败都只记一条**（条目数不随失败模式漂移）。
             val perf = try {
                 harness(FftKernel.MAX_N)
             } catch (t: Throwable) {
-                report("n=${FftKernel.MAX_N}：FftKernel 能构造", false, t.message?.trim() ?: t.toString())
+                report(
+                    "n=${FftKernel.MAX_N} 的一次 execute() 在 ${BUDGET_MS} ms 预算内",
+                    false,
+                    "$BLOCKED —— ${t.message?.trim()?.take(200)}"
+                )
                 null
             }
             if (perf != null) run {
@@ -719,6 +886,9 @@ class FftVerifierApp : Application() {
      *
      * <p>取源码用**反射**而不是在这里手抄一份：手抄的那份会随上游改动静默失真。
      * 取不到就报一条失败，而不是抛出去把 GL 线程打死。
+     *
+     * <p><strong>四条断言无论成功失败都照记</strong>：早退时不记的话，日志里就只剩别的节的条目，
+     * 读的人会以为"这个校验器一共就这么几条"。条目数是对外契约，不随失败模式漂移。
      */
     private fun verifyUniformNames(
         report: (String, Boolean, String) -> Unit,
@@ -730,49 +900,62 @@ class FftVerifierApp : Application() {
             source != null,
             if (source == null) "取不到（方法名或可见性变了）" else "${source.length} 字符"
         )
-        if (source == null) return
 
-        val probe = try {
-            ShaderProbe(source)
-        } catch (t: Throwable) {
-            report("前提：能把 FftKernel 的着色器源码单独编译一遍", false, t.message?.trim() ?: t.toString())
-            return
-        }
-        probe.use {
-            if (!it.compiled) {
-                report("前提：能把 FftKernel 的着色器源码单独编译一遍", false, "编译或链接失败")
-                return
+        var probe: ShaderProbe? = null
+        var probeError: Throwable? = null
+        if (source != null) {
+            try {
+                probe = ShaderProbe(source)
+            } catch (t: Throwable) {
+                probeError = t
             }
-            report("前提：能把 FftKernel 的着色器源码单独编译一遍", true, "编译并链接通过")
+        }
+        val compiled = probe?.compiled == true
+        val blockedDetail = "无法评估：${
+            probeError?.message?.trim()?.take(200)
+                ?: "着色器源码取不到或编译不过（见上面那条）"
+        }"
+        report(
+            "前提：能把 FftKernel 的着色器源码单独编译一遍",
+            compiled,
+            if (probeError != null) probeError.message?.trim()?.take(200) ?: probeError.toString()
+            else if (compiled) "编译并链接通过"
+            else blockedDetail
+        )
 
-            val unresolved = UNIFORM_NAMES.filter { name -> it.location(name) < 0 }
+        try {
+            val active = probe?.activeUniforms ?: emptyList()
+            val unresolved = if (compiled) UNIFORM_NAMES.filter { probe!!.location(it) < 0 } else emptyList()
             report(
-                "★ execute() 用到的 5 个 uniform 名字在着色器里都能解析出 location",
-                unresolved.isEmpty(),
-                if (unresolved.isEmpty())
-                    UNIFORM_NAMES.joinToString() + " —— 全部解析成功"
-                else
-                    "解析不出来的是 ${unresolved.joinToString()}——" +
-                            "glGetUniformLocation 返回 −1 而 glUniform1i 不报错，值会静默不生效；" +
-                            "着色器里活跃的是 ${it.activeUniforms.joinToString()}"
+                "★ execute() 用到的 ${UNIFORM_NAMES.size} 个 uniform 名字在着色器里都能解析出 location",
+                compiled && unresolved.isEmpty(),
+                if (!compiled) blockedDetail
+                else if (unresolved.isEmpty()) UNIFORM_NAMES.joinToString() + " —— 全部解析成功"
+                else "解析不出来的是 ${unresolved.joinToString()}——" +
+                        "glGetUniformLocation 返回 −1 而 glUniform1i 不报错，值会静默不生效；" +
+                        "着色器里活跃的是 ${active.joinToString()}"
             )
 
-            val extra = it.activeUniforms.toSet() - UNIFORM_NAMES.toSet()
-            val missing = UNIFORM_NAMES.toSet() - it.activeUniforms.toSet()
+            val extra = active.toSet() - UNIFORM_NAMES.toSet()
+            val missing = UNIFORM_NAMES.toSet() - active.toSet()
             report(
                 "★ 着色器里活跃的 uniform 恰好就是 execute() 设的那 ${UNIFORM_NAMES.size} 个",
-                extra.isEmpty() && missing.isEmpty(),
-                "活跃 ${it.activeUniforms.size} 个：${it.activeUniforms.joinToString()}" +
+                compiled && extra.isEmpty() && missing.isEmpty(),
+                if (!compiled) blockedDetail
+                else "活跃 ${active.size} 个：${active.joinToString()}" +
                         (if (extra.isEmpty() && missing.isEmpty()) ""
                         else "；多出来的 ${extra.joinToString()}（execute 从没设过 → 它是 0）；" +
                                 "少掉的 ${missing.joinToString()}（被优化掉或改名了）")
             )
-            info(
-                "说明", "这一条封的是「uniform 名字写错静默无效」这个盲区——" +
-                        "与 CPU 参考的逐 bin 比对能兜住它，但兜住的是「结果不对」，" +
-                        "这里直接指出「哪里不对」"
-            )
+        } finally {
+            probe?.close()
         }
+
+        info(
+            "说明", "这一条封的是「uniform 名字写错静默无效」这个盲区——" +
+                    "与 CPU 参考的逐 bin 比对能兜住它，但兜住的是「结果不对」，" +
+                    "这里直接指出「哪里不对」"
+        )
     }
 
     /** 汇总并给出退出码。失败清单为空即 0。 */
@@ -870,8 +1053,39 @@ private class FftHarness(
     /** 上传 + 跑一次 + 读回半谱（`n/2+1` 个 bin 的幅值）。 */
     fun spectrum(x: DoubleArray, ringStart: Int, window: FftWindow): DoubleArray {
         uploadRing(x, ringStart)
+        poisonOutput()
         kernel.execute(inputBuffer, ringStart, window)
         return readSpectrum()
+    }
+
+    /**
+     * 把**输出**缓冲整块预填成 [POISON]。
+     *
+     * <p>这是输入侧那份毒值的对偶，理由完全一样：核**没写到的** bin 会留着上一次的
+     * 残留，而残留看起来完全正常——尤其当残留是上一个频率的同一个 bin 时，
+     * 它甚至还是"一个合理的谱值"。预填之后，没写到的 bin 一律是 1e30，
+     * 任何一条判据都会当场炸掉。
+     *
+     * <p>实测的用处：把 Nyquist 那一处写入删掉（`k <= n/2` → `k < n/2`）时，
+     * 没有它时全绿；有它时 [ABS_LIMIT] 那条立刻失败。
+     */
+    fun poisonOutput() {
+        val bins = kernel.binCount()
+        val filled = FloatArray(bins) { POISON }
+        val bytes = BufferUtils.createByteBuffer(bins * Float.SIZE_BYTES)
+        bytes.asFloatBuffer().put(filled)
+        gl.bindShaderStorageBuffer(kernel.outputBufferId())
+        gl.uploadBufferSubData(0L, bytes)
+        gl.bindShaderStorageBuffer(0)
+    }
+
+    /** 读回输出缓冲一个槽位的原始值（用来确认预填真的生效了）。 */
+    fun readOutputFloat(index: Int): Double {
+        val fb = BufferUtils.createFloatBuffer(1)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, kernel.outputBufferId())
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, index.toLong() * Float.SIZE_BYTES, fb)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+        return fb.get(0).toDouble()
     }
 
     /** 读回一个浮点槽位的原始值（用来确认毒值真的在缓冲里）。 */
@@ -941,6 +1155,35 @@ private class ShaderProbe(source: String) : AutoCloseable {
     override fun close() {
         glDeleteProgram(program)
     }
+}
+
+/**
+ * 一次测量的四个量，凑在一起是因为它们**全部来自同一次 GPU 运行**——
+ * 分开各算一次会让"这条断言看的是上一次的输出"这种事有可乘之机。
+ *
+ * <p>调用方拿到的是**可空的** [Reading]（被测对象构造失败时为 null），
+ * 但断言照记，只是判为失败、细节写 [BLOCKED]——见 [BLOCKED] 的说明。
+ */
+private class Reading(val mag: DoubleArray, val cpu: DoubleArray) {
+
+    /** 幅值最大的 bin。 */
+    val peak: Int = peakIndex(mag)
+
+    val peakMag: Double = mag[peak]
+
+    /** 除峰之外的最大幅值——"其余 bin 都很小"要看的正是它。 */
+    val rest: Double = maxExcept(mag, peak)
+
+    /** 与 CPU 参考逐 bin 的最大相对误差（分母是 CPU 参考的峰值）。 */
+    val err: Double = maxRelError(mag, cpu, cpu.max())
+
+    /**
+     * 幅值落在毒值量级的 bin 个数：**核没写到的** bin 会留着夹具预填的 [POISON]。
+     *
+     * <p>单独数出来，是因为光看"非峰最大"会被毒值本身骗过去：它会成为观测最大值，
+     * 于是以观测峰高为分母的判据全部变宽（见 [EXPECTED_PEAK]）。
+     */
+    val poisonCount: Int = mag.count { it >= POISON / 2.0 }
 }
 
 /**
