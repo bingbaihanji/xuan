@@ -85,7 +85,7 @@ public enum FftWindow {
     public double coherentGain(int n) {
         if (n < 2) {
             throw new IllegalArgumentException(
-                    "窗长必须 ≥ 2，实际 " + n + "（n=1 时常量窗以外的窗都退化）");
+                    "窗长必须 ≥ 2，实际 " + n + "（n<2 时窗在多数定义下退化，本类一律拒绝）");
         }
         double sum = 0.0;
         for (int i = 0; i < n; i++) {

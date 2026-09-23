@@ -149,6 +149,25 @@ class FftWindowTest {
     }
 
     @Test
+    void 枚举序号必须与着色器的_u_WindowKind_一致() {
+        // ★ 这条钉的是一处**跨语言的位置耦合**：Java 侧用 ordinal() 传参，
+        //    GLSL 侧（FftKernel 的 windowAt）用硬编码的 0/1/2/3 分支。
+        //
+        // 一旦有人往枚举**中间**插一个窗，Java 侧 compensation 算的是新序号的窗，
+        // 而着色器乘的是另一个窗——**幅度读数差一点，画面上完全看不出来**。
+        //
+        // ⚠️ 而那条"换窗不改变读数"的断言**抓不到这个**：它观测的是"换窗后读数
+        //    是否相同"，两边一起错的时候反而自洽。**那条防的是"补偿写错"，
+        //    防不了"两边一起错"。** 所以这里必须单独钉一次顺序。
+        //
+        // 改 FftKernel 的 windowAt 分支号时，这条会提醒你同步改这里。
+        assertEquals(0, FftWindow.RECTANGULAR.ordinal(), "u_WindowKind=0 是矩形窗");
+        assertEquals(1, FftWindow.HANN.ordinal(), "u_WindowKind=1 是 Hann");
+        assertEquals(2, FftWindow.HAMMING.ordinal(), "u_WindowKind=2 是 Hamming");
+        assertEquals(3, FftWindow.BLACKMAN_HARRIS.ordinal(), "u_WindowKind=3 是 BH");
+    }
+
+    @Test
     void 退化长度明确报错而不是返回无穷大() {
         // ★ 原稿这条写的是 `assertTrue(w.compensation(2) > 0.0)`——**对 HANN 是恒真的**：
         //    它在 n=2 时两个系数都是 0，相干增益为 0，compensation 返回 Infinity，
