@@ -8,7 +8,9 @@ import com.bingbaihanji.jfgl.chart.Chart
 import com.bingbaihanji.jfgl.chart.ChartType
 import com.bingbaihanji.jfgl.chart.RingChartData
 import com.bingbaihanji.jfgl.chart.Series
+import com.bingbaihanji.jfgl.chartrender.ChartRenderLayout
 import com.bingbaihanji.jfgl.glview.FXGLTransfer
+import com.bingbaihanji.jfgl.gpu.FftWindow
 import com.bingbaihanji.jfgl.renderer.Gc
 import com.bingbaihanji.jfgl.util.Rect
 import com.bingbaihanji.jfgl.view.MainView
@@ -20,6 +22,12 @@ import org.lwjgl.opengl.GL11.*
 import org.lwjgl.opengl.GL30.GL_FRAMEBUFFER_BINDING
 import java.nio.ByteBuffer
 import kotlin.jvm.java
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.system.exitProcess
 
 /**
@@ -75,6 +83,19 @@ import kotlin.system.exitProcess
  *   <li><b>标记尺寸真的被用上了</b>（第 17 节）。断言的量是<b>像素数 = 点数 × 边长²</b>，
  *       而不是"有像素"——后者对任何非 0 的 markerSize 都成立。</li>
  * </ol>
+ *
+ * <p>Task 7（子项目 D-③-1）<b>频谱</b>补了第 19 节。它守的是「GPU 上的 FFT 输出被画到了
+ * 对的地方」——数值那一半（峰值落在正确的 bin、与朴素 DFT 逐 bin 比对、换窗不改读数、
+ * 跨环绕）归 {@code FftVerifier}，而**位置与几何那一半只有像素拦得住**，
+ * 所以它在这里而不在那里（`FftVerifier` 明确"不画任何东西"）。
+ *
+ * <p><b>它的判别式只有一条，而且不是最显眼的那条</b>：相邻两个 bin 之间那一列上的墨迹，
+ * 落在**两者幅值的中点**那一行，还是只落在左边那个的高度上。
+ * 把 {@code SpectrumSeriesRenderer} 第二个实例属性的偏移从 4 改成 0（两个属性都指向同一个
+ * bin）时，每一段退化成**水平小横线**，而**峰那一列的最高有色行仍然在顶边**——
+ * 于是"峰值在正确的 bin"与"峰高对得上参考幅值"这两条**照常通过**（实测：这一节 14 条里
+ * 只有那两条 ★ 失败，其余 12 条全绿）。这与折返图那条判据（[ZIG_VALUES]）是同一件事，
+ * 只是这里把"两个实例之间"的分辨尺度交给了 FFT 的主瓣。
  *
  * <h2>观察期与校验期</h2>
  *
@@ -510,6 +531,181 @@ private val SCATTER_VALUES = doubleArrayOf(0.15, 0.85, 0.15, 0.85, 0.15)
 private const val SCATTER_BLANK_X = 762f
 private const val SCATTER_BLANK_Y = 267f
 
+// ---------------------------------------------------------------------------
+// Task 7 的频谱实验图（子项目 D-③-1）
+//
+// 与 Task 12/13/14 的实验图一样**只在观察期画**（理由同上："画面只有这 7 种颜色"
+// 那条断言不许改弱）。它比前几张多一层：**同一张图、同一块绘图区、同一份数据对象**，
+// 在观察期里分四幕换输入——于是"频谱跟着输入变"这件事不必靠四块地方来演，
+// 而且跨帧的状态泄漏（"只有第一次算对"）在这里同样无处可藏（同 [movingSquareX]）。
+// ---------------------------------------------------------------------------
+
+/**
+ * 频谱实验图的绘图区：主绘图区**下方**那块空地。
+ *
+ * <p>逐条避开别的东西：主绘图区到 y=500 为止；折返图从 x=350 起（y 505..595）；
+ * 缺口图从 y=610 起；每帧移动的那个方块落在 x ≤ 120、y 540..580。
+ */
+private const val SPECTRUM_PLOT_X = 128f
+private const val SPECTRUM_PLOT_Y = 502f
+private const val SPECTRUM_PLOT_W = 220f
+private const val SPECTRUM_PLOT_H = 103f
+
+/**
+ * 频谱的环容量。**它就是 FFT 的变换长度**：
+ * `SpectrumSeriesRenderer.transformLength(容量)` 取 `min(默认长度 2048, 容量)`，
+ * 容量 512 时就是 512——半谱 257 个 bin，每帧跑一次 512 点的 FFT。
+ *
+ * <p>取 512 而不是 2048 是刻意的：够小（每帧的 compute 开销可以忽略），
+ * 又远在 [SPECTRUM_WINDOW_MAX] 之上（可见窗口落在 bin 44..68，离 Nyquist 很远）。
+ */
+private const val SPECTRUM_CAPACITY = 512
+
+/**
+ * `SpectrumSeriesRenderer.DEFAULT_FFT_LENGTH` 的**第二份**（它在渲染器里是私有的）。
+ *
+ * <p>存在的理由只有一个：[SPECTRUM_CAPACITY] 这个环容量要与它比较一次——
+ * 变换长度是 `min(它, 容量)`，只有它 ≥ 容量时"变换长度 == 环容量"才成立，
+ * 而下面那份 CPU 参考正是按这个长度算的。**两边改一处就得改另一处。**
+ */
+private const val SPECTRUM_DEFAULT_FFT_LENGTH = 2048
+
+/**
+ * ★ x 轴窗口**刻意不取 [0, …]**：左端 44。
+ *
+ * <p>窗口左端为 0 时，`uFirstRelIndex`（本次 draw 的第一个实例相对窗口左端的偏移）
+ * **恒等于 0**——传对传错画出的是同一张图，那个量根本不起作用。
+ * 左端非 0 之后，它写错（例如传成绝对下标）会让整条谱平移 44 个 bin、
+ * 约 400 px，远超这块绘图区：峰值那一列的断言因此立刻失败。
+ * 这是从 Task 6 的探针里学来的写法。
+ *
+ * <p>窗口取 24 个 bin、绘图区 220 px，于是每个 bin 摊 **9.17 px**——
+ * "相邻两个 bin 之间那一列"由此有足够的宽度可点（见 [SPECTRUM_MID_BAND_PX]）。
+ */
+private const val SPECTRUM_WINDOW_MIN = 44.0
+private const val SPECTRUM_WINDOW_MAX = 68.0
+
+/**
+ * 四幕的频率（单位是 **bin 下标**，不是 Hz——频谱的 x 轴单位就是 bin）。
+ *
+ * <p>两个频率都在窗口 [44, 68] 内，且**各留了 4 个 bin 的主瓣余量**
+ * （BH 窗的主瓣是 ±4 个 bin：52-4=48 ≥ 44、62+4=66 ≤ 68）——
+ * 主瓣被窗口切掉的话，峰的形状就不再是"一个完整的峰"了。
+ *
+ * <p>52 → 62 相差 10 个 bin ≈ 92 px，峰位的移动一眼可辨。
+ */
+private const val SPECTRUM_K0_A = 52
+private const val SPECTRUM_K0_B = 62
+
+/** 单位幅度：`|X[k0]|` 读回 1.0（这一条由 FftVerifier 钉着，这里直接当已知量用）。 */
+private const val SPECTRUM_AMP = 1.0
+
+/** 第三幕的幅度。改幅度**只该改峰高、不该改峰位**。 */
+private const val SPECTRUM_AMP_LOW = 0.25
+
+/**
+ * y 轴的窗口上界。留约 20% 余量：单位幅度正弦的谱峰是 `1.0`，
+ * 窗口取 [0, 1] 的话峰顶正好压在绘图区上边缘、被 scissor 切掉——
+ * 那时"最高的一列在哪"就不再是一个能读的量了。
+ */
+private const val SPECTRUM_Y_MAX = 1.2
+
+/**
+ * 谱线的线宽（半宽 = 1）。
+ *
+ * <p>取细是刻意的：下面那条判别式看的是"某一列上的墨迹落在哪一行"，
+ * 线越粗，墨迹在竖直方向摊得越开，两个高度之间的空档就越小。
+ */
+private const val SPECTRUM_LINE_WIDTH = 2f
+
+/**
+ * 四幕的切换帧（观察期内的**绘制**帧下标）。
+ *
+ * <p>每一幕都**整整附录一环**（[SPECTRUM_CAPACITY] 个样本 = 环容量）：
+ * 环里因此只剩这一幕的样本，谱是干净的单频，不掺上一幕的尾巴。
+ */
+private const val SPECTRUM_STAGE_B = 25
+private const val SPECTRUM_STAGE_C = 50
+private const val SPECTRUM_STAGE_D = 75
+
+/**
+ * 四张快照的抓取帧（`frame` 是"已完成帧数"，故比它所在的绘制帧下标大 1）。
+ *
+ * <p>每一张都抓在它那一幕的**中段**：切换那一帧的谱是过渡态（缓冲刚换内容），
+ * 隔开几帧再取才是稳态。
+ */
+private const val SPECTRUM_SHOT_A = 10
+private const val SPECTRUM_SHOT_B = 35
+private const val SPECTRUM_SHOT_C = 60
+private const val SPECTRUM_SHOT_D = 85
+
+/**
+ * ★ 相邻两个 bin 之间那一列的**中点带**（半高，行）。
+ *
+ * <p>正确实现那里是一条斜着穿过去的线段，它在那一列上的墨迹是**以两 bin 幅值的中点为心**
+ * 的一小段；坏实现（第二个实例属性的偏移写成 0、两个属性都指向 `mag[k]`）把每一段画成
+ * **水平小横线**，那一列上的墨迹落在**左端点**的高度上。
+ * 宽度取 5 是为了容下线段自身的法向外扩（近竖直的线段在水平方向切一刀，切面比线宽长）。
+ */
+private const val SPECTRUM_MID_BAND_PX = 5
+
+/**
+ * ★ 那一列上"**左端点高度**附近不许有墨迹"的带宽（半高，行）。
+ *
+ * <p>它就是坏实现会把水平小横线画在的地方。带宽取得比中点带窄，
+ * 是为了给正确实现留出余量——正确实现的墨迹从两 bin 中点再往上只到
+ * `线宽/2 ÷ cos(倾角)` 那么多（实测约 4 px）。
+ */
+private const val SPECTRUM_WRONG_BAND_PX = 3
+
+/**
+ * 判别式的**前提**：相邻两个 bin 的行距至少要这么宽。
+ *
+ * <p>窄了它就成了橡皮图章——本仓库的教训是"<b>差 2px 抓不住，差四分之一屏才一眼可辨</b>"
+ * （见 [ZIG_VALUES] 的那段说明）。实测这一对是 BH 窗主瓣上最陡的一级：
+ * `|X[k0]|=1.0`、`|X[k0+1]|≈0.68`，在 [SPECTRUM_Y_MAX] 与 103 px 的绘图区上约 **27 px**。
+ */
+private const val SPECTRUM_MIN_DROP_PX = 8
+
+/** 峰位那条断言允许的列误差（px）。抗锯齿与实例边界都会让它差上一两个像素。 */
+private const val SPECTRUM_PEAK_COL_TOL = 4.0
+
+/**
+ * "最高的那一列"取平均时的容差（px）：最高行在 `minTop + 它` 之内的列都算峰顶。
+ *
+ * <p>峰顶两侧各有一列的最高行只比它低一两个像素（线段一升一降），
+ * 取单个极值会因抗锯齿差一个像素就翻。
+ */
+private const val SPECTRUM_TIE_PX = 3
+
+/**
+ * "峰位跟着频率移动"这条断言要求的最小位移（px）。
+ *
+ * <p>`SPECTRUM_K0_A → SPECTRUM_K0_B` 差 10 个 bin，实测约 92 px——留一半余量，
+ * 免得它退化成"移动了 1 个像素也算移动"。
+ */
+private const val SPECTRUM_MOVE_MIN_PX = 50.0
+
+/**
+ * 峰顶那一列取"墨迹上下界的中心"时的行误差（px）。
+ *
+ * <p>判据是"墨迹的中心 == 参考幅值所在的行"——线段在峰顶两侧一升一降，
+ * 于是在峰顶那一列上，两段的墨迹关于顶点近似对称，**中心就是顶点**，
+ * 与线宽和倾角都无关。留下的误差只有几个像素。
+ */
+private const val SPECTRUM_PEAK_ROW_TOL = 5.0
+
+/** 第三幕的峰比第一幕矮——至少这么多行，"峰高跟着幅度变"才不是一句空话。 */
+private const val SPECTRUM_HEIGHT_DROP_MIN = 40.0
+
+/**
+ * 频谱用的窗函数。**与 `SpectrumSeriesRenderer.WINDOW` 同一个值**（那边是私有常量）。
+ *
+ * <p>只有下面那份 CPU 参考需要它：渲染那段谱用的是哪个窗，参考就得用哪个窗，
+ * 否则逐 bin 比的是"两个窗的差别"。渲染器换窗时这里要跟着换。
+ */
+private val SPECTRUM_WINDOW = FftWindow.BLACKMAN_HARRIS
+
 /**
  * 校验器的启动入口。
  *
@@ -619,7 +815,15 @@ class ChartVerifierApp : Application() {
      */
     private val degenScatterRgb = 0x00C0FF
 
+    // ---- Task 7 的频谱实验图的颜色 ----
+    // 同上：只在观察期画，所以也不在画面的常驻颜色集合里。
+
+    /** 频谱曲线的颜色。与上面所有颜色都不同（尤其不等于退化色 0xFF00FF）。 */
+    private val spectrumRgb = 0x9F00FF
+
     private val degenScatterArgb = degenScatterRgb or (0xFF shl 24)
+
+    private val spectrumArgb = spectrumRgb or (0xFF shl 24)
 
     private val scatterArgb = scatterRgb or (0xFF shl 24)
     private val markerBigArgb = markerBigRgb or (0xFF shl 24)
@@ -872,6 +1076,61 @@ class ChartVerifierApp : Application() {
     /** 退化系列在拾取里读回的 ID（在观察期取样）。它必须是 0 之外的某个值。 */
     private var degenPickId = 0
 
+    // -----------------------------------------------------------------------
+    // Task 7 的频谱实验图（子项目 D-③-1）
+    //
+    // 一块绘图区、一个系列、一份数据，四幕换输入。见文件上方"Task 7 的频谱实验图"。
+    // -----------------------------------------------------------------------
+
+    private val spectrumRect = Rect(SPECTRUM_PLOT_X, SPECTRUM_PLOT_Y,
+        SPECTRUM_PLOT_W, SPECTRUM_PLOT_H)
+
+    /**
+     * 频谱的数据：环容量 [SPECTRUM_CAPACITY]，0 号维度是"样本序号"（没人读，
+     * 频谱的 x 轴单位是 bin），1 号维度是时域采样值。
+     *
+     * <p>1 号维度的范围声明成 `[0, SPECTRUM_Y_MAX]`，于是 y 轴的默认窗口就是它——
+     * **它同时是着色器的 `uValueRange`**，下面所有"幅值 → 屏幕行"的期望值都按它算。
+     */
+    private val spectrumData = RingChartData(
+        arrayOf(
+            AxisRange(0.0, SPECTRUM_CAPACITY.toDouble(), "样本", ""),
+            AxisRange(0.0, SPECTRUM_Y_MAX, "幅度", "")
+        ),
+        SPECTRUM_CAPACITY
+    )
+
+    /** 频谱的 x 轴：窗口是 **bin 下标**，且刻意不取 [0, …]（见 [SPECTRUM_WINDOW_MIN]）。 */
+    private val spectrumXAxis = Axis(AxisType.LINEAR, spectrumData.axisRange(0))
+        .setDisplayLength(SPECTRUM_PLOT_W.toDouble())
+        .setWindow(SPECTRUM_WINDOW_MIN, SPECTRUM_WINDOW_MAX)
+
+    private val spectrumYAxis = Axis(AxisType.LINEAR, spectrumData.axisRange(1))
+        .setDisplayLength(SPECTRUM_PLOT_H.toDouble())
+
+    private val spectrumSeries = Series("频谱", spectrumData, ChartType.SPECTRUM)
+        .color(spectrumArgb).lineWidth(SPECTRUM_LINE_WIDTH)
+
+    private val spectrumChart: Chart = buildSpectrumChart()
+
+    /**
+     * 三幕各自的输入样本（CPU 参考要用它算预期幅值）。
+     *
+     * <p>存下来而不是"用的时候按同一个公式再生成一遍"：再生成一遍的话，
+     * 参考比的是"我以为我喂进去的东西"，而真实喂进去的那一批可能不是它
+     * （`Float` 截断、追加顺序、环的槽位……任何一环错了都看不见）。
+     * 第四幕（全 NaN）不需要——它的期望值是"一个像素都没有"。
+     */
+    private var spectrumSamplesA: DoubleArray? = null
+    private var spectrumSamplesB: DoubleArray? = null
+    private var spectrumSamplesC: DoubleArray? = null
+
+    /** 四幕的快照（观察期抓，校验期断言）。 */
+    private var spectrumSnapshotA: Shot? = null
+    private var spectrumSnapshotB: Shot? = null
+    private var spectrumSnapshotC: Shot? = null
+    private var spectrumSnapshotD: Shot? = null
+
     /** 散点图里数据下标 → 屏幕 x。**与折线的顶点取同一个映射**（不加半格）。 */
     private fun scatterX(index: Double): Double = SCATTER_PLOT_X +
             (index - SCATTER_WINDOW_MIN) / (SCATTER_WINDOW_MAX - SCATTER_WINDOW_MIN) * SCATTER_PLOT_W
@@ -978,6 +1237,100 @@ class ChartVerifierApp : Application() {
         /** 两张快照是不是同一张图。 */
         fun sameAs(other: Shot): Boolean =
             w == other.w && h == other.h && px.contentEquals(other.px)
+
+        /** 某一列里最上面那个该颜色像素的**行号**；整列都没有这个颜色时返回 null。 */
+        fun topInkRow(x: Int, rgb: Int): Int? {
+            for (y in 0 until h) {
+                if (at(x, y) == rgb) return y
+            }
+            return null
+        }
+
+        /** 某一列里该颜色像素的行范围 `[上, 下]`；整列都没有这个颜色时返回 null。 */
+        fun inkRange(x: Int, rgb: Int): IntRange? {
+            var top = -1
+            var bottom = -1
+            for (y in 0 until h) {
+                if (at(x, y) == rgb) {
+                    if (top < 0) top = y
+                    bottom = y
+                }
+            }
+            return if (top < 0) null else top..bottom
+        }
+
+        /**
+         * "最高的那一列"：频谱的峰在哪里。
+         *
+         * <p>返回列位置是"最高行在 `minTop + tiePx` 之内的那些列的**平均**"，
+         * 不是"最高的那一列"——峰顶两侧各有一列的最高行只比它低一两个像素
+         * （线段一升一降），取平均比取单个极值稳，也不会因为抗锯齿差一个像素就翻。
+         *
+         * @return 一列都没有该颜色时返回 null（"这张图压根没画"与"峰在别处"必须分开）
+         */
+        fun inkPeak(rgb: Int, tiePx: Int): InkPeak? {
+            var best = Int.MAX_VALUE
+            for (x in 0 until w) {
+                val top = topInkRow(x, rgb) ?: continue
+                if (top < best) best = top
+            }
+            if (best == Int.MAX_VALUE) return null
+            var sum = 0.0
+            var count = 0
+            for (x in 0 until w) {
+                val top = topInkRow(x, rgb) ?: continue
+                if (top <= best + tiePx) {
+                    sum += x
+                    count++
+                }
+            }
+            return InkPeak(sum / count, best)
+        }
+    }
+
+    /** [Shot.inkPeak] 的结果：峰所在的列（小数）与那一列的最高行。 */
+    private class InkPeak(val column: Double, val topRow: Int)
+
+    /**
+     * 频谱的 CPU 参考：**直接按定义**算一个 bin 的幅值。
+     *
+     * <p>`|X[k]| = |Σ x[t]·w[t]·e^{-2πikt/n}| · 2/n · 窗补偿`，只算被问到的那几个 bin
+     * （不像 FftVerifier 那份要算整条半谱，所以这里是 O(N) 一次、可以随用随算）。
+     *
+     * <p><strong>它为什么在这里。</strong>下面那条判别式问的是"两个 bin 之间那一列上的墨迹
+     * 落在**哪一行**"，而那一行只由两个 bin 的幅值决定——幅值不知道的话，
+     * 判据就只剩"有墨迹"（对正确与坏掉的实现都成立，是橡皮图章）。
+     * 幅值里只有 `|X[k0]| = 1.0` 是"由构造已知"的，`|X[k0+1]| ≈ 0.68` 不是（它由窗的主瓣决定）。
+     *
+     * <p>刻意**不写成 FFT**：这份参考的全部价值在于**它显然是对的**——
+     * 没有位反转、没有蝶形、没有 shared memory，只有一个循环
+     * （与 FftVerifier 的 `CpuReference` 同一条理由）。
+     *
+     * <p>它与被测路径**共用 `FftWindow`**（同一套窗系数、同一个补偿），所以它比的是"窗上面的变换"，
+     * 不是窗本身；而"GPU 的输出与这个式子逐 bin 相符"这一条由 FftVerifier 钉着。
+     */
+    private class SpectrumReference(
+        private val n: Int,
+        private val samples: DoubleArray,
+        window: FftWindow,
+    ) {
+
+        private val w = DoubleArray(n) { window.coefficient(it, n) }
+
+        private val scale = 2.0 / n * window.compensation(n)
+
+        /** 第 `k` 个 bin 的幅值（半谱归一化之后，与 GPU 的输出同口径）。 */
+        fun magnitude(k: Int): Double {
+            var sr = 0.0
+            var si = 0.0
+            for (t in 0 until n) {
+                val v = samples[t] * w[t]
+                val a = -2.0 * PI * k * t / n
+                sr += v * cos(a)
+                si += v * sin(a)
+            }
+            return hypot(sr, si) * scale
+        }
     }
 
     /**
@@ -1106,6 +1459,19 @@ class ChartVerifierApp : Application() {
             .setDisplayLength(DEGEN_PLOT_H.toDouble())
         val chart = Chart(xAxis, yAxis)
         chart.addLayer("退化散点").add(degenScatterSeries)
+        return chart
+    }
+
+    /**
+     * 造频谱实验图：一个 `ChartType.SPECTRUM` 系列、x 轴窗口是 bin 下标。
+     *
+     * <p>图里**没有任何别的东西**：网格、刻度、底色一概不画。
+     * 下面那些断言看的是"这一块地方该颜色的墨迹落在哪一行"，
+     * 多画一样东西就要多解释一次"那些像素是谁的"。
+     */
+    private fun buildSpectrumChart(): Chart {
+        val chart = Chart(spectrumXAxis, spectrumYAxis)
+        chart.addLayer("频谱").add(spectrumSeries)
         return chart
     }
 
@@ -1301,6 +1667,8 @@ class ChartVerifierApp : Application() {
             drawWrapChart(gc)
             // Task 14 的两张散点实验图，同样只在观察期画（同样的理由）。
             drawScatterCharts(gc)
+            // Task 7 的频谱实验图，同样只在观察期画（同样的理由）。它一块绘图区演四幕。
+            drawSpectrumChart(gc, n)
         }
 
         // 4) 标注：在图表**之后**画的普通图元。它必须盖在数据系列之上——
@@ -1353,6 +1721,61 @@ class ChartVerifierApp : Application() {
     /** 拾取探针图：一条线宽 1 的水平线，见 [PICK_PROBE_PLOT_H]。 */
     private fun drawPickProbeChart(gc: Gc) {
         gc.charts.draw(pickProbeChart, pickProbeRect, gc.width, gc.height)
+    }
+
+    /**
+     * 频谱实验图：**一张图、四幕**。
+     *
+     * <p>四幕分别是：单位幅度正弦（峰在 bin [SPECTRUM_K0_A]）→ 换频率 → 换幅度 → 全 NaN。
+     * 画面因此逐帧在变，而**这条绘制路径、这个系列对象、这一份缓冲自始至终是同一个**——
+     * "只有第一幕算得对"或"状态跨幕泄漏"的实现没有藏身处。
+     *
+     * <p>每次换幕都**整整附录一环**：环里于是只剩这一幕的样本，谱是干净的单频。
+     *
+     * @param n 本帧的绘制帧下标（与 `frame` 差 1，见 [drawScene]）
+     */
+    private fun drawSpectrumChart(gc: Gc, n: Int) {
+        when (n) {
+            0 -> spectrumSamplesA = appendSpectrumSine(SPECTRUM_K0_A, SPECTRUM_AMP)
+            SPECTRUM_STAGE_B -> spectrumSamplesB = appendSpectrumSine(SPECTRUM_K0_B, SPECTRUM_AMP)
+            SPECTRUM_STAGE_C -> spectrumSamplesC =
+                appendSpectrumSine(SPECTRUM_K0_A, SPECTRUM_AMP_LOW)
+            SPECTRUM_STAGE_D -> appendSpectrumGap()
+        }
+        gc.charts.draw(spectrumChart, spectrumRect, gc.width, gc.height)
+    }
+
+    /**
+     * 附录一整环（[SPECTRUM_CAPACITY] 个样本）的正弦，返回刚写进去的那批样本
+     * （CPU 参考要用它）。
+     *
+     * <p>样本**过一遍 `Float`**：GPU 里存的就是 float32，参考拿 double 去比对的话，
+     * 比出来的是"输入本来就有的取整误差"，不是变换误差（与 FftVerifier 的 `cosineInput` 同一条）。
+     *
+     * <p>写法是"先攒成数组、再整批 append"而不是边算边 append：两者写进环的字节必须**逐位相同**，
+     * 否则参考算的是另一批数。这里让它们只可能来自同一个数组。
+     */
+    private fun appendSpectrumSine(k0: Int, amp: Double): DoubleArray {
+        val samples = DoubleArray(SPECTRUM_CAPACITY) {
+            (amp * cos(2.0 * PI * k0 * it / SPECTRUM_CAPACITY)).toFloat().toDouble()
+        }
+        for (i in samples.indices) {
+            spectrumData.append(i.toDouble(), samples[i])
+        }
+        return samples
+    }
+
+    /**
+     * 第四幕：整整一环全 **NaN**——反证用的输入。
+     *
+     * <p>全 NaN 的谱是 NaN，着色器的 `isnan(aY0) || isnan(aY1)` 会把每一个实例都退化到
+     * 裁剪空间之外，于是那一块地方**一个像素都不该有**。
+     * 这一条同时是"跨帧残留"的检查：上一幕的谱刚在那里画过。
+     */
+    private fun appendSpectrumGap() {
+        for (i in 0 until SPECTRUM_CAPACITY) {
+            spectrumData.append(i.toDouble(), Double.NaN)
+        }
     }
 
     /**
@@ -1424,6 +1847,12 @@ class ChartVerifierApp : Application() {
         if (frame == CROSS_REMOVE_FRAME + 2) {
             crossSnapshotAfter = grab(h, crossRect)
         }
+        // Task 7 的四幕频谱各抓一张：它们同样**只在观察期画**，
+        // 而且每一幕的像素只存在于它自己那几帧里（下一幕会把它整个换掉）。
+        if (frame == SPECTRUM_SHOT_A) spectrumSnapshotA = grab(h, spectrumRect)
+        if (frame == SPECTRUM_SHOT_B) spectrumSnapshotB = grab(h, spectrumRect)
+        if (frame == SPECTRUM_SHOT_C) spectrumSnapshotC = grab(h, spectrumRect)
+        if (frame == SPECTRUM_SHOT_D) spectrumSnapshotD = grab(h, spectrumRect)
     }
 
     /**
@@ -2224,6 +2653,187 @@ class ChartVerifierApp : Application() {
         report("退化散点系列：全画面一个像素都没有", (counts[degenScatterRgb] ?: 0) == 0,
             "退化色像素 ${counts[degenScatterRgb] ?: 0}——非 0 说明 markerSize = 0 没有退化" +
                     "（边长取到了非 0 的值，标记会凭空出现在绘图区里）")
+
+        // ---- 19. ★ 频谱：GPU 上的 FFT 输出真的被画成了曲线，而且画在它该在的位置上 ----
+        //
+        // 这一组问的是**像素**，所以它落在本校验器里而不在 FftVerifier 里：
+        // 后者明确"不画任何东西"（它要的是 GL 上下文，不是画面），守的是"FFT 算对了"；
+        // 这里守的是"算出来的东西被画到了对的地方"。两条口径各自独立，谁也替代不了谁。
+        //
+        // ★ 判别式是"相邻两个 bin 之间那一列"。**"峰值在正确的 bin、高度也对"这类断言
+        //   抓不住它**：把第二个实例属性的偏移从 4 改成 0（两个属性都指向 mag[k]）之后，
+        //   每一段退化成一段**水平小横线**，画在**左端点**的高度上，而**峰那一列的最高
+        //   有色行仍然在顶边**——所有位置断言照常通过。能分开两种实现的地方只有
+        //   "两个实例之间那一列上的墨迹落在哪一行"。这与 ② 里折返图那条判据是同一件事
+        //   （见 [ZIG_VALUES]），只是这里的分辨尺度来自 FFT 的主瓣而不是数据本身。
+        println("\n-- ★ 频谱：FFT 的输出画在了它该在的位置上 --")
+
+        val specA = spectrumSnapshotA
+        val specB = spectrumSnapshotB
+        val specC = spectrumSnapshotC
+        val specD = spectrumSnapshotD
+        if (specA == null || specB == null || specC == null || specD == null) {
+            report("前提：四张频谱快照都抓到了", false,
+                "A=${specA != null}，B=${specB != null}，C=${specC != null}，D=${specD != null}")
+        } else {
+            // 与渲染路径**同一份映射**：ChartRenderLayout 就是 CPU 那一份（着色器里还有一份，
+            // 两份的一致性由 ChartRenderLayoutTest 钉着）。期望值直接由它算，
+            // 于是"画出来的位置"与"布局说该在的位置"是同一个口径，不会各说各话。
+            val layout = ChartRenderLayout(spectrumRect, spectrumXAxis, spectrumYAxis)
+
+            /** 快照是绘图区那一块，左上角为原点：绝对坐标减掉绘图区左上角即局部坐标。 */
+            fun localX(abs: Double): Double = abs - SPECTRUM_PLOT_X
+            fun localY(abs: Double): Double = abs - SPECTRUM_PLOT_Y
+
+            val refA = spectrumSamplesA?.let {
+                SpectrumReference(SPECTRUM_CAPACITY, it, SPECTRUM_WINDOW)
+            }
+            val refB = spectrumSamplesB?.let {
+                SpectrumReference(SPECTRUM_CAPACITY, it, SPECTRUM_WINDOW)
+            }
+            val refC = spectrumSamplesC?.let {
+                SpectrumReference(SPECTRUM_CAPACITY, it, SPECTRUM_WINDOW)
+            }
+
+            // 前提两条：下面所有期望值都站在它们之上。
+            report("前提：FFT 的变换长度就是环容量 $SPECTRUM_CAPACITY" +
+                    "（容量 ≤ 渲染器的默认长度，否则 CPU 参考要按另一个长度算）",
+                SPECTRUM_CAPACITY <= SPECTRUM_DEFAULT_FFT_LENGTH,
+                "min(默认长度 $SPECTRUM_DEFAULT_FFT_LENGTH, 容量 $SPECTRUM_CAPACITY) = " +
+                        "${minOf(SPECTRUM_DEFAULT_FFT_LENGTH, SPECTRUM_CAPACITY)}" +
+                        "——默认长度是渲染器里的私有常量，这里是它的第二份，改一处就得改另一处")
+            report("前提：三幕的输入样本都记下来了（CPU 参考要用它们算预期幅值）",
+                refA != null && refB != null && refC != null,
+                "A=${refA != null}，B=${refB != null}，C=${refC != null}")
+
+            // ---- (1) 画出来了，而且在**预期的那一列**上 ----
+            val kA = SPECTRUM_K0_A
+            val kB = SPECTRUM_K0_B
+            val wantAX = localX(layout.screenX(kA.toDouble()).toDouble())
+            val wantBX = localX(layout.screenX(kB.toDouble()).toDouble())
+            val peakA = specA.inkPeak(spectrumRgb, SPECTRUM_TIE_PX)
+            val peakB = specB.inkPeak(spectrumRgb, SPECTRUM_TIE_PX)
+            val peakC = specC.inkPeak(spectrumRgb, SPECTRUM_TIE_PX)
+
+            report("阶段 A：频谱在绘图区里画出来了（该颜色的像素 > 0）",
+                peakA != null,
+                "该颜色的像素 ${specA.count(spectrumRgb)} px（局部 ${specA.w}×${specA.h}）" +
+                        "——这条只是前提：它成立不代表画对了地方")
+            report("阶段 A：峰值那一列与 ChartRenderLayout.screenX($kA) 相符" +
+                    "（x 轴窗口刻意不取 [0,…]，所以这一条同时钉住了 uFirstRelIndex）",
+                peakA != null && abs(peakA.column - wantAX) <= SPECTRUM_PEAK_COL_TOL,
+                peakA?.let {
+                    "峰值读在局部第 ${"%.1f".format(it.column)} 列（屏幕 x = " +
+                            "${"%.1f".format(it.column + SPECTRUM_PLOT_X)}），期望 " +
+                            "${"%.1f".format(layout.screenX(kA.toDouble()).toDouble())}" +
+                            "（局部 ${"%.1f".format(wantAX)}）——窗口左端非 0 时，" +
+                            "uFirstRelIndex 传成绝对下标会让整条谱右移 44 个 bin（约 400 px）"
+                } ?: "快照里一个该颜色的像素都没有"
+            )
+
+            // ---- (2) 峰的高度：就是参考幅值所在的行 ----
+            //
+            // 判据取"那一列墨迹的上下界的中点"而不是最高行：线段在峰顶两侧一升一降，
+            // 于是峰顶那一列上两段的墨迹关于顶点近似对称，**中点就是顶点**——
+            // 与线宽、倾角都无关，不必再去算线段的法向外扩。
+            val magA0 = refA?.magnitude(kA) ?: Double.NaN
+            val magA1 = refA?.magnitude(kA + 1) ?: Double.NaN
+            val rowPeakA = localY(layout.screenY(magA0).toDouble())
+            val rangeA = peakA?.let { specA.inkRange(it.column.roundToInt(), spectrumRgb) }
+            val centerA = rangeA?.let { (it.first + it.last) / 2.0 }
+            report("阶段 A：峰的高度就是参考幅值所在的行（|X[$kA]| ≈ ${"%.4f".format(magA0)}）",
+                centerA != null && abs(centerA - rowPeakA) <= SPECTRUM_PEAK_ROW_TOL,
+                if (centerA == null) "峰值那一列上没有该颜色的像素"
+                else "峰顶墨迹的行范围 $rangeA，中点 ${"%.1f".format(centerA)}，" +
+                        "期望 ${"%.1f".format(rowPeakA)}（±$SPECTRUM_PEAK_ROW_TOL）——" +
+                        "这条钉的是 y 方向：值与行的映射反了的话它会差半个绘图区"
+            )
+
+            // ---- (3) ★ 相邻两个 bin 之间那一列：墨迹应当落在两者幅值的中点 ----
+            val rowMidA = localY(layout.screenY((magA0 + magA1) / 2.0).toDouble())
+            val midColA = localX(layout.screenX(kA + 0.5).toDouble()).roundToInt()
+            report("前提：相邻两个 bin 的幅值差在屏幕上拉开的行距 ≥ ${SPECTRUM_MIN_DROP_PX}px" +
+                    "（窄了下面两条就成了橡皮图章）",
+                rowMidA - rowPeakA >= SPECTRUM_MIN_DROP_PX,
+                "|X[$kA]| = ${"%.4f".format(magA0)}、|X[${kA + 1}]| = ${"%.4f".format(magA1)}" +
+                        "（BH 窗主瓣上最陡的一级），在 ${SPECTRUM_PLOT_H.toInt()} px 高的绘图区上是 " +
+                        "${"%.1f".format(rowMidA - rowPeakA)} px"
+            )
+            val midInk = specA.countIn(midColA - 1, (rowMidA - SPECTRUM_MID_BAND_PX).roundToInt(),
+                midColA + 1, (rowMidA + SPECTRUM_MID_BAND_PX).roundToInt(), spectrumRgb)
+            report("★ 相邻两个 bin 之间那一列有墨迹，且落在**两者幅值的中点**那一行上" +
+                    "（正确实现：线段斜着穿过去）",
+                midInk > 0,
+                "局部第 $midColA 列（屏幕 x = ${midColA + SPECTRUM_PLOT_X}）、行 " +
+                        "${"%.1f".format(rowMidA)}±$SPECTRUM_MID_BAND_PX 里有 $midInk px，期望 > 0"
+            )
+            val wrongInk = specA.countIn(midColA - 1, (rowPeakA - SPECTRUM_WRONG_BAND_PX).roundToInt(),
+                midColA + 1, (rowPeakA + SPECTRUM_WRONG_BAND_PX).roundToInt(), spectrumRgb)
+            report("★ 那一列在**左端点的高度**（峰值那一行）附近没有墨迹" +
+                    "（坏实现把水平小横线画在这里）",
+                wrongInk == 0,
+                "局部第 $midColA 列、行 ${"%.1f".format(rowPeakA)}±$SPECTRUM_WRONG_BAND_PX 里有 " +
+                        "$wrongInk px，期望 0——非 0 说明相邻两段的第二端取的是**同一个 bin**" +
+                        "（第二个实例属性的偏移写成了 0），每一段退化成水平小横线；" +
+                        "而峰那一列的最高有色行仍在顶边，所以上面那些位置断言一条也看不见它"
+            )
+
+            // ---- (4) 场景会变：换频率峰位动、换幅度峰高动、全 NaN 什么都不画 ----
+            //
+            // 三幕用的是**同一个系列对象、同一个 ChartRenderer、同一份缓冲**——
+            // "只有第一幕算得对"或状态跨幕泄漏的实现没有藏身处（同 [movingSquareX]）。
+            val magB0 = refB?.magnitude(kB) ?: Double.NaN
+            val rowPeakB = localY(layout.screenY(magB0).toDouble())
+            val rangeB = peakB?.let { specB.inkRange(it.column.roundToInt(), spectrumRgb) }
+            val centerB = rangeB?.let { (it.first + it.last) / 2.0 }
+            report("阶段 B（频率 $kA → $kB）：峰位跟着移动 ${"%.0f".format(wantBX - wantAX)} px 且落在 " +
+                    "screenX($kB) 上",
+                peakB != null && abs(peakB.column - wantBX) <= SPECTRUM_PEAK_COL_TOL &&
+                        peakA != null && abs(peakB.column - peakA.column) >= SPECTRUM_MOVE_MIN_PX,
+                peakB?.let {
+                    "峰值读在局部第 ${"%.1f".format(it.column)} 列，期望 ${"%.1f".format(wantBX)}；" +
+                            "与阶段 A 相差 ${"%.1f".format(abs(it.column - (peakA?.column ?: 0.0)))} px" +
+                            "（要求 ≥ $SPECTRUM_MOVE_MIN_PX）"
+                } ?: "阶段 B 的快照里没有该颜色的像素"
+            )
+            report("阶段 B：幅度没变，峰高仍是 1.0（换频率不该动峰高）",
+                centerB != null && abs(centerB - rowPeakB) <= SPECTRUM_PEAK_ROW_TOL,
+                if (centerB == null) "阶段 B 的快照里没有该颜色的像素"
+                else "峰顶中点 ${"%.1f".format(centerB)}，期望 ${"%.1f".format(rowPeakB)}"
+            )
+
+            val magC0 = refC?.magnitude(kA) ?: Double.NaN
+            val rowPeakC = localY(layout.screenY(magC0).toDouble())
+            val rangeC = peakC?.let { specC.inkRange(it.column.roundToInt(), spectrumRgb) }
+            val centerC = rangeC?.let { (it.first + it.last) / 2.0 }
+            report("阶段 C（幅度 $SPECTRUM_AMP → $SPECTRUM_AMP_LOW、频率不变）：峰位不动、峰高降到" +
+                    "参考幅值那一行",
+                peakC != null && centerC != null && abs(peakC.column - wantAX) <= SPECTRUM_PEAK_COL_TOL &&
+                        abs(centerC - rowPeakC) <= SPECTRUM_PEAK_ROW_TOL,
+                peakC?.let {
+                    "峰值在局部第 ${"%.1f".format(it.column)} 列（期望 ${"%.1f".format(wantAX)}）；" +
+                            "峰顶中点 ${centerC?.let { c -> "%.1f".format(c) } ?: "无"}" +
+                            "，期望 ${"%.1f".format(rowPeakC)}（|X[$kA]| ≈ ${"%.4f".format(magC0)}）"
+                } ?: "阶段 C 的快照里没有该颜色的像素"
+            )
+            report("阶段 C：峰比阶段 A 矮了至少 ${SPECTRUM_HEIGHT_DROP_MIN.toInt()} px（峰高跟着幅度变）",
+                centerA != null && centerC != null && centerC - centerA >= SPECTRUM_HEIGHT_DROP_MIN,
+                if (centerA == null || centerC == null) "两幕里有一幕没读到峰顶"
+                else "阶段 A 峰顶在行 ${"%.1f".format(centerA)}，阶段 C 在行 " +
+                        "${"%.1f".format(centerC)}，相差 ${"%.1f".format(centerC - centerA)} px"
+            )
+            report("阶段 D（输入全 NaN）：绘图区里一个该颜色的像素都没有" +
+                    "（反证：上面的像素确实来自数据，不是别处漏进来的）",
+                specD.count(spectrumRgb) == 0,
+                "该颜色的像素 ${specD.count(spectrumRgb)} px，期望 0——全 NaN 的谱是 NaN，" +
+                        "着色器把每个实例都退化到裁剪空间之外"
+            )
+            report("阶段 D：整块绘图区都是背景色（上一幕的谱没有留下任何残留）",
+                specD.countNonBackgroundInRows(0, specD.h - 1, background) == 0,
+                "不是背景色的像素 ${specD.countNonBackgroundInRows(0, specD.h - 1, background)} px，" +
+                        "期望 0——这一块地方除了这张频谱图没有别的东西画过"
+            )
+        }
 
         println("\n画面出现的颜色：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")
         println("背景 ${counts[background] ?: 0} px，绘图区底色 ${counts[plotBackground] ?: 0} px")

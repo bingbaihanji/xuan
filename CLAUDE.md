@@ -38,9 +38,17 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
     -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.MainKt"
 
 # 运行像素校验器（自动关窗，退出码 0=通过 / 1=有断言失败）
+# ★ -Dstdout.encoding=UTF-8 放在 -cp **之前**：不加的话中文断言全是乱码，见下。
 mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
-    -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.PipelineVerifierKt"
+    -Dexec.args="-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.PipelineVerifierKt"
 ```
+
+> **⚠️ Windows 下必须带 `-Dstdout.encoding=UTF-8`。**
+> JVM 的 `stdout.encoding` 默认取系统编码（本机实测是 **GBK**），而 `exec:exec`
+> **不会**替你把它设成 UTF-8——于是五个校验器打印的中文断言（含**失败清单**）
+> 全是乱码。**实测**：同一支 `ChartVerifier`，不加时整份输出不可读，加上之后逐行可读；
+> 失败信息可读恰恰是这些校验器存在的一半理由（一个读不出原因的 FAIL 与没有断言差不多）。
+> 它必须写在 `-Dexec.args` 的值里（即分给那个 fork 出来的 JVM），放在 `-cp` 之前。
 
 `exec-maven-plugin` **未在 `pom.xml` 中声明**，但 3.6.3 已缓存，`-o` 离线可用。
 某些 shell 会把 `-D` 前缀吃掉（表现为 Maven 报 `Unknown lifecycle phase '.executable=java'`），
@@ -70,19 +78,25 @@ src/test/java/com/bingbaihanji/jfgl/chart/      TickGeneratorTest、AxisTest、A
 src/test/java/com/bingbaihanji/jfgl/chartrender/ ChartRenderLayoutTest、SeriesBufferTest、
                                                 SeriesUploadPlanTest、WindowRangeTest
                                                 （夹具类 ChartDataFixtures 本身没有测试）
+src/test/java/com/bingbaihanji/jfgl/gpu/        FftWindowTest、FftKernelTest
 ```
 
-当前 **308 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+当前 **323 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
 `@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`。
-分布：`geom/` 69、`renderer/` 97、`gl/` 10、`text/` 32、`chart/` 56、`chartrender/` 44。
+分布：`geom/` 69、`renderer/` 97、`gl/` 10、`text/` 32、`chart/` 57、`chartrender/` 44、
+`gpu/` 14。
 
-`geom/`、`math/`、`util/`、`ViewTransform`、`text/{SdfGenerator, TextLayout}`、`chart/`
-都是纯计算、不依赖 GL 上下文，最适合写单测。`gl/Framebuffer`、`renderer/PickBuffer`、
-`text/GlyphAtlas`、`chartrender/{WindowRange, SeriesUploadPlan, ChartRenderLayout,
-SeriesBuffer}` 只依赖 `GLAbstraction` **接口**，用 `src/test/.../gl/FakeGLAbstraction`
-这个假实现也能零 GL 上下文单测。`text/{FontFile, GlyphRasterizer}` 依赖 stb 的本地库
+`geom/`、`math/`、`util/`、`ViewTransform`、`text/{SdfGenerator, TextLayout}`、`chart/`、
+`gpu/FftWindow`（窗系数与相干增益补偿，纯算术）都是纯计算、不依赖 GL 上下文，最适合写单测。
+`gl/Framebuffer`、`renderer/PickBuffer`、`text/GlyphAtlas`、`chartrender/{WindowRange,
+SeriesUploadPlan, ChartRenderLayout, SeriesBuffer}` 只依赖 `GLAbstraction` **接口**，
+用 `src/test/.../gl/FakeGLAbstraction` 这个假实现也能零 GL 上下文单测。
+`gpu/FftKernel` 也一样：**它的着色器源码是纯字符串运算**（`shaderSource()` 包级可见），
+所以"共享内存数组的长度有没有与 `MAX_N` 各写一份""步长是不是又写回了字面量 1024"
+这类只看字符串才发现的缺陷都有单测钉着。`text/{FontFile, GlyphRasterizer}` 依赖 stb 的本地库
 （已实测能在 surefire 里加载）。`RenderBatch` 的着色器与 `Gc` 则必须靠校验器，
-`chartrender/` 的着色器与实例属性配置必须靠 `ChartVerifier`。
+`chartrender/` 的着色器与实例属性配置必须靠 `ChartVerifier`，
+`gpu/FftKernel` 的**输出数值**必须靠 `FftVerifier`（着色器能编译 ≠ 算得对）。
 
 **`chart/` 的边界是机器强制的**：它连 `renderer/` 也不依赖，由
 `ChartPackageIsolationTest` 递归遍历源码、按**包名白名单**守卫——白名单只放行
@@ -112,10 +126,12 @@ SeriesBuffer}` 只依赖 `GLAbstraction` **接口**，用 `src/test/.../gl/FakeG
 compute 用不了**——`gpu/GPUFFT.java` 就是被这个假设埋掉的（`#version 430`，
 Cooley-Tukey radix-2 + SSBO，版本与上下文能力其实都够）。
 
-> ⚠️ **但不要把它当成"现成可用的 FFT"**：`GpuFftVerifier` 实测揭出它**三层缺陷**，
-> 出厂那份**连编译都过不了**。详见「未实现 / 待办」里的那一条。
-> **"能编译/dashboard 能 dispatch"与"输出对"是两件事**——这条曾经被写反过：
-> 文档里一度说它"一直可用，只是没人引用"，而它**从未成功运行过一次**。
+> ⚠️ **但不要把它当成"现成可用的 FFT"**：当年的 `GpuFftVerifier`（提交 `adab313`，
+> 后来被改造成今天的 `FftVerifier`）实测揭出 `GPUFFT.java` **三层缺陷**，
+> 出厂那份**连编译都过不了**——它**从未成功运行过一次**。修好的实现是另外写的
+> `gpu/FftKernel.java`（见「未实现 / 待办」里的那一条）。
+> **"能编译 / 能 dispatch"与"输出对"是两件事**——这条曾经被写反过：
+> 文档里一度说它"一直可用，只是没人引用"。
 
 先前的 `CLAUDE.md` 里**没有任何一处写过上下文是几**——唯一沾边的 "3.3" 是架构图里
 `LWJGL 3.3.6`，那是**库**的版本。这一节就是为了补上这个缺口。
@@ -330,13 +346,45 @@ gc.endFrame()
 - **`Series.markerSize()` 是半径**（用户坐标单位），而着色器的 `uMarkerSize` 是**边长**；
   换算（×2）只在 `ScatterSeriesRenderer.markerEdge` 一处。两处各持一半解释的话，
   用户设半径 5 会拿到宽 5 的方块，**画面上没有任何症状**。
-- **不支持的要明确抛异常，不许静默不画**。本期只实现了三种图型：
-  `LINE`、`LINE_AND_MARKERS`（**只画折线那半**，标记点那半是已知缺口）、`SCATTER`。
-  `STEP` / `AREA` / `BAR` / `HEATMAP` / `WATERFALL` 一律抛异常——
-  把它们当普通折线画，阶梯图被拉成斜线、面积图整个填充消失，而画面完全正常。
+- **不支持的要明确抛异常，不许静默不画**。本期只实现了四种图型：
+  `LINE`、`LINE_AND_MARKERS`（**只画折线那半**，标记点那半是已知缺口）、`SCATTER`、
+  `SPECTRUM`（独立渲染器，见下）。`STEP` / `AREA` / `BAR` / `HEATMAP` / `WATERFALL`
+  一律抛异常——把它们当普通折线画，阶梯图被拉成斜线、面积图整个填充消失，而画面完全正常。
 - **`LOGARITHMIC` / `TEXT` 轴明确抛异常**：本期 GPU 路径只支持线性换算
   （`LINEAR` 与 `TIME`——时间轴的值是纪元秒，本身就是线性的）。
   按线性去画对数轴，曲线的形状是错的，而画面看起来完全正常。
+
+##### 频谱（③-1，`SpectrumSeriesRenderer`）
+
+- **它复用折线的整条绘制路径，没有自己的着色器**：实例布局与折线**逐项相同**
+  （每实例两个 float：`mag[k]` 与 `mag[k+1]`，同一个 VBO、偏移差 4 字节），
+  所以顶点程序、拾取程序、双偏移属性、`baseInstance`、拾取容差整套照用
+  `LineSeriesRenderer` 那一套。差别只有三处：**数据源是 FFT 的输出缓冲**
+  （绘制前先跑一次 `FftKernel.execute`）、实例区间的单位是 **bin**、
+  可见点数是 `N/2+1`。
+- **`ChartType.SPECTRUM` 的 `polylineFamily()` 是 `false`**（它的顶点不是"每个样本一个点"，
+  而是 FFT 算出来的 bin），所以它属于"独立渲染器"那一类。`ChartRenderer.rendererFor`
+  里那条 `SPECTRUM` 判断因此**必须排在 `polylineFamily()` 那道守卫之前**——
+  排在后面的话它先被"本期还没有渲染器"抛掉，频谱永远画不出来。
+- **★ 频谱的 x 轴窗口单位是 bin，不是 Hz**：渲染器拿 `axes[0].windowMin/Max` 直接当
+  bin 下标用（`x = bin 索引`）。**要显示 Hz 由应用自己换算轴标签**（`Δf = fs/N`）——
+  渲染层不知道采样率，也不该猜。
+- **compute 写、顶点属性读，同一个缓冲、零拷贝，但中间必须有 memory barrier**：
+  FFT 的输出缓冲**同时**是 SSBO 与 VBO（`glVertexAttribPointer` 记的是调用时绑在
+  `GL_ARRAY_BUFFER` 上的那个缓冲，与 SSBO 绑定互不干扰），所以 compute 写完不需要任何
+  GPU 侧拷贝。但 `FftKernel.execute` 内部那次 `memoryBarrier()` 是"compute 写 →
+  顶点属性读"之间**唯一**那道屏障：渲染器**必须先 `execute` 再绘制**，顺序反了会读到旧值
+  ——**数值错，不报任何 GL 错误**。
+- **预热期不画，也不补零**：环里还没攒够一个完整的窗时直接返回。**不补零**是刻意的
+  ——zero-padding 是另一个特性，静默补零会让用户看到一条"看起来正常"的错谱
+  （峰位与旁瓣全是假的）；**也不抛异常**，因为那是采集刚开始的暂态（与折线在可见区间
+  为空时直接返回同一种处理）。真正不成立的配置——环容量 < `FftKernel.MIN_N`——
+  才**响亮报错**：那个系列永远算不出频谱。
+- **实例化绘制的"容量"与缓冲实际大小不是一回事**：FFT 的输出缓冲只有 `N/2+1` 个 float，
+  而 `WindowRange` 的槽位算术要求容量是 2 的幂，所以传进去的是
+  `binCapacityFor(binCount)`（**向上取到的下一个 2 的幂**，只用于算术）。
+  容量取小了会让 `bin k` 与 `bin (k-容量)` 共用槽位，画出来的是**错位的谱**——
+  谱形完全正常，所以那条路只有"取下一个 2 的幂"这一种。
 
 ### 线程模型
 
@@ -370,8 +418,8 @@ gc.endFrame()
    改**拾取**路径后跑 `PickVerifier`（同样回读像素、断言精确 ID，退出码 0/1）：
 
    ```bash
-   mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
-       -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.PickVerifierKt"
+   mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
+       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.PickVerifierKt"
    ```
 
    拾取尤其危险：**错误的拾取不会让任何画面变坏**，只会让点击落在错误的对象上。
@@ -382,25 +430,52 @@ gc.endFrame()
    "位图被放大"区分开的断言**：
 
    ```bash
-   mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
-       -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.TextVerifierKt"
+   mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
+       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.TextVerifierKt"
    ```
 
-   改**图表绘制**路径后跑 `ChartVerifier`（同样回读像素、退出码 0/1）：
+   改**图表绘制**路径后跑 `ChartVerifier`（同样回读像素、退出码 0/1）。
 
    ```bash
    mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
-       "-Dexec.args=-cp %classpath com.bingbaihanji.jfgl.example.ChartVerifierKt"
+       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.ChartVerifierKt"
    ```
 
    它守的核心是那一组**与像素无关**的：整个 ② 的性能主张是「每帧只上传新增的点」，
    而**增量上传与每帧全量重传画出来的图逐像素相同**——所以那条断言观测的是
    **上传字节数**（`ChartRenderer.takeUploadedBytes`），不是像素，
    判据是"每一帧恰好 K×4 字节"。它另外钉住"NaN 必须断开折线""跨环绕时 `baseInstance`
-   真的生效（含槽位 0 的镜像）""散点不连线""拾取容差与裁剪""markerSize 退化"，
-   并且**场景逐帧在变**（有几张实验图只在观察期画、有一条系列中途整条消失）——
-   静态场景的校验器有盲区（`PickVerifier` 当时 24 条全绿仍漏掉一个真缺陷，
-   见 README 的「测试」一节）。
+   真的生效（含槽位 0 的镜像）""散点不连线""拾取容差与裁剪""markerSize 退化"、
+   以及**频谱**（见下），并且**场景逐帧在变**（有几张实验图只在观察期画、
+   有一条系列中途整条消失）——静态场景的校验器有盲区（`PickVerifier` 当时 24 条全绿
+   仍漏掉一个真缺陷，见 README 的「测试」一节）。
+
+   **频谱那一组（`ChartVerifier` 的"★ 频谱"一节）值得单独说一句**：它的判别式是
+   「相邻两个 bin 之间那一列上的墨迹落在**哪一行**」——两个 bin 的幅值之间的中点，
+   还是只落在左边那个的高度上。**"峰值在正确的 bin、高度也对"这类断言抓不住**
+   "第二个实例属性的偏移写成 0"：那样每一段退化成**水平小横线**，而**峰那一列的最高
+   有色行仍然在顶边**。这与折返图那条判据（见 `ZIG_VALUES`）是同一件事。
+   实测：把 `SpectrumSeriesRenderer` 里第二个属性的偏移从 4 改成 0，
+   **只有这两条 ★ 断言失败**（其余 63 条照常通过）。
+
+   改 **FFT / 频谱的数据来源**后跑 `FftVerifier`（退出码 0/1）。
+   它**不画任何东西**——要的是 GL 上下文，不是像素：
+
+   ```bash
+   mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
+       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.FftVerifierKt"
+   ```
+
+   它守的是"**FFT 算对了**"（**50 条**断言）：已知频率的纯正弦峰值落在正确的 bin、
+   与一份**朴素 O(N²) DFT 逐 bin 比对**（那份参考刻意不写成 FFT——它显然是对的，
+   拿另一份可能同样写错的 FFT 当参考就成了两个未知数互相印证）、
+   单位幅度读回 1.0、**换窗不改变幅度读数**、跨环绕取样本仍然正确、
+   `MIN_N` 与 `MAX_N` **两个端点**都跑。另有两条是给"已知盲区"正面封堵的：
+   **矩形窗下的绝对下限**（"逐 bin 比对"的分母是峰值，于是真值远小于门槛的 bin
+   完全不设防——删掉 Nyquist 那一处写入时，没有它那 47 条可以全绿）与
+   **"非矩形窗 × 跨接缝"的组合**（矩形窗的 `windowAt` 恒等于 1，窗的下标取哪个都对，
+   单独跑"只用窗"或"只跨接缝"都盖不住它）。
+   **像素那一半不在它这里**——频谱画出来的位置由 `ChartVerifier` 钉（见上）。
 2. **改了断言或修了 bug，做变异验证**：把 bug 重新注入，确认校验器真的失败。
    （校验器里那条"反证"断言就是这么来的——避免覆盖性检查恒真、变成橡皮图章。）
 3. 校验器依赖"用户坐标 1:1 映射到设备像素"这一前提。若将来引入真正的 DPI 缩放，
@@ -413,19 +488,24 @@ gc.endFrame()
 `geom/Tessellator`（凸扇形 + 凹耳切 + 孔洞桥接）、`geom/StrokeGenerator`（端点/接头/虚线）、
 `math/{Vec2,Mat3,Transform}`、`util/{Color,Rect}`、`renderer/ViewTransform`、
 `text/SdfGenerator`（覆盖度位图 → 有符号距离场）、`text/TextLayout`（槽位序列 → 四边形顶点）、
-`chart/` 全部（数据容器、轴与刻度、配色 LUT、图表装配——见「图表」一节）
+`chart/` 全部（数据容器、轴与刻度、配色 LUT、图表装配——见「图表」一节）、
+`gpu/FftWindow`（四种窗 + 相干增益补偿，**全项目唯一的一份**，纯算术）
 
 **可用（依赖 GL 上下文）**
 `gl/ShaderProgram`、`gl/Texture`、`gl/LwjglGLAbstraction`（`initialize()`/`dispose()` 是诚实的
 no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch`、
-`renderer/Gc` 的形状与路径方法、`gpu/ComputeShader`、
+`renderer/Gc` 的形状与路径方法、
+`gpu/ComputeShader`、`gpu/FftKernel`（一次 dispatch 干完全部：取数 → 加窗 → 位反转 →
+`log2(N)` 级蝶形 → 幅度，单 workgroup 全在 shared memory 里做；输出是 `N/2+1` 个 bin 的
+半谱）、
 `renderer/PickRegistry`（ID 分配与 `id→对象` 映射，纯内存可单测）、
 `renderer/PickBuffer`、`PickHit`、`Gc` 的 `pickId` / `pickable` / `pick` / `pickRect`、
 `FXGLTransfer.pickAsync`、`renderer/Material`（材质选择位）、
 `text/FontFile`（stb 的字体与度量封装）、`text/GlyphRasterizer`、`text/GlyphAtlas`（R8 图集）、
 `Gc` 的 `fontSize` / `drawText` / `measureText`、
 `chartrender/` 全部（`ChartRenderer`——入口是 `Gc.charts`、`LineSeriesRenderer`、
-`ScatterSeriesRenderer`、`SeriesBuffer`、`SeriesShaders`；用法见「图表」一节）
+`ScatterSeriesRenderer`、`SpectrumSeriesRenderer`（频谱，`ChartType.SPECTRUM`）、
+`SeriesBuffer`、`SeriesShaders`；用法见「图表」一节）
 
 **未实现 / 待办**
 - **其余图型的渲染器**：`STEP` / `AREA` / `BAR` / `HEATMAP` / `WATERFALL`
@@ -434,18 +514,22 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
   同样地，`LINE_AND_MARKERS` **只画折线那半**，标记点那半还没接（见
   `LineSeriesRenderer.requireSupported` 的 Javadoc）。
 - **非线性轴的 GPU 路径**：`LOGARITHMIC` / `TEXT` 轴在 `ChartRenderLayout` 里明确抛异常。
-- **GPU 计算**（子项目 D-③）：FFT、降采样、包络、密度累积（数字荧光）。
-  `gpu/GPUFFT.java`（`#version 430`）虽然在那儿，但**不能用**——`GpuFftVerifier`
-  实测它有**三层缺陷**：
-  1. **默认着色器编译不过**：`uint half = 1u << u_stage;` 里 `half` 是 GLSL **保留字**，
-     于是 `new GPUFFT()` 直接抛 `RuntimeException`——**它从来没有成功运行过一次**。
-  2. **改掉①之后仍然空转**：三个 uniform 声明成 `uniform uint`，而 `dispatchFFT` 用
-     `glUniform1i` 赋值 → `GL_INVALID_OPERATION` 且**值不生效** → `u_N` 恒为 0 →
-     每次都提前返回，输出**逐位等于输入**。
-     （同一个坑 ② 在 `uPickId` 上踩过一次，已写进「绘制后端」一节。）
-  3. **改掉①②之后算法仍错**：DIT 蝶形要求输入先做位反转，而那 6 行算出来的 `rev`
-     **从头到尾没被引用过** → 输出等于 `DFT(输入按位反转)`，峰值落在错误的 bin 上。
-  修 ③ 的 FFT 时，**`GpuFftVerifier` 转绿就是验收**（它现在**预期是红的**，退出码 1）。
+- **GPU 计算**（子项目 D-③）：FFT（**③-1 已完成**）、降采样、包络、密度累积（数字荧光）。
+  - **③-1 的实现是 `gpu/FftKernel.java`**（`#version 430`，Cooley-Tukey radix-2 + SSBO，
+    单 workgroup、全在 shared memory 里做），配 `gpu/FftWindow`；**`FftVerifier` 50 条全绿**
+    （退出码 0）。绘制那一半是 `chartrender/SpectrumSeriesRenderer` +
+    `ChartType.SPECTRUM`，见「图表」一节的「频谱」。
+  - **`gpu/GPUFFT.java` 仍然在那儿，仍然是死的（没人引用），不要拿它当参考实现。**
+    当年的 `GpuFftVerifier`（已改造成今天的 `FftVerifier`）实测它有**三层缺陷**：
+    1. **默认着色器编译不过**：`uint half = 1u << u_stage;` 里 `half` 是 GLSL **保留字**，
+       于是 `new GPUFFT()` 直接抛 `RuntimeException`——**它从来没有成功运行过一次**。
+    2. **改掉①之后仍然空转**：三个 uniform 声明成 `uniform uint`，而 `dispatchFFT` 用
+       `glUniform1i` 赋值 → `GL_INVALID_OPERATION` 且**值不生效** → `u_N` 恒为 0 →
+       每次都提前返回，输出**逐位等于输入**。
+       （同一个坑 ② 在 `uPickId` 上踩过一次，已写进「绘制后端」一节。）
+    3. **改掉①②之后算法仍错**：DIT 蝶形要求输入先做位反转，而那 6 行算出来的 `rev`
+       **从头到尾没被引用过** → 输出等于 `DFT(输入按位反转)`，峰值落在错误的 bin 上。
+  - **降采样、包络、密度累积（数字荧光）仍未实现。**
 - **误差棒、等高线、眼图**：`ChartType` 目前没有覆盖，属于 ③ 或更后面的事。
 - **Paint / 渐变**：所有绘制只接受纯色整数。设计意图是**所有 Paint 归一化为纹理**
   （纯色 = 超白色纹理 + 顶点颜色，渐变 = 1×256 LUT）。

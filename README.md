@@ -11,8 +11,8 @@
 - ✂️ **状态栈与裁剪**：`save` / `restore` / `translate` / `scale` / `rotate` / `clipRect`
 - 🖼️ **嵌入 JavaFX 场景图**：GL 画布就是一个普通 `Node`，与 JavaFX 布局共存
 - 📐 **纯计算几何层**：`geom/` 不依赖 GL 上下文，可脱离 OpenGL 单独测试
-- 📈 **图表**：折线与散点走 GPU 实例化绘制，数据常驻显存、每帧只上传新增的点，
-  滚动缩放零重传
+- 📈 **图表**：折线、散点与**频谱**（GPU 上跑 FFT）走实例化绘制，
+  数据常驻显存、每帧只上传新增的点，滚动缩放零重传
 
 ## 快速开始
 
@@ -65,28 +65,39 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
 
 # 跑像素级端到端校验（自动关窗，退出码 0=通过 / 1=断言失败）
 # 渲染管线
-mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
-    -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.PipelineVerifierKt"
+mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
+    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.PipelineVerifierKt"
 
 # 拾取
-mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
-    -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.PickVerifierKt"
+mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
+    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.PickVerifierKt"
 
 # 文本
-mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
-    -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.TextVerifierKt"
+mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
+    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.TextVerifierKt"
 
 # 图表
 mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
-    "-Dexec.args=-cp %classpath com.bingbaihanji.jfgl.example.ChartVerifierKt"
+    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.ChartVerifierKt"
+
+# FFT / 频谱（不画任何东西，只测数值）
+mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
+    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.FftVerifierKt"
 ```
 
 **改哪条路径就跑哪个校验器**：动了顶点/几何/描边跑 `PipelineVerifier`，
 动了拾取（`pickId`、ID pass、`PickBuffer`）跑 `PickVerifier`，
 动了文本（`text/`、`fontSize`、`drawText`）跑 `TextVerifier`，
-动了图表绘制（`chartrender/`、`Gc.charts`、`Gc.flush`）跑 `ChartVerifier`。
-四个都过不代表没漏——它们只证明自己断言过的那些点，见文末「测试」一节。
+动了图表绘制（`chartrender/`、`Gc.charts`、`Gc.flush`）跑 `ChartVerifier`，
+动了 FFT 或频谱的数据来源（`gpu/FftKernel`、`FftWindow`、`SpectrumSeriesRenderer`）
+跑 `FftVerifier`（数值）**和** `ChartVerifier`（频谱画出来的位置）。
+五个都过不代表没漏——它们只证明自己断言过的那些点，见文末「测试」一节。
 
+> **Windows 下要带 `-Dstdout.encoding=UTF-8`**（放在 `-cp` 之前）：JVM 的
+> `stdout.encoding` 默认取系统编码（实测本机是 GBK），而 `exec:exec` 不会替你设置它，
+> 于是校验器打印的中文断言、尤其是**失败清单**，全是乱码。实测：不加时整份输出不可读，
+> 加上之后逐行可读。
+>
 > **不要用 `mvn exec:java`**：该插件的类加载器会让 openglfx 链接到另一份
 > `com.sun.prism.GraphicsPipeline`（静态字段永远为 null），启动即抛
 > `UnsupportedOperationException: Could not detect pipeline`。
@@ -282,6 +293,45 @@ stream.append(0.5);                     // 采集线程
 double v = stream.value(0, 0);          // GL 线程；窗口之外返回 NaN（缺口）
 ```
 
+#### 频谱（GPU 上的 FFT）
+
+`ChartType.SPECTRUM` 的横轴不是时间，是 **bin 下标**（`x = bin 索引`，
+`Δf = fs / N`）——**要显示 Hz 由应用自己换算轴标签**，渲染层不知道采样率，也不该猜。
+数据照样是 `RingChartData`（采集线程写、GL 线程读）；渲染时每帧对环里**最近 N 个样本**
+跑一次 GPU 上的 FFT（`N = min(2048, 环容量)`，环容量必须是 2 的幂），
+再把得到的 `N/2+1` 个幅度画成一条折线：
+
+```kotlin
+val spec = RingChartData(
+    arrayOf(AxisRange(0.0, 512.0, "样本", ""), AxisRange(0.0, 1.2, "幅度", "")),
+    512                                   // 环容量（2 的幂）= FFT 的变换长度
+)
+
+// 采集线程：写进环里（这里是一个 bin 52 上的纯正弦）
+for (i in 0 until 512) {
+    spec.append(i.toDouble(), cos(2.0 * PI * 52 * i / 512).toFloat().toDouble())
+}
+
+// GL 线程（onRender 里）：x 轴的单位是 bin，窗口取 bin 44..68
+val x = Axis(AxisType.LINEAR, spec.axisRange(0)).setDisplayLength(600.0).setWindow(44.0, 68.0)
+val y = Axis(AxisType.LINEAR, spec.axisRange(1)).setDisplayLength(400.0)   // 窗口 [0, 1.2]
+val spectrum = Chart(x, y)
+spectrum.addLayer("频谱").add(
+    Series("频谱", spec, ChartType.SPECTRUM).color(0xFF9F00FF.toInt())
+)
+
+gc.flush()                                                       // 网格先落定
+gc.charts.draw(spectrum, Rect(100f, 100f, 600f, 400f), gc.width, gc.height)
+```
+
+- 窗函数固定为 Blackman-Harris（旁瓣 −92 dB），幅度**已做窗的相干增益补偿**：
+  单位幅度正弦的谱峰读回 `1.0`，换窗不改变读数。
+- **环里还没攒够一个完整的窗时不画**（也**不补零**——补零会给出一个看起来正常、
+  峰位与旁瓣却全是假的谱）。
+- **NaN 输入**（丢包、传感器故障）什么都不画：着色器把整段退化到裁剪空间之外。
+- 频谱**复用折线的整条绘制路径**（同一套顶点着色器与实例化机制），
+  所以拾取、裁剪、`baseInstance` 全都自动成立。
+
 ### 坐标系与颜色
 
 - 坐标单位是**像素**，原点在**左上角**，**y 轴向下**。
@@ -303,11 +353,11 @@ double v = stream.value(0, 0);          // GL 线程；窗口之外返回 NaN（
 src/main/java/com/bingbaihanji/jfgl/
 ├── geom/        # 纯几何：Path、Flattener（曲线细分）、Tessellator（三角化）、StrokeGenerator
 ├── gl/          # OpenGL 抽象：ShaderProgram、Texture、VertexBuffer
-├── gpu/         # 计算着色器
+├── gpu/         # GPU 计算：ComputeShader、FftKernel（FFT）、FftWindow（窗与增益补偿）
 ├── math/        # Vec2、Mat3、Transform
 ├── renderer/    # 顶点侧热路径：VertexFormat、VertexWriter、DrawCommand、RenderBatch
 ├── chart/       # 图表框架（纯计算）：ChartData、Axis、TickGenerator、ColorMapping、Chart
-├── chartrender/ # 图表 GPU 绘制后端：ChartRenderer、Line/ScatterSeriesRenderer、SeriesBuffer
+├── chartrender/ # 图表 GPU 绘制后端：ChartRenderer、Line/Scatter/SpectrumSeriesRenderer、SeriesBuffer
 ├── text/        # SDF 文本：FontFile(stb)、GlyphRasterizer、SdfGenerator、GlyphAtlas、TextLayout
 └── util/        # Color、Rect、Disposable
 
@@ -335,16 +385,19 @@ mvn test                     # 全部测试
 mvn test -Dtest=PathTest     # 单个测试类
 ```
 
-当前 **308 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+当前 **323 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
 `@Disabled` 的已知缺陷）。分布：`geom/` 69、`renderer/` 97、`gl/` 10、`text/` 32、
-`chart/` 56、`chartrender/` 44。
+`chart/` 57、`chartrender/` 44、`gpu/` 14。
 
 `geom/`、`renderer/` 的顶点侧、`math/`、`util/`、`chart/` 都是纯计算，不依赖 GL 上下文；
 `chartrender/` 里 `WindowRange`、`SeriesUploadPlan`、`ChartRenderLayout` 是纯算术，
-`SeriesBuffer` 只依赖 `GLAbstraction` 接口（用 `FakeGLAbstraction` 就能测）。
+`SeriesBuffer` 只依赖 `GLAbstraction` 接口（用 `FakeGLAbstraction` 就能测）；
+`gpu/FftWindow` 是纯算术，`gpu/FftKernel` 的**着色器源码字符串**也能脱离 GL 单测
+（共享内存长度有没有与 `MAX_N` 各写一份、循环步长是不是又写回了字面量，都属于
+"不看字符串就发现不了"的那类）。
 
 **改渲染路径跑 `PipelineVerifier`，改拾取跑 `PickVerifier`，改文本跑 `TextVerifier`，
-改图表绘制跑 `ChartVerifier`**（见上面「运行」一节）。
+改图表绘制跑 `ChartVerifier`，改 FFT 跑 `FftVerifier`**（见上面「运行」一节）。
 本管线的多数缺陷属于「静默错误输出」：编译通过、单元测试全绿、画面却是错的。
 校验器把**最终像素**作为口径，回读帧缓冲后断言，这是唯一拦得住这类缺陷的办法——
 它曾据此发现描边丢失整条闭合边的 bug，而当时的单元测试没有一个发现。
@@ -353,6 +406,15 @@ mvn test -Dtest=PathTest     # 单个测试类
 「每帧只上传新增的点」，而增量上传与每帧全量重传**画出来的图逐像素相同**——
 所以那条断言观测的是**上传字节数**（`ChartRenderer.takeUploadedBytes`），
 判据是"每一帧恰好 K×4 字节"。改图表绘制路径时它也必须过。
+
+频谱那一组则是"判别式必须选对量"的又一个例子：**"峰值在正确的 bin、高度也对"
+抓不住"第二个实例属性指向同一个 bin"**——那样每一段退化成**水平小横线**，
+而**峰那一列的最高有色行仍然在顶边**。唯一能把两种实现分开的量是
+「**相邻两个 bin 之间那一列上的墨迹落在哪一行**」（两个 bin 幅值的中点，还是只落在
+左边那个的高度上）。实测把它反向注入（`SpectrumSeriesRenderer` 里那个偏移 4 → 0）时，
+**只有那两条断言失败**，其余 63 条照常通过。
+FFT 本身的**数值**（峰值落在正确的 bin、与朴素 O(N²) DFT 逐 bin 比对、换窗不改变幅度读数、
+跨环绕取样本、两个端点长度）由 `FftVerifier` 守着——它**不画任何东西**。
 
 **但校验器也有盲区**：它只证明自己断言过的那些点。开发拾取校验器时就撞上一次——
 当时的 24 条断言全绿，却漏掉了一个真缺陷（`PickBuffer.clear()` 受 `GL_SCISSOR_TEST` 影响，
