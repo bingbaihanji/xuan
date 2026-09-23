@@ -139,6 +139,10 @@ final class SeriesShaders {
      * 最右那个点会被画到绘图区之外、被 scissor 整个裁掉——<b>最后一个数据点静默消失</b>。
      *
      * <h2>uMarkerSize 是边长，uPickTolerance 是半宽</h2>
+     * <p><b>注意 {@code uMarkerSize} 是边长，而 {@code Series.markerSize()} 声明的是半径</b>——
+     * 换算（乘 2）由 {@code ScatterSeriesRenderer} 在传进来之前做掉，着色器只认几何。
+     * 两处各持一半解释的话，用户设半径 5 会拿到宽 5 的方块（本该宽 10），
+     * 而画面上没有任何症状。
      * <p>绘制时容差为 0，{@code max()} 取到的就是真实边长；ID pass 时容差非 0，
      * 标记被撑大成一个"热区"。两个 pass 因此共用一个顶点程序，
      * 与折线那边用 {@code max(uHalfWidth, uPickTolerance)} 是同一个做法。

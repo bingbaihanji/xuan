@@ -440,25 +440,55 @@ private const val SCATTER_POINTS = 5
 private const val SCATTER_WINDOW_MIN = -0.5
 private const val SCATTER_WINDOW_MAX = 4.5
 
-/** 小标记的**边长**（设备像素）。取偶数，让四边形正好压在整数边界上。 */
-private const val SCATTER_MARKER_SMALL = 10f
+/**
+ * 退化散点图（`markerSize = 0`）的绘图区：折返图右侧那块空地。
+ *
+ * <p>这一张图**每帧都画**（与上面两张只在观察期画的不同）。理由是它一个像素都画不出来
+ * ——于是它既不会给"画面只有这 7 种颜色"那条断言添一种颜色，也不会动任何像素计数；
+ * 而"全画面没有该颜色"这条断言只有在**校验帧**上数才有意义（`counts` 是校验帧的全图扫描）。
+ *
+ * <p>反过来的前提由拾取钉住：这张图要是压根没被画，那条断言就是恒真的，
+ * 所以另有一条"退化系列在拾取里仍能命中"。
+ */
+private const val DEGEN_PLOT_X = 810f
+private const val DEGEN_PLOT_Y = 505f
+private const val DEGEN_PLOT_W = 160f
+private const val DEGEN_PLOT_H = 90f
 
-/** 大标记的边长：正好是小标记的 2 倍，于是期望像素数是 4 倍（面积随边长的平方）。 */
-private const val SCATTER_MARKER_BIG = 20f
+/** 退化系列的探测点：它在自己绘图区里的第一个数据点（局部 x = 16；值 0.15 → 局部 y = 76.5）。 */
+private const val DEGEN_PROBE_X = DEGEN_PLOT_X + 16f
+private const val DEGEN_PROBE_Y = DEGEN_PLOT_Y + 76f
 
 /**
- * 散点图的数据：**只有 5 个点，相邻两点一个 0.1 一个 0.9**。
+ * 小标记的**半径**（设备像素）——`Series.markerSize()` 声明的就是半径，不是边长。
+ *
+ * <p>取 10 让**边长** = 2 × 10 = 20，正好压在整数边界上（渲染器里的换算是乘 2，
+ * 见 `ScatterSeriesRenderer.markerEdge`）。下面所有期望值都按
+ * **点数 × (2 × 半径)²** 算——写成"边长²"会让这组断言去钉一个错的语义。
+ */
+private const val SCATTER_MARKER_RADIUS_SMALL = 10f
+
+/** 大标记的半径：正好是小标记的 2 倍，于是期望像素数是 4 倍（面积随边长的平方）。 */
+private const val SCATTER_MARKER_RADIUS_BIG = 20f
+
+/**
+ * 散点图的数据：**只有 5 个点，相邻两点一个 0.15 一个 0.85**。
  *
  * <p><strong>为什么必须这么陡。</strong>本组唯一能区分"散点"与"折线"的量是
  * **相邻两点中点处有没有像素**：正确实现在那里什么都没有，而把点连成线的实现在那里
  * 有一条线。数据要是不够陡（例如斜坡那种每格只差 2 px 的），中点就离两端太近——
  * 标记点自身（以及它的边界）会糊住中点，"中点为空"于是变成一条恒假的断言。
- * 这里相邻两点差 0.8，纵向是 **144 px**，而横向只有 52 px：
- * 中点到两端的距离远超任何标记半径。
+ * 这里相邻两点差 0.7，纵向是 **126 px**，而横向只有 52 px：
+ * 中点到两端的距离远超任何标记半径（实测余量：小标记图 69 px、大标记图 49 px）。
+ *
+ * <p>值取 0.15 / 0.85 而不是贴着 0 与 1：**大标记的半径是 20 px**，取 0.1 / 0.9
+ * （局部 y = 162 / 18）会让最上面那个标记伸出绘图区上边缘 2 px 被 scissor 切掉，
+ * 于是"像素数 = 点数 × 边长²"这条精确断言会差掉几十个像素——
+ * 而那种失败看起来像"渲染器算错了尺寸"。
  *
  * <p>四段全是陡的（0→1 与 2→3 是下折、1→2 与 3→4 是上折），四段都参与判定。
  */
-private val SCATTER_VALUES = doubleArrayOf(0.1, 0.9, 0.1, 0.9, 0.1)
+private val SCATTER_VALUES = doubleArrayOf(0.15, 0.85, 0.15, 0.85, 0.15)
 
 /**
  * "空白处也拾取不到"的那个探测点（用户坐标）。它**不在任何标记附近**，
@@ -467,18 +497,18 @@ private val SCATTER_VALUES = doubleArrayOf(0.1, 0.9, 0.1, 0.9, 0.1)
  * <p><strong>它是怎么算出来的。</strong>散点的 ID pass 一旦错用折线的顶点程序
  * （`LINE_VERTEX`），第二个实例属性 `aY1` 就没人喂（散点的 VAO 里没有它），
  * 于是每个实例的热区是"从 (x_k, y_k) 斜拉到 (x_k + 1 格, 值 0 那一行)"的一条带子。
- * 第 0 个点的值是 0.1、屏幕 y = 262；值 0 落在屏幕 y = 280（绘图区下边缘）。
- * 于是那条带子从 (736, 262) 走到 (788, 280)，在 x = 762 处中心 y = 271、
- * 竖直半宽 4.2 px——**探测点 (762, 271) 的像素中心正好落在那条带子里**。
+ * 第 0 个点的值是 0.15、屏幕 y = 253；值 0 落在屏幕 y = 280（绘图区下边缘）。
+ * 于是那条带子从 (736, 253) 走到 (788, 280)，在 x = 762 处中心 y = 266.5、
+ * 竖直半宽 4.5 px——**探测点 (762, 267) 的像素中心正好落在那条带子里**。
  *
- * <p>而在正确实现下，它的热区是标记周围 10×10 的方块，离这一点最近的标记
- * 也在 26 px 之外，所以那里什么都没有。
+ * <p>而在正确实现下，它的热区是标记周围 20×20 的方块（半径 10 → 边长 20），
+ * 离这一点最近的标记也在 16 px 之外，所以那里什么都没有。
  *
  * <p>这一对断言（"标记上命中" + "旁边空白处不命中"）必须成对：
  * 只有"标记上命中"对"热区开成整个绘图区"同样成立。
  */
 private const val SCATTER_BLANK_X = 762f
-private const val SCATTER_BLANK_Y = 271f
+private const val SCATTER_BLANK_Y = 267f
 
 /**
  * 校验器的启动入口。
@@ -582,6 +612,14 @@ class ChartVerifierApp : Application() {
 
     /** 标记尺寸对比图的标记色（大标记）。 */
     private val markerBigRgb = 0xC000FF
+
+    /**
+     * 退化散点系列（`markerSize = 0`）的颜色。它**必须全画面一个像素都没有**，
+     * 所以也不在画面的常驻颜色集合里——尽管这张图每帧都画。
+     */
+    private val degenScatterRgb = 0x00C0FF
+
+    private val degenScatterArgb = degenScatterRgb or (0xFF shl 24)
 
     private val scatterArgb = scatterRgb or (0xFF shl 24)
     private val markerBigArgb = markerBigRgb or (0xFF shl 24)
@@ -786,6 +824,9 @@ class ChartVerifierApp : Application() {
     private val markerRect = Rect(MARKER_PLOT_X, MARKER_PLOT_Y,
         MARKER_PLOT_W, MARKER_PLOT_H)
 
+    private val degenRect = Rect(DEGEN_PLOT_X, DEGEN_PLOT_Y,
+        DEGEN_PLOT_W, DEGEN_PLOT_H)
+
     /**
      * 散点实验的数据。两张实验图**共用同一份**——只有 markerSize 不同。
      *
@@ -809,14 +850,27 @@ class ChartVerifierApp : Application() {
      * 中点那 5×17 的盒子才一定被盖住——否则"中点为空"会因为线太细而变成恒真。
      */
     private val scatterSeries = Series("散点", scatterData, ChartType.SCATTER)
-        .color(scatterArgb).markerSize(SCATTER_MARKER_SMALL).lineWidth(4f)
+        .color(scatterArgb).markerSize(SCATTER_MARKER_RADIUS_SMALL).lineWidth(4f)
 
     /** 大标记的系列：同一份数据、同一个绘制路径，只有 markerSize 不同。 */
     private val markerBigSeries = Series("大标记", scatterData, ChartType.SCATTER)
-        .color(markerBigArgb).markerSize(SCATTER_MARKER_BIG)
+        .color(markerBigArgb).markerSize(SCATTER_MARKER_RADIUS_BIG)
 
     private val scatterChart: Chart = buildScatterChart()
     private val markerChart: Chart = buildMarkerChart()
+
+    /**
+     * 退化散点系列：**半径 0**。一个像素都不该画出来（见类文档的"markerSize 退化"一节），
+     * 但它在拾取里照样存在——"看不见的图元仍可拾取"是本仓库的既有约定
+     * （与折线那边 `lineWidth = 0` 的隐形式是同一个行为）。
+     */
+    private val degenScatterSeries = Series("退化散点", scatterData, ChartType.SCATTER)
+        .color(degenScatterArgb).markerSize(0f)
+
+    private val degenChart: Chart = buildDegenChart()
+
+    /** 退化系列在拾取里读回的 ID（在观察期取样）。它必须是 0 之外的某个值。 */
+    private var degenPickId = 0
 
     /** 散点图里数据下标 → 屏幕 x。**与折线的顶点取同一个映射**（不加半格）。 */
     private fun scatterX(index: Double): Double = SCATTER_PLOT_X +
@@ -1042,6 +1096,20 @@ class ChartVerifierApp : Application() {
     }
 
     /**
+     * 造退化散点图：与散点图同一份数据、同一个 x 窗口，只有 markerSize 不同（= 0）。
+     */
+    private fun buildDegenChart(): Chart {
+        val xAxis = Axis(AxisType.LINEAR, scatterData.axisRange(0))
+            .setDisplayLength(DEGEN_PLOT_W.toDouble())
+            .setWindow(SCATTER_WINDOW_MIN, SCATTER_WINDOW_MAX)
+        val yAxis = Axis(AxisType.LINEAR, scatterData.axisRange(1))
+            .setDisplayLength(DEGEN_PLOT_H.toDouble())
+        val chart = Chart(xAxis, yAxis)
+        chart.addLayer("退化散点").add(degenScatterSeries)
+        return chart
+    }
+
+    /**
      * Task 14 的两张散点实验图。
      *
      * <p>第二张（大标记）只是同一个场景换了 markerSize——两张图的数据、x 窗口、
@@ -1050,6 +1118,15 @@ class ChartVerifierApp : Application() {
     private fun drawScatterCharts(gc: Gc) {
         gc.charts.draw(scatterChart, scatterRect, gc.width, gc.height)
         gc.charts.draw(markerChart, markerRect, gc.width, gc.height)
+    }
+
+    /**
+     * 退化散点图。**每帧都画**（理由见 [DEGEN_PLOT_X]）：它画不出任何像素，
+     * 因此不会给颜色集合或任何像素计数添乱；而"全画面没它的颜色"这条断言
+     * 需要它处于**校验帧的场景**里。
+     */
+    private fun drawDegenerateScatterChart(gc: Gc) {
+        gc.charts.draw(degenChart, degenRect, gc.width, gc.height)
     }
 
     /** 跨环绕实验里数据下标 → 屏幕 x。 */
@@ -1208,6 +1285,8 @@ class ChartVerifierApp : Application() {
         // 3b) 第二张图。同一帧里画两张图也是顺带被覆盖到的用法。
         gc.charts.draw(zigzagChart, Rect(ZIG_PLOT_X, ZIG_PLOT_Y, ZIG_PLOT_W, ZIG_PLOT_H),
             gc.width, gc.height)
+        // 3b2) 退化散点图：**每帧都画**（不是只在观察期），理由见 DEGEN_PLOT_X。
+        drawDegenerateScatterChart(gc)
 
         // 3c) Task 12 的三张实验图。**只在观察期画**：
         //     第 1 组要"滚动若干帧"才成立、第 3 组要"前后两帧"才成立，
@@ -1389,6 +1468,10 @@ class ChartVerifierApp : Application() {
             ((scatterY(SCATTER_VALUES[0]) + scatterY(SCATTER_VALUES[1])) / 2.0).toFloat()
         )?.id() ?: 0
         scatterBlankId = gc.pick(SCATTER_BLANK_X, SCATTER_BLANK_Y)?.id() ?: 0
+        // 退化系列（markerSize = 0）：画不出像素，**但拾取热区照旧**。
+        // 这一条是"全画面没有它的颜色"那个断言的前提（那张图要是压根没画，
+        // 那条断言就是恒真的）。
+        degenPickId = gc.pick(DEGEN_PROBE_X, DEGEN_PROBE_Y)?.id() ?: 0
         scatterPickCaptured = true
     }
 
@@ -2053,7 +2136,7 @@ class ChartVerifierApp : Application() {
             report("每个数据点位置上都是标记（点周围 5×5 各 25 px）",
                 pointHits.all { it == 25 },
                 "5 个点分别 ${pointHits.joinToString()} px，期望都是 25" +
-                        "（5×5 的盒子完全落在边长 $SCATTER_MARKER_SMALL 的标记内部）")
+                        "（5×5 的盒子完全落在半径 $SCATTER_MARKER_RADIUS_SMALL 的标记内部）")
 
             // (b) ★ 相邻两点的中点处一个该系列颜色的像素都没有——**"散点不是折线"的判据**。
             //
@@ -2099,18 +2182,26 @@ class ChartVerifierApp : Application() {
             // ---- 17. ★ 标记尺寸：markerSize 变大，覆盖的像素确实变多 ----
             //
             // "有像素"对任何非 0 的 markerSize 都成立，是橡皮图章。这里的量是**像素数**：
-            // 四边形是轴对齐的正方形、边长就是 markerSize，所以解析期望是 点数 × 边长²。
-            // 两种实现会被这两条分开：把 markerSize 当半径用的会得到 4 倍于期望的值；
-            // 只认默认值、忽略 setter 的会让两张图的像素数一模一样。
+            // 四边形是轴对齐的正方形，而 `Series.markerSize()` 声明的是**半径**，
+            // 渲染器在传进着色器之前乘 2 换成边长——
+            // 所以解析期望是 **点数 × (2 × 半径)²**，写成"点数 × 半径²"会去钉一个错的语义
+            // （那正是"用户设半径 5 拿到宽 5 的方块"那个 2 倍静默错误）。
+            //
+            // 两条断言各自独立的判别力：只认默认值、忽略 setter 的实现会让两张图的
+            // 像素数一模一样（比值 1.00）；把半径当边长用的实现会得到 1/4 的值。
             println("\n-- ★ 标记尺寸：markerSize 变大时覆盖的像素真的变多 --")
             val smallCount = scatShot.count(scatterRgb)
             val bigCount = markerShot.count(markerBigRgb)
-            val smallExpected = SCATTER_POINTS * SCATTER_MARKER_SMALL.toInt() * SCATTER_MARKER_SMALL.toInt()
-            val bigExpected = SCATTER_POINTS * SCATTER_MARKER_BIG.toInt() * SCATTER_MARKER_BIG.toInt()
-            report("小标记图（边长 $SCATTER_MARKER_SMALL）：标记像素数 = 点数 × 边长² = $smallExpected",
+            val smallEdge = SCATTER_MARKER_RADIUS_SMALL.toInt() * 2
+            val bigEdge = SCATTER_MARKER_RADIUS_BIG.toInt() * 2
+            val smallExpected = SCATTER_POINTS * smallEdge * smallEdge
+            val bigExpected = SCATTER_POINTS * bigEdge * bigEdge
+            report("小标记图（半径 $SCATTER_MARKER_RADIUS_SMALL → 边长 $smallEdge）：" +
+                    "标记像素数 = 点数 × 边长² = $smallExpected",
                 smallCount == smallExpected,
                 "实际 $smallCount px（局部 ${scatShot.w}×${scatShot.h}）")
-            report("大标记图（边长 $SCATTER_MARKER_BIG）：标记像素数 = 点数 × 边长² = $bigExpected",
+            report("大标记图（半径 $SCATTER_MARKER_RADIUS_BIG → 边长 $bigEdge）：" +
+                    "标记像素数 = 点数 × 边长² = $bigExpected",
                 bigCount == bigExpected,
                 "实际 $bigCount px（局部 ${markerShot.w}×${markerShot.h}）")
             report("标记变大 → 覆盖的像素确实变多（面积是边长的平方，这里约 4 倍）",
@@ -2118,6 +2209,21 @@ class ChartVerifierApp : Application() {
                 "小标记 $smallCount px，大标记 $bigCount px（比值 " +
                         "${"%.2f".format(bigCount.toDouble() / smallCount.coerceAtLeast(1))}，期望约 4）")
         }
+
+        // ---- 18. ★ markerSize = 0：一个像素都不画，但拾取照旧 ----
+        //
+        // 两条必须成对，各自防的退化不同：
+        //   只有"全画面没它的颜色" → "那张图压根没被画出来"照样通过（恒真）；
+        //   只有"拾取命中" → "它其实画了一堆像素"照样通过。
+        // 折线那边有一个同构的断言（第 4 组，"线宽 0 的系列全画面一个像素都没有"）。
+        println("\n-- ★ markerSize = 0：不画像素，但拾取照旧 --")
+        report("退化散点系列（半径 0）在拾取里仍能命中（否则下一条恒真）",
+            degenPickId != 0,
+            "探测点 (${DEGEN_PROBE_X.toInt()},${DEGEN_PROBE_Y.toInt()}) ID=$degenPickId，期望非 0" +
+                    "——0 说明这张图根本没被画，那下一条就是橡皮图章")
+        report("退化散点系列：全画面一个像素都没有", (counts[degenScatterRgb] ?: 0) == 0,
+            "退化色像素 ${counts[degenScatterRgb] ?: 0}——非 0 说明 markerSize = 0 没有退化" +
+                    "（边长取到了非 0 的值，标记会凭空出现在绘图区里）")
 
         println("\n画面出现的颜色：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")
         println("背景 ${counts[background] ?: 0} px，绘图区底色 ${counts[plotBackground] ?: 0} px")

@@ -46,8 +46,8 @@ import static org.lwjgl.opengl.GL20.glVertexAttribPointer;
  * <h2>markerSize 退化（0 或负数）时不画任何东西</h2>
  * <p><b>处置方式与折线的零线宽完全一致：CPU 侧不分支，靠着色器里的
  * {@code max(uMarkerSize, uPickTolerance * 2.0)} 自然退化。</b>绘制时容差是 0，
- * 于是边长取到 {@code markerSize}——0 或负数让四个角重合成一个点，光栅化不出任何片段；
- * 拾取时容差非 0，菱形热区照旧存在。
+ * 于是边长取到 {@code 2 × markerSize}——0 或负数让四个角重合成一个点、光栅化不出
+ * 任何片段；拾取时容差非 0，热区照旧存在。
  *
  * <p>不在这里加一句 {@code if (markerSize <= 0) return;} 是有意的：
  * <ul>
@@ -61,12 +61,19 @@ import static org.lwjgl.opengl.GL20.glVertexAttribPointer;
  * <p>因此"零尺寸 = 一个像素都不画"这条由 {@code ChartVerifier} 用像素口径钉住
  * （与折线那条"线宽 0 的系列全画面一个像素都没有"是同一个做法）。
  *
- * <h2>{@code Series.markerSize()} 的语义是"边长"</h2>
- * <p>注意 {@code chart/Series.markerSize()} 的 Javadoc 写的是"半径"，而本渲染器
- * 按<b>边长</b>（设备像素）解释——与 {@code uMarkerSize} 的定义一致。
- * 两种读法差一倍尺寸，写在这里是为了让后来者一眼看到这个分歧，
- * 而不是在像素断言失败时才发现。<b>改这个语义要同时改 {@code Series} 的文档与
- * {@code ChartVerifier} 的期望值</b>；{@code chart/} 本期不能改，故只在渲染侧记这一笔。
+ * <h2>{@code markerSize} 是<b>半径</b>，而 {@code uMarkerSize} 是<b>边长</b></h2>
+ * <p>两者差一倍，换算发生在<b>这一处</b>（{@link #markerEdge}）：{@code chart/Series}
+ * 声明的是半径（"标记点半径（用户坐标单位）"），而顶点着色器里那个 uniform 是
+ * 四边形的边长——它只关心几何，不该知道"半径"这种语义。
+ *
+ * <p><strong>只有这一种解释，两边不许各持一半。</strong>渲染器不换算的话，
+ * 用户设半径 5 拿到的是宽 5 的方块（本该宽 10）——<b>标记照画、位置准确、颜色也对，
+ * 只是小了一半</b>，没有任何症状，用户只能靠"为什么我设 5 出来像 2.5"去猜。
+ * 换算写成方法而不是在两个 setUniform 那里各写一次 {@code * 2f}：
+ * 绘制与拾取**必须**用同一个尺寸，两处各写一遍迟早会分叉。
+ *
+ * <p>本期 {@code chart/} 不能改，所以"半径"这个语义由本类与
+ * {@code ChartVerifier} 的期望值（点数 × (2 × 半径)²）共同钉住。
  *
  * <h2>它画两个 pass：颜色的，和 ID 的</h2>
  * <p>与折线同构：颜色画完之后就着同一份 VAO 与同一批实例再画一遍 ID pass，
@@ -131,6 +138,17 @@ final class ScatterSeriesRenderer implements SeriesRenderer {
 
         gl.bindVbo(0);
         gl.bindVao(0);
+    }
+
+    /**
+     * 系列的 {@code markerSize}（<b>半径</b>）→ 着色器的 {@code uMarkerSize}（<b>边长</b>）。
+     *
+     * <p>乘 2 就是这一处换算的全部内容，理由见类文档。绘制与拾取都走它——
+     * 两处各写一遍 {@code * 2f} 的话，迟早有一处会漏（而"拾取的热区比标记小一半"
+     * 是画面完全看不出来的那种缺陷）。
+     */
+    private static float markerEdge(Series series) {
+        return series.markerSize() * 2f;
     }
 
     /**
@@ -203,9 +221,10 @@ final class ScatterSeriesRenderer implements SeriesRenderer {
         shader.setUniform("uValueRange", layout.yMin(), layout.yMax());
         shader.setUniform("uPxPerSample",
                 (float) (plot.width / (windowEnd - windowStart)));
-        // markerSize ≤ 0 时这里传下去的就是那个非正数，着色器里的 max() 会让四边形
-        // 退化成一个点——不画任何像素（见类文档）。CPU 侧不做分支。
-        shader.setUniform("uMarkerSize", series.markerSize());
+        // 半径 → 边长（见 markerEdge）。markerSize ≤ 0 时这里传下去的就是那个非正数，
+        // 着色器里的 max() 会让四边形退化成一个点——不画任何像素（见类文档）。
+        // CPU 侧不做分支。
+        shader.setUniform("uMarkerSize", markerEdge(series));
         // 绘制时容差为 0，所以 max() 取到的就是真实边长
         shader.setUniform("uPickTolerance", 0f);
         // Series.color() 返回 ARGB 整数，按 0xAARRGGBB 拆分量。
@@ -250,7 +269,8 @@ final class ScatterSeriesRenderer implements SeriesRenderer {
             pick.setUniform("uViewport", (float) c.viewportWidth(), (float) c.viewportHeight());
             pick.setUniform("uValueRange", layout.yMin(), layout.yMax());
             pick.setUniform("uPxPerSample", (float) (plot.width / (windowEnd - windowStart)));
-            pick.setUniform("uMarkerSize", series.markerSize());
+            // 与绘制路径**同一个**尺寸（markerEdge），否则热区与标记会差一半。
+            pick.setUniform("uMarkerSize", markerEdge(series));
             // 容差：绘制时是 0，拾取时放宽（理由见 PICK_TOLERANCE_PX）。
             pick.setUniform("uPickTolerance", PICK_TOLERANCE_PX);
             // 必须是 int 的那个 setUniform（glUniform1i）：对 uint uniform 用它报
