@@ -775,6 +775,26 @@ public final class FftKernel implements Disposable {
 }
 ```
 
+> ### ⚠️ 硬约束：**必须建在 `GLAbstraction` 上，不许裸调 LWJGL**
+>
+> `gpu/GPUFFT.java` 是**静态导入 `org.lwjgl.opengl.GL43.*` 直接调 GL** 的——
+> 那正是它"挂在抽象层之外、没人发现它编译不过"的原因之一。**不要重蹈。**
+>
+> 这条不只是洁癖：**它让 SSBO 那六个方法的执行验证变成免费的副产品。**
+> Task 1 的复核算过，那六个里**只有两条能"编译通过且静默错"**——
+> `bindBufferBase` 的 index/buffer 互换（两个都是 `int`，编译器无话可说）、
+> 以及靶子常量用错。而只要 FFT **走抽象**，
+> **这两条错了必然算出错的数值**，Task 4 的 CPU 参考 DFT 就会红。
+>
+> **若你改成裸调 LWJGL，这两条就再也没有任何执行验证了。**
+>
+> ### ⚠️ 同步：`memoryBarrier` 不能漏
+>
+> compute 写完到顶点属性读走之间**必须插一次 `glMemoryBarrier`**，
+> 否则读到旧值——**数值错，不报任何 GL 错误**。
+> **现成的够用**：`ComputeShader.memoryBarrier()` 走的是 `GL_ALL_BARRIER_BITS`，
+> SSBO 与顶点属性两种屏障都覆盖，**不必给抽象补第七个方法**。
+>
 > **⚠️ 两处你要自己核实**（我只核过签名，没核过用法）：
 > 1. **`ComputeShader` 的实际 API**——`use()` / `unuse()` / `dispatch(x,y,z)` /
 >    `memoryBarrier()` / `setUniform(String,int)` / `dispose()` 我按 `gpu/ComputeShader.java`
