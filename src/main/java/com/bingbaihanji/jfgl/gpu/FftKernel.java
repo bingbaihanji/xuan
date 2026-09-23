@@ -41,15 +41,42 @@ public final class FftKernel implements Disposable {
     /** 线程组大小。同时是 shared memory 里数组的长度上限。 */
     private static final int LOCAL_SIZE = 1024;
 
-    /** 本核支持的最大变换长度。由 shared memory 决定，见类文档。 */
+    /** 本核支持的最大变换长度。由 shared memory 决定（2×MAX_N 个 float），见类文档。 */
     public static final int MAX_N = 4096;
 
     /** 本核支持的最小变换长度。 */
     public static final int MIN_N = 256;
 
-    private static final String SHADER = """
+    /**
+     * 着色器源码模板。
+     *
+     * <p><strong>两个占位符由上面的常量填入</strong>——这是刻意的：共享内存数组的长度
+     * 如果与 {@link #MAX_N} 各写一个字面量，把 {@code MAX_N} 抬大就会让着色器
+     * <strong>越界写共享内存</strong>，而驱动<strong>既不报错也不崩</strong>
+     * （实测：这类越界只表现为数值静默错）。<strong>让它们只能从同一个源来。</strong>
+     *
+     * <p>{@code %d} 依次是：workgroup 大小（{@link #LOCAL_SIZE}）、
+     * shared 数组长度（{@link #MAX_N}）、shared 数组长度（{@link #MAX_N}）。
+     *
+     * <p>着色器内部一概不再出现字面量 {@code 1024}：三处循环的步长走
+     * {@code gl_WorkGroupSize.x}，于是线程组大小只有
+     * {@code layout(local_size_x = ...)} 这<strong>一个</strong>来源。
+     *
+     * <h2>⚠️ 往这份模板里写 GLSL 时的两个坑</h2>
+     * <ul>
+     *   <li><strong>GLSL 的取模 {@code %} 必须写成 {@code %%}</strong>：
+     *       模板要走 {@link String#formatted}，一个光秃秃的 {@code %}
+     *       会被当成格式符。实测踩过：{@code k % halfLen} 让
+     *       {@code shaderSource()} 抛 {@code UnknownFormatConversionException:
+     *       Conversion = h}，<strong>着色器一个字符都没提交给驱动</strong>。
+     *       好消息是这条路是<strong>响亮</strong>失败的（抛异常），不是静默的。</li>
+     *   <li>不要在 GLSL 注释里写 {@code %} 或 {@code %d} 这类序列——它们同样会被格式化
+     *       吃掉（{@code %d} 还会<strong>消耗一个占位符实参</strong>）。</li>
+     * </ul>
+     */
+    private static final String SHADER_TEMPLATE = """
             #version 430
-            layout(local_size_x = 1024) in;
+            layout(local_size_x = %d) in;
 
             layout(std430, binding = 0) readonly  buffer InputBuffer  { float inY[]; };
             layout(std430, binding = 1) writeonly buffer OutputBuffer { float outMag[]; };
@@ -62,8 +89,8 @@ public final class FftKernel implements Disposable {
             uniform float u_Scale;        // 2/N × 窗补偿
 
             // 注意：不要用 half 当变量名 —— 它是 GLSL 保留字。
-            shared float sRe[4096];
-            shared float sIm[4096];
+            shared float sRe[%d];
+            shared float sIm[%d];
 
             float windowAt(int i) {
                 float x = 6.283185307179586 * float(i) / float(u_N - 1);
@@ -91,7 +118,9 @@ public final class FftKernel implements Disposable {
                 //    （符号扩展）。例如 i=1 时得到 0xFFFFFC00 = **-1024** 而不是 1024，
                 //    于是 sRe[rev] 用一个**负下标**写共享内存——那是**越界写**，
                 //    驱动可能崩、也可能悄悄写坏别处。
-                for (int i = tid; i < n; i += 1024) {
+                //    步长走 gl_WorkGroupSize.x（= local_size_x 的声明值），不写 1024 字面量。
+                //    ⚠️ 它是 uint，GLSL 不做 int↔uint 的隐式转换，必须显式 int(...)。
+                for (int i = tid; i < n; i += int(gl_WorkGroupSize.x)) {
                     int src = (u_RingStart + i) & (cap - 1);
                     int rev = int(bitfieldReverse(uint(i)) >> uint(32 - logN));
                     sRe[rev] = inY[src] * windowAt(i);
@@ -102,9 +131,9 @@ public final class FftKernel implements Disposable {
                 // ② log2(N) 级蝶形（DIT，输入已位反转）
                 for (int len = 2; len <= n; len <<= 1) {
                     int halfLen = len >> 1;
-                    for (int k = tid; k < n / 2; k += 1024) {
+                    for (int k = tid; k < n / 2; k += int(gl_WorkGroupSize.x)) {
                         int group = k / halfLen;
-                        int pos   = k % halfLen;
+                        int pos   = k %% halfLen;
                         int k1    = group * len + pos;
                         int k2    = k1 + halfLen;
                         float angle = -6.283185307179586 * float(pos) / float(len);
@@ -123,13 +152,18 @@ public final class FftKernel implements Disposable {
                 }
 
                 // ③ 幅度（半谱，含 DC 与 Nyquist）
-                for (int k = tid; k <= n / 2; k += 1024) {
+                for (int k = tid; k <= n / 2; k += int(gl_WorkGroupSize.x)) {
                     float re = sRe[k];
                     float im = sIm[k];
                     outMag[k] = sqrt(re * re + im * im) * u_Scale;
                 }
             }
             """;
+
+    /** 由常量生成的着色器源码；构造 {@link FftKernel} 时才会求值。 */
+    private static String shaderSource() {
+        return SHADER_TEMPLATE.formatted(LOCAL_SIZE, MAX_N, MAX_N);
+    }
 
     private final GLAbstraction gl;
     private final ComputeShader shader;
@@ -153,7 +187,7 @@ public final class FftKernel implements Disposable {
         }
         this.gl = gl;
         this.n = n;
-        this.shader = new ComputeShader(SHADER);
+        this.shader = new ComputeShader(shaderSource());
         this.outputBuffer = gl.createBuffer();
         gl.bindShaderStorageBuffer(outputBuffer);
         gl.allocateBufferStorage((long) (n / 2 + 1) * Float.BYTES);
