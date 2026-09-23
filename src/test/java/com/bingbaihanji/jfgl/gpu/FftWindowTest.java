@@ -149,12 +149,27 @@ class FftWindowTest {
     }
 
     @Test
-    void 长度为一与二时不炸() {
+    void 退化长度明确报错而不是返回无穷大() {
+        // ★ 原稿这条写的是 `assertTrue(w.compensation(2) > 0.0)`——**对 HANN 是恒真的**：
+        //    它在 n=2 时两个系数都是 0，相干增益为 0，compensation 返回 Infinity，
+        //    而 `Infinity > 0.0` 照样成立。那是一条橡皮图章。
+        //
+        // 现在改成断言"它会响亮地失败"——因为静默返回一个无穷大，
+        // 那个值会一路传到顶点位置上，而画面只是"有点怪"。
         for (FftWindow w : FftWindow.values()) {
-            w.coefficient(0, 1);
-            w.coefficient(0, 2);
-            w.coefficient(1, 2);
-            assertTrue(w.compensation(2) > 0.0);
+            assertThrows(IllegalArgumentException.class, () -> w.coherentGain(1),
+                    w + " 在 n=1 上应当明确报错");
+        }
+
+        // HANN 在 n=2 上两个系数都是 0（0.5-0.5·cos(0) 与 0.5-0.5·cos(2π)），
+        // 是会退化的那一类；其余窗在这个长度上仍然是正增益。
+        assertThrows(IllegalArgumentException.class, () -> FftWindow.HANN.coherentGain(2),
+                "HANN 在 n=2 上零增益，必须报错而不是返回 Infinity");
+        for (FftWindow w : FftWindow.values()) {
+            if (w != FftWindow.HANN) {
+                assertTrue(w.compensation(2) > 0.0 && Double.isFinite(w.compensation(2)),
+                        w + " 在 n=2 上应当给出正有限增益");
+            }
         }
     }
 }

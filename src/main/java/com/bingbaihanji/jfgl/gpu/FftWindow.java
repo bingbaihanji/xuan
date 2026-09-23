@@ -77,13 +77,28 @@ public enum FftWindow {
      * 相干增益：系数的平均值。
      *
      * <p><b>由定义求和得到，不要替换成写死的常数。</b>
+     *
+     * @throws IllegalArgumentException {@code n < 2}，或该窗在这个长度上退化成零增益
+     *         （例如 HANN 在 {@code n = 2} 时两个系数都是 0——<b>那种窗会把信号整个抹掉，
+     *         补偿是无穷大，静默返回它会一路传到顶点位置上</b>）
      */
     public double coherentGain(int n) {
+        if (n < 2) {
+            throw new IllegalArgumentException(
+                    "窗长必须 ≥ 2，实际 " + n + "（n=1 时常量窗以外的窗都退化）");
+        }
         double sum = 0.0;
         for (int i = 0; i < n; i++) {
             sum += coefficient(i, n);
         }
-        return sum / n;
+        double gain = sum / n;
+        if (!(gain > 0.0) || !Double.isFinite(gain)) {
+            throw new IllegalArgumentException(
+                    this + " 在 n=" + n + " 上的相干增益不是正有限数：" + gain
+                            + "。这种窗会把信号整个抹掉，补偿没有意义——"
+                            + "明确报错而不是返回无穷大（那会静默传到顶点位置上）。");
+        }
+        return gain;
     }
 
     /** 相干增益补偿：乘上它之后，谱峰回到不加窗时的高度。 */
