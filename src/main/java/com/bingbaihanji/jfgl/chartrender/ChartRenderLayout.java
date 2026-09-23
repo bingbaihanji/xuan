@@ -8,10 +8,10 @@ import com.bingbaihanji.jfgl.util.Rect;
  * 数值/序号 ↔ 屏幕像素的映射。<strong>纯算术，零 GL 依赖。</strong>
  *
  * <h2>它是两份实现里的 CPU 那一份</h2>
- * <p>同一个映射在顶点着色器里还有一份（用 {@code uValueMin} / {@code uValueMax} /
- * {@code uPlotY} / {@code uPlotH} 四个 uniform 算）。两份必须逐点一致，否则
- * <b>刻度线与数据点会错开</b>——那看起来"只是没对齐"，排查方向会跑偏。
- * 一致性由 {@code ChartRenderLayoutTest.着色器uniform与CPU映射等价} 钉住。
+ * <p>同一个映射在顶点着色器里还有一份（{@code SeriesShaders} 的 {@code uValueRange}
+ * ——数值窗口的 min/max——与 {@code uPlotRect}——绘图区的 x, y, w, h）。
+ * 两份必须逐点一致，否则 <b>刻度线与数据点会错开</b>——那看起来"只是没对齐"，
+ * 排查方向会跑偏。一致性由 {@code ChartRenderLayoutTest.着色器uniform与CPU映射等价} 钉住。
  *
  * <h2>y 的方向是反的</h2>
  * <p>{@link Axis#dataToDisplay(double)} 给出的是"0 在窗口最小值处、越大越往后"的位置；

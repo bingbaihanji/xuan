@@ -12,13 +12,26 @@ import static org.lwjgl.opengl.GL20.*;
 
 /**
  * 管理由顶点着色器和片段着色器组成的 OpenGL 着色器程序。
+ *
+ * <h2>线程</h2>
+ * <p>与 {@code Gc}、{@code RenderBatch} 等持有 GL 资源的类同一条纪律：
+ * <b>所有方法只在 GL 线程调用</b>。本类不是线程安全的——它有一处可变的缓存
+ * （{@link #uniformLocations}），而 {@code glUseProgram} / {@code glUniform*} 本身就是
+ * 上下文状态操作，跨线程调用无论如何都不成立。
  */
 public class ShaderProgram implements Disposable {
 
     /** 着色器程序 ID */
     private final int programId;
 
-    /** uniform 名字 → 位置。程序链接后位置就固定了，不必每次现查。 */
+    /**
+     * uniform 名字 → 位置。程序链接后位置就固定了，不必每次现查。
+     *
+     * <p><strong>本类不提供重新链接入口</strong>（着色器源码只在构造时编译、链接一次）。
+     * 若将来加入 {@code glLinkProgram}，<b>必须同时清空这个缓存</b>：
+     * 重新链接之后位置可能变，而缓存会**静默返回旧位置**——{@code glUniform*} 拿旧位置
+     * 去设值，症状是"uniform 设了但没生效"，画面只是不对，不报任何错。
+     */
     private final Map<String, Integer> uniformLocations = new HashMap<>();
 
     /** 顶点着色器 ID */

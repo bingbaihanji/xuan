@@ -193,7 +193,8 @@ public final class ChartRenderer implements Disposable {
      * <h2>它为什么存在</h2>
      * <p>② 的性能主张是「<b>每帧只上传新增的点，不是整个窗口</b>」。
      * 这条主张在画面上<b>没有任何痕迹</b>：增量上传与每帧全量重传画出来的图
-     * <b>逐像素相同</b>，{@code ChartVerifier} 已有的十五条断言一条也分不开它们。
+     * <b>逐像素相同</b>，{@code ChartVerifier} 里所有那些**像素**断言一条也分不开它们
+     * （写这段时它有 15 条，现在 51 条——多出来的正是为此加的）。
      * 没有这个入口，"只传新增"就只是注释里的一句承诺——与
      * {@code RenderBatch.pickPassCount()} 是同一类东西：<b>为一个断言而存在的观测口</b>，
      * 生产代码不该依赖它。

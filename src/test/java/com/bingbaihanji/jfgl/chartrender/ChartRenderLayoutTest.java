@@ -76,7 +76,9 @@ class ChartRenderLayoutTest {
     @Test
     void 着色器uniform与CPU映射等价() {
         // 直接按顶点着色器里那几行公式算一遍，与 screenY 比对。
-        // 着色器用的是 uValueMin / uValueMax / uPlotY / uPlotH 四个 uniform。
+        // 着色器用的是 uValueRange（数值窗口的 min/max）与 uPlotRect（x, y, w, h）：
+        // 下面四个局部变量就是 uValueRange 的两个分量与 uPlotRect 的 y / w 分量
+        // （uPlotRect 的第四个分量是**高**，见 SeriesShaders.LINE_VERTEX）。
         Axis y = linearAxis(-2.0, 6.0, PLOT.height);
         ChartRenderLayout layout = new ChartRenderLayout(PLOT, linearAxis(0, 10, PLOT.width), y);
 

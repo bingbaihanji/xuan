@@ -14,11 +14,10 @@ import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 
 /**
- * LWJGL-based implementation of {@link GLAbstraction} that delegates
- * to the standard LWJGL OpenGL bindings (GL11, GL15, GL20, GL30).
- * <p>
- * This adapter is intended for use inside an OpenGLFX canvas where
- * the GL context is already current.
+ * {@link GLAbstraction} 的 LWJGL 实现：把每次调用转给 LWJGL 的 OpenGL 绑定。
+ *
+ * <p>它假定调用时 GL 上下文已经 current——本项目的上下文由 {@code GLCanvas} 置为当前，
+ * 所以 {@link #initialize()} 与 {@link #dispose()} 都是诚实的 no-op。
  */
 public class LwjglGLAbstraction implements GLAbstraction {
 
@@ -45,7 +44,7 @@ public class LwjglGLAbstraction implements GLAbstraction {
 
     @Override
     public void initialize() {
-        // GL context is already current when called from OpenGLFX events
+        // 从 GLCanvas 的回调进来时 GL 上下文已经 current，这里无事可做。
     }
 
     @Override
@@ -300,6 +299,7 @@ public class LwjglGLAbstraction implements GLAbstraction {
 
     @Override
     public void dispose() {
-        // No persistent native resources to release at this level
+        // 这一层自己不持有任何长期的本机资源：纹理、缓冲、VAO 都是按需创建、
+        // 由各自的持有者显式删除的，没有可在这里统一释放的东西。
     }
 }

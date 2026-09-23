@@ -224,9 +224,9 @@ class Gc internal constructor(private val batch: RenderBatch) {
      * <pre>
      * gc.beginFrame(w, h)
      *   画网格
-     * gc.flush()                      // 网格落定
-     * charts.draw(chart, plotRect)    // 数据系列画在网格之上
-     *   画刻度文字                     // 标注画在数据之上
+     * gc.flush()                                      // 网格落定
+     * gc.charts.draw(chart, plotRect, gc.width, gc.height)  // 数据系列画在网格之上
+     *   画刻度文字                                       // 标注画在数据之上
      * gc.endFrame()
      * </pre>
      *

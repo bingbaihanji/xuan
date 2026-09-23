@@ -11,7 +11,7 @@ import static org.lwjgl.opengl.GL13.GL_TEXTURE0;
 import static org.lwjgl.opengl.GL13.glActiveTexture;
 
 /**
- * Represents an OpenGL texture resource.
+ * 一个 OpenGL 纹理资源。
  */
 public class Texture implements Disposable {
 
@@ -22,85 +22,80 @@ public class Texture implements Disposable {
     private final int height;
 
     /**
-     * Creates a new texture from RGBA pixel data.
+     * 用 RGBA 像素数据创建一张纹理。
      *
-     * @param width  the width of the texture in pixels
-     * @param height the height of the texture in pixels
-     * @param pixels the RGBA pixel data (4 bytes per pixel)
+     * @param width  纹理宽度（像素）
+     * @param height 纹理高度（像素）
+     * @param pixels 像素数据，每个 int 打包 4 个字节
      */
     public Texture(int width, int height, int[] pixels) {
         this.width = width;
         this.height = height;
 
-        // Convert int[] RGBA to ByteBuffer
+        // int[] 拆成字节缓冲（GL 只接受字节流）
         ByteBuffer buffer = BufferUtils.createByteBuffer(width * height * 4);
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 int pixel = pixels[y * width + x];
-                buffer.put((byte) ((pixel >> 0) & 0xFF));   // Red
-                buffer.put((byte) ((pixel >> 8) & 0xFF));   // Green
-                buffer.put((byte) ((pixel >> 16) & 0xFF));  // Blue
-                buffer.put((byte) ((pixel >> 24) & 0xFF));  // Alpha
+                buffer.put((byte) ((pixel >> 0) & 0xFF));   // 红
+                buffer.put((byte) ((pixel >> 8) & 0xFF));   // 绿
+                buffer.put((byte) ((pixel >> 16) & 0xFF));  // 蓝
+                buffer.put((byte) ((pixel >> 24) & 0xFF));  // 透明
             }
         }
         buffer.flip();
 
-        // Generate and configure the texture
+        // 建纹理并设参数
         textureId = glGenTextures();
         glBindTexture(GL_TEXTURE_2D, textureId);
 
-        // Set texture parameters
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-        // Upload pixel data
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
 
-        // Unbind texture
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
     /**
-     * Binds this texture to the specified texture unit.
+     * 把本纹理绑到指定的纹理单元。
      *
-     * @param unit the texture unit to bind to (0-based, e.g., GL_TEXTURE0)
+     * @param unit 纹理单元（从 0 开始，例如 {@code GL_TEXTURE0} 就是 0）
      */
     public void bind(int unit) {
         glActiveTexture(GL_TEXTURE0 + unit);
         glBindTexture(GL_TEXTURE_2D, textureId);
     }
 
-    /**
-     * Unbinds this texture from the currently active texture unit.
-     */
+    /** 从当前活动的纹理单元上解绑。 */
     public void unbind() {
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
     /**
-     * Returns the OpenGL texture ID.
+     * OpenGL 纹理名（{@code glGenTextures} 返回的那个）。
      *
-     * @return the texture ID
+     * @return 纹理名
      */
     public int getTextureId() {
         return textureId;
     }
 
     /**
-     * Returns the width of the texture.
+     * 纹理宽度。
      *
-     * @return the width in pixels
+     * @return 宽度（像素）
      */
     public int getWidth() {
         return width;
     }
 
     /**
-     * Returns the height of the texture.
+     * 纹理高度。
      *
-     * @return the height in pixels
+     * @return 高度（像素）
      */
     public int getHeight() {
         return height;
