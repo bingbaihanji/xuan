@@ -109,8 +109,13 @@ SeriesBuffer}` 只依赖 `GLAbstraction` **接口**，用 `src/test/.../gl/FakeG
 
 仓库里那 5 个 `#version 330 core` 着色器（都在 `renderer/RenderBatch.java`）能跑，
 是因为 **4.6 向后兼容**，**不是因为上下文是 3.3**。**不要因为版本号写着 330 就以为
-compute 用不了**——`gpu/GPUFFT.java`（`#version 430`，Cooley-Tukey radix-2 + SSBO）
-就是这么被埋掉的：它一直可用，只是没人引用。
+compute 用不了**——`gpu/GPUFFT.java` 就是被这个假设埋掉的（`#version 430`，
+Cooley-Tukey radix-2 + SSBO，版本与上下文能力其实都够）。
+
+> ⚠️ **但不要把它当成"现成可用的 FFT"**：`GpuFftVerifier` 实测揭出它**三层缺陷**，
+> 出厂那份**连编译都过不了**。详见「未实现 / 待办」里的那一条。
+> **"能编译/dashboard 能 dispatch"与"输出对"是两件事**——这条曾经被写反过：
+> 文档里一度说它"一直可用，只是没人引用"，而它**从未成功运行过一次**。
 
 先前的 `CLAUDE.md` 里**没有任何一处写过上下文是几**——唯一沾边的 "3.3" 是架构图里
 `LWJGL 3.3.6`，那是**库**的版本。这一节就是为了补上这个缺口。
@@ -430,8 +435,17 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
   `LineSeriesRenderer.requireSupported` 的 Javadoc）。
 - **非线性轴的 GPU 路径**：`LOGARITHMIC` / `TEXT` 轴在 `ChartRenderLayout` 里明确抛异常。
 - **GPU 计算**（子项目 D-③）：FFT、降采样、包络、密度累积（数字荧光）。
-  `gpu/GPUFFT.java` 已经在那儿且**可用**（`#version 430`，见「前置事实」一节），
-  但它现在**没有任何人引用**——是死代码，不是废代码。
+  `gpu/GPUFFT.java`（`#version 430`）虽然在那儿，但**不能用**——`GpuFftVerifier`
+  实测它有**三层缺陷**：
+  1. **默认着色器编译不过**：`uint half = 1u << u_stage;` 里 `half` 是 GLSL **保留字**，
+     于是 `new GPUFFT()` 直接抛 `RuntimeException`——**它从来没有成功运行过一次**。
+  2. **改掉①之后仍然空转**：三个 uniform 声明成 `uniform uint`，而 `dispatchFFT` 用
+     `glUniform1i` 赋值 → `GL_INVALID_OPERATION` 且**值不生效** → `u_N` 恒为 0 →
+     每次都提前返回，输出**逐位等于输入**。
+     （同一个坑 ② 在 `uPickId` 上踩过一次，已写进「绘制后端」一节。）
+  3. **改掉①②之后算法仍错**：DIT 蝶形要求输入先做位反转，而那 6 行算出来的 `rev`
+     **从头到尾没被引用过** → 输出等于 `DFT(输入按位反转)`，峰值落在错误的 bin 上。
+  修 ③ 的 FFT 时，**`GpuFftVerifier` 转绿就是验收**（它现在**预期是红的**，退出码 1）。
 - **误差棒、等高线、眼图**：`ChartType` 目前没有覆盖，属于 ③ 或更后面的事。
 - **Paint / 渐变**：所有绘制只接受纯色整数。设计意图是**所有 Paint 归一化为纹理**
   （纯色 = 超白色纹理 + 顶点颜色，渐变 = 1×256 LUT）。
