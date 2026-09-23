@@ -52,9 +52,11 @@ import java.util.function.Consumer;
  * 遇到这些<b>抛异常</b>——静默不画是本项目最典型的静默错误输出：
  * 画面里少一张图，与"这张图没数据"在视觉上完全一样。
  *
- * <p>本期已实现的图型只有三种：{@link ChartType#LINE} 与
- * {@link ChartType#LINE_AND_MARKERS}（折线渲染器，后者只画折线那半）以及
- * {@link ChartType#SCATTER}（散点渲染器）。
+ * <p>本期已实现的图型有四种：{@link ChartType#LINE} 与
+ * {@link ChartType#LINE_AND_MARKERS}（折线渲染器，后者只画折线那半）、
+ * {@link ChartType#SCATTER}（散点渲染器）以及 {@link ChartType#SPECTRUM}
+ * （{@link SpectrumSeriesRenderer}——它的顶点由 GPU 上的 FFT 算出，
+ * 因此不是折线族，见 {@link #rendererFor} 里那条必须走在前面的例外）。
  */
 public final class ChartRenderer implements Disposable {
 
@@ -80,6 +82,14 @@ public final class ChartRenderer implements Disposable {
 
     /** 散点渲染器，全局一个（它自己不持有数据）。 */
     private final ScatterSeriesRenderer scatterRenderer;
+
+    /**
+     * 频谱渲染器，全局一个。
+     *
+     * <p>它是唯一一个<b>持有 GL 资源以外的东西</b>的渲染器：FFT 核按源环容量各存一个
+     * （见 {@link SpectrumSeriesRenderer} 的字段说明），因为核的环容量在构造时就定死了。
+     */
+    private final SpectrumSeriesRenderer spectrumRenderer;
 
     /**
      * 四个着色器程序：{@code {折线, 散点} × {绘制, 拾取}}。
@@ -135,6 +145,7 @@ public final class ChartRenderer implements Disposable {
                 gl.createShader(SeriesShaders.SCATTER_VERTEX, SeriesShaders.PICK_FRAGMENT);
         this.lineRenderer = new LineSeriesRenderer(gl);
         this.scatterRenderer = new ScatterSeriesRenderer(gl);
+        this.spectrumRenderer = new SpectrumSeriesRenderer(gl);
     }
 
     /**
@@ -230,8 +241,13 @@ public final class ChartRenderer implements Disposable {
     /**
      * 图型 → 渲染器。不支持的图型明确抛异常，不静默不画。
      *
-     * <p>查表规则与 {@link ChartType} 的属性组合一一对应：
-     * 不在折线族里的（热力图、瀑布图）本期没有渲染器；
+     * <p>查表规则与 {@link ChartType} 的属性组合一一对应，但<b>有一条例外必须走在最前面</b>：
+     * {@link ChartType#SPECTRUM} 的 {@code polylineFamily()} 是 {@code false}
+     * （它的顶点不是"每个样本一个点"，而是 FFT 算出来的 bin），却<b>已经有渲染器</b>了。
+     * 所以这条判断放在 {@code polylineFamily()} 那道守卫<b>之前</b>——
+     * 放在之后的话它先被"本期还没有渲染器"抛掉，频谱永远画不出来。
+     *
+     * <p>剩下的两类：不在折线族里的（热力图、瀑布图）本期没有渲染器；
      * <b>只画标记点的（散点）归散点渲染器</b>；其余归折线渲染器，
      * 由它自己再守一道"这个图型我画不画得出来"（见 {@code requireSupported}）。
      *
@@ -243,6 +259,9 @@ public final class ChartRenderer implements Disposable {
      * 像一种刻意的风格，不像缺陷。
      */
     private SeriesRenderer rendererFor(ChartType type) {
+        if (type == ChartType.SPECTRUM) {
+            return spectrumRenderer;
+        }
         if (!type.polylineFamily()) {
             throw new UnsupportedOperationException(
                     "图型 " + type + " 本期还没有渲染器（热力图与瀑布图的顶点不是"
@@ -272,6 +291,7 @@ public final class ChartRenderer implements Disposable {
         buffers.clear();
         lineRenderer.dispose();
         scatterRenderer.dispose();
+        spectrumRenderer.dispose();
         lineShader.dispose();
         pickShader.dispose();
         scatterShader.dispose();
