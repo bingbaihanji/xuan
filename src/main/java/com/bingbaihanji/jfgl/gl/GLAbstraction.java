@@ -160,6 +160,15 @@ public interface GLAbstraction extends Disposable {
      * <p><strong>一个缓冲对象可以同时绑到多个靶子上</strong>——本项目的 FFT 正是靠这一点
      * 让 compute 写的缓冲直接被实例属性读走，不需要任何 GPU 侧拷贝。
      *
+     * <p><strong>但"不拷贝"不等于"不用同步"。</strong>compute 写完到顶点属性读走之间
+     * <strong>仍必须插一次 {@code glMemoryBarrier}</strong>
+     * （{@code gpu/ComputeShader.memoryBarrier()} 用的是 {@code GL_ALL_BARRIER_BITS}，够用）。
+     * 漏掉它的表现是<b>读到旧值</b>——<strong>数值错，而不会报任何 GL 错误</strong>，
+     * 正是本仓库最警惕的那种失败。
+     *
+     * <p>缓冲的同步<strong>不属于本抽象</strong>：它跨越"compute 写"与"绘制读"两个 pass，
+     * 由调用方按自己的 pass 结构安排。
+     *
      * @return 缓冲对象的名字
      */
     int createBuffer();
