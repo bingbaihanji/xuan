@@ -36,8 +36,9 @@
 | ① | **`half` 是 GLSL 保留字** → 默认着色器编译不过，**从未成功运行过一次** | 用 `halfLen`；**校验器里有一条"编译成功"的断言** |
 | ② | uniform 声明成 `uint` 却用 `glUniform1i` 赋值 → **静默不生效** | **一律声明 `int`**（同一个坑 ② 在 `uPickId` 上踩过） |
 | ③ | DIT 要求输入先位反转，而算出的 `rev` **从没被引用** | **位反转是着色器内部的第一步**，不依赖任何外部步骤 |
+| ④ | **（本计划写规格时自己踩出来的）** 位反转写成 `int(bitfieldReverse(...)) >> k` —— 转成 `int` 后是**负数**，而 GLSL 对**有符号**左操作数的 `>>` 是**算术右移**，得到负下标、**越界写共享内存** | **移位在 `uint` 域里做完再转 `int`**（Task 3 的代码里已修正并写明） |
 
-**这三条不是背景知识，是验收标准**：Task 4 的四条变异里有两条直接对应 ②③。
+**这四条不是背景知识，是验收标准**：Task 4 的四条变异里有两条直接对应 ②③。
 
 ---
 
@@ -664,9 +665,17 @@ public final class FftKernel implements Disposable {
 
                 // ① 取数 + 加窗 + 位反转，一次做完。
                 //    bitfieldReverse 反转全部 32 位，右移掉高位即得 logN 位的反转。
+                //
+                //    ⚠️ 移位必须在 **uint 域**里做完再转 int。
+                //    写成 `int(bitfieldReverse(...)) >> (32 - logN)` 是错的：
+                //    反转之后**最高位几乎总是 1**（i 的最低位变成了最高位），
+                //    转成 int 就是负数，而 GLSL 对**有符号**左操作数的 >> 是**算术右移**
+                //    （符号扩展）。例如 i=1 时得到 0xFFFFFC00 = **-1024** 而不是 1024，
+                //    于是 sRe[rev] 用一个**负下标**写共享内存——那是**越界写**，
+                //    驱动可能崩、也可能悄悄写坏别处。
                 for (int i = tid; i < n; i += 1024) {
                     int src = (u_RingStart + i) & (cap - 1);
-                    int rev = int(bitfieldReverse(uint(i))) >> (32 - logN);
+                    int rev = int(bitfieldReverse(uint(i)) >> uint(32 - logN));
                     sRe[rev] = inY[src] * windowAt(i);
                     sIm[rev] = 0.0;
                 }
