@@ -59,23 +59,30 @@ src/test/java/com/bingbaihanji/jfgl/geom/       PathTest、FlattenerTest、Tesse
                                                 GeomPackageIsolationTest
 src/test/java/com/bingbaihanji/jfgl/renderer/   VertexFormatTest、VertexWriterTest、ViewTransformTest、
                                                 PickRegistryTest、PickBufferTest
-src/test/java/com/bingbaihanji/jfgl/gl/         FramebufferTest、LwjglGLAbstractionTest
+src/test/java/com/bingbaihanji/jfgl/gl/         FramebufferTest、LwjglGLAbstractionTest、
+                                                FakeGLAbstractionGuardTest
 src/test/java/com/bingbaihanji/jfgl/text/       SdfGeneratorTest、GlyphAtlasTest、FontFileTest、
                                                 GlyphRasterizerTest、TextLayoutTest
 src/test/java/com/bingbaihanji/jfgl/chart/      TickGeneratorTest、AxisTest、ArrayChartDataTest、
                                                 RingChartDataTest、ChartDataConcurrencyTest、
                                                 ColorMappingTest、ChartTest、
                                                 ChartPackageIsolationTest
+src/test/java/com/bingbaihanji/jfgl/chartrender/ ChartRenderLayoutTest、SeriesBufferTest、
+                                                SeriesUploadPlanTest、WindowRangeTest
+                                                （夹具类 ChartDataFixtures 本身没有测试）
 ```
 
-当前 **261 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+当前 **308 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
 `@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`。
+分布：`geom/` 69、`renderer/` 97、`gl/` 10、`text/` 32、`chart/` 56、`chartrender/` 44。
 
 `geom/`、`math/`、`util/`、`ViewTransform`、`text/{SdfGenerator, TextLayout}`、`chart/`
 都是纯计算、不依赖 GL 上下文，最适合写单测。`gl/Framebuffer`、`renderer/PickBuffer`、
-`text/GlyphAtlas` 只依赖 `GLAbstraction` **接口**，用 `src/test/.../gl/FakeGLAbstraction`
+`text/GlyphAtlas`、`chartrender/{WindowRange, SeriesUploadPlan, ChartRenderLayout,
+SeriesBuffer}` 只依赖 `GLAbstraction` **接口**，用 `src/test/.../gl/FakeGLAbstraction`
 这个假实现也能零 GL 上下文单测。`text/{FontFile, GlyphRasterizer}` 依赖 stb 的本地库
-（已实测能在 surefire 里加载）。`RenderBatch` 的着色器与 `Gc` 则必须靠校验器。
+（已实测能在 surefire 里加载）。`RenderBatch` 的着色器与 `Gc` 则必须靠校验器，
+`chartrender/` 的着色器与实例属性配置必须靠 `ChartVerifier`。
 
 **`chart/` 的边界是机器强制的**：它连 `renderer/` 也不依赖，由
 `ChartPackageIsolationTest` 递归遍历源码、按**包名白名单**守卫——白名单只放行
@@ -121,6 +128,7 @@ L0  几何            geom.Path / Flattener / Tessellator / StrokeGenerator   �
     文本            text.SdfGenerator / text.TextLayout                     纯计算；
                     text.FontFile（stb）/ text.GlyphAtlas（R8 图集）        依赖 stb 与 GL
     图表            chart.*                                          纯计算，零 GL 依赖
+    图表后端        chartrender.*                                    实例化绘制，依赖 GL
     GL 抽象         gl.*                                             LWJGL 3.3.6 + openglfx
 ```
 
@@ -213,11 +221,23 @@ Main.kt                     设置 prism.* 系统属性
 图表框架（子项目 D-①）在 `chart/` 下，**纯计算、零 GL 依赖**：数据容器（`ArrayChartData`
 静态 / `RingChartData` 流式）、轴与刻度（`Axis` / `TickGenerator` / `AxisType`）、
 配色 LUT（`ColorMapping`）、装配（`Chart` / `Layer` / `Series` / `ChartType`）。
-**绘制后端（子项目 ②）尚未实现**，所以现在还没有"画出来"的能力。
 
-三块分解：**① 图表类框架（已完成，`chart/`）→ ② GPU 绘制后端 → ③ GPU 计算。**
-**分界判据是"能不能脱离 GL 上下文跑测试"**——① 里每一个类都能，② 里的一个都不能，
-`chart/` 的边界正是这么画出来的（也是 `ChartPackageIsolationTest` 在守的那条线）。
+GPU 绘制后端（子项目 D-②）在 `chartrender/` 下，**已完成**：`ChartRenderer`（入口，
+经 `Gc.charts` 懒创建）、`LineSeriesRenderer` / `ScatterSeriesRenderer`（折线与散点，
+两个 pass：颜色的与 ID 的）、`SeriesBuffer`（每系列一块 GPU 常驻缓冲）、
+`SeriesShaders`（四份 GLSL：`{折线, 散点} × {绘制, 拾取}`）。
+**② 与 ① 的接缝只有两个类型**：`chart/RenderContext`（空接口，② 用
+`chartrender/GLRenderContext` 扩展它）与 `chart/SeriesRenderer`（纯函数：数据 + 轴 → 顶点）。
+
+三块分解：**① 图表类框架（已完成，`chart/`）→ ② GPU 绘制后端（已完成，`chartrender/`）
+→ ③ GPU 计算。** **分界判据是"能不能脱离 GL 上下文跑测试"**——① 里每一个类都能，
+② 里的一个都不能，`chart/` 的边界正是这么画出来的（也是 `ChartPackageIsolationTest`
+在守的那条线）。
+
+**`chartrender/` 与 `chart/` 是兄弟包，不是子包**（`chart/` 只放能单测的纯计算，
+`chartrender/` 放必须挂在 GL 线程上的绘制后端）。`ChartPackageIsolationTest` **递归**
+遍历 `chart/` 整棵子树、按**包名白名单**（只放行 `chart/`、`math/`、`util/`）守卫——
+把 ② 的任何一个类放进 `chart/` 下都会让它立刻失败。
 
 ```java
 // 静态数据：一次性给出，之后整体替换
@@ -232,6 +252,17 @@ Chart chart = new Chart(x, y);
 chart.addLayer("主").add(new Series("电压", data, ChartType.LINE).color(0xFF00FF00));
 
 Tick[] ticks = x.ticks();          // 主/中/次三级刻度，位置已经装配好
+```
+
+```kotlin
+// ② 画出来：每帧在 GL 线程上，z 序是「网格 → 数据 → 标注」（与 Gc.charts 的文档一致）
+gc.beginFrame(gc.width, gc.height)                     // jfgl { } 的 onRender 已代为调用
+gc.fillRect(plot.x, plot.y, plot.width, plot.height)   // 绘图区底色（普通 Gc 图元）
+// ……网格与坐标轴……
+gc.flush()                                             // ★ 网格落定
+gc.charts.draw(chart, plot, gc.width, gc.height)       // ★ 数据系列（当场就画）
+// ……刻度文字等标注：画在数据之上……
+gc.endFrame()
 ```
 
 - **脏区间是一等公民**：`ChartData.dirtyRange(sinceRevision)` 返回 `[firstDirty, lastDirty)`。
@@ -256,6 +287,51 @@ Tick[] ticks = x.ticks();          // 主/中/次三级刻度，位置已经装�
   要显示本地时间请在应用层转换——① 不读系统时区，否则同一段代码在不同机器上给出不同结果。
 - **配色归一化成 1×256 LUT**（`ColorMapping.toLut()` 返回 `byte[1024]`，RGBA）。
   热力图换配色 = 换一张纹理，与数据量无关。
+
+#### 绘制后端（②，`chartrender/`）
+
+- **GPU 里存的是数值，不是屏幕坐标。** 位置在顶点着色器里算
+  （`SeriesShaders`：`uPlotRect` / `uValueRange` / `uPxPerSample` …），
+  于是**滚动、缩放、自动量程、窗口尺寸变化全都是改 uniform，零重传**。
+  这是 ② 的全部性能前提。
+- **每点 4 字节**：`SeriesBuffer` 只存 y（`float32`），x 由"样本在缓冲里的位置"
+  隐含给出（等距采样），所以不占缓冲。
+- **线段的两端靠"同一个 VBO、两个不同的字节偏移"的两个实例属性拿到**：
+  `aY0` 偏移 0、`aY1` 偏移 4（步长都是 4，由 `baseInstance` 挪到环里正确那一段）。
+  于是同一个 y 只存一次。散点只配一个属性 `aY`——点自己就是完整的，没有"第二端"。
+  偏移写成 0（两个属性指向同一个 y）会让每个线段退化成**水平小横线**，
+  而线条看起来仍然连贯。
+- **缓冲比环容量多留一个 float，那个位置有确切语义，不是垃圾**：物理槽位
+  `capacity` 就是槽位 0（环的本质），所以"最后一个槽位上的那个实例"的第二端
+  必须读到**槽位 0 的值**。每写一次槽位 0 就同步一次那个余量
+  （`SeriesUploadPlan.mirrorSourceIndex()`）。不写它，跨环绕点的一条曲线会多出
+  一段**从正常值掉到 0 的斜线**——不报错、不是乱码，看着还挺像一条信号。
+- **必须用 `glDrawArraysInstancedBaseInstance`**（`GLAbstraction` 里唯一一处
+  `GL42` 调用），不能用普通的 `drawArraysInstanced`：实例属性按 `gl_InstanceID` 取，
+  而它**每次从 0 开始**（`baseInstance` 不影响它，只影响属性取哪一份数据）。
+  可见窗口跨过环绕点时 `WindowRange` 会切成两段、第二段的槽位从 0 开始——
+  少了 `baseInstance`，第一段会取到环里别的槽位的数据，**线照样平滑、值全错**。
+- **数据系列是当场就画的**（instanced draw call，不攒进 `RenderBatch` 的顶点缓冲），
+  所以"网格 → 数据 → 标注"这种夹心 z 序要靠 **`Gc.flush()`**（帧内提交点）；
+  也因此 `LineSeriesRenderer` / `ScatterSeriesRenderer` 自己负责进出时的 GL 状态
+  （`glScissor` 的启用与还原、预乘混合因子、VAO 与程序的解绑）——它们不在
+  `RenderBatch.submit` 里，没有那套"进中性状态、出来还原"的收尾可依赖。
+- **拾取按系列发号**：ID 走 `uPickId` 这个 **int** uniform（不能是 uint——
+  `glUniform1i` 对 uint uniform 报 `GL_INVALID_OPERATION` 且**值保持 0**，
+  而 0 正是"什么都没命中"），号从 `Gc` 的那本 `pickRegistry` 取（两本注册表会撞号），
+  `PickHit.payload()` 就是那个 `Series`。发号成本与点数无关。
+- **热区容差 4px（半宽）是刻意的**：画出来的线只有 1~2px 宽，要求用户精确点中不合理。
+  它只影响 ID pass，**不影响画面**，与"全透明图元仍可拾取"同类，有断言钉着。
+- **`Series.markerSize()` 是半径**（用户坐标单位），而着色器的 `uMarkerSize` 是**边长**；
+  换算（×2）只在 `ScatterSeriesRenderer.markerEdge` 一处。两处各持一半解释的话，
+  用户设半径 5 会拿到宽 5 的方块，**画面上没有任何症状**。
+- **不支持的要明确抛异常，不许静默不画**。本期只实现了三种图型：
+  `LINE`、`LINE_AND_MARKERS`（**只画折线那半**，标记点那半是已知缺口）、`SCATTER`。
+  `STEP` / `AREA` / `BAR` / `HEATMAP` / `WATERFALL` 一律抛异常——
+  把它们当普通折线画，阶梯图被拉成斜线、面积图整个填充消失，而画面完全正常。
+- **`LOGARITHMIC` / `TEXT` 轴明确抛异常**：本期 GPU 路径只支持线性换算
+  （`LINEAR` 与 `TIME`——时间轴的值是纪元秒，本身就是线性的）。
+  按线性去画对数轴，曲线的形状是错的，而画面看起来完全正常。
 
 ### 线程模型
 
@@ -304,6 +380,22 @@ Tick[] ticks = x.ticks();          // 主/中/次三级刻度，位置已经装�
    mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
        -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.TextVerifierKt"
    ```
+
+   改**图表绘制**路径后跑 `ChartVerifier`（同样回读像素、退出码 0/1）：
+
+   ```bash
+   mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
+       "-Dexec.args=-cp %classpath com.bingbaihanji.jfgl.example.ChartVerifierKt"
+   ```
+
+   它守的核心是那一组**与像素无关**的：整个 ② 的性能主张是「每帧只上传新增的点」，
+   而**增量上传与每帧全量重传画出来的图逐像素相同**——所以那条断言观测的是
+   **上传字节数**（`ChartRenderer.takeUploadedBytes`），不是像素，
+   判据是"每一帧恰好 K×4 字节"。它另外钉住"NaN 必须断开折线""跨环绕时 `baseInstance`
+   真的生效（含槽位 0 的镜像）""散点不连线""拾取容差与裁剪""markerSize 退化"，
+   并且**场景逐帧在变**（有几张实验图只在观察期画、有一条系列中途整条消失）——
+   静态场景的校验器有盲区（`PickVerifier` 当时 24 条全绿仍漏掉一个真缺陷，
+   见 README 的「测试」一节）。
 2. **改了断言或修了 bug，做变异验证**：把 bug 重新注入，确认校验器真的失败。
    （校验器里那条"反证"断言就是这么来的——避免覆盖性检查恒真、变成橡皮图章。）
 3. 校验器依赖"用户坐标 1:1 映射到设备像素"这一前提。若将来引入真正的 DPI 缩放，
@@ -326,12 +418,17 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
 `renderer/PickBuffer`、`PickHit`、`Gc` 的 `pickId` / `pickable` / `pick` / `pickRect`、
 `FXGLTransfer.pickAsync`、`renderer/Material`（材质选择位）、
 `text/FontFile`（stb 的字体与度量封装）、`text/GlyphRasterizer`、`text/GlyphAtlas`（R8 图集）、
-`Gc` 的 `fontSize` / `drawText` / `measureText`
+`Gc` 的 `fontSize` / `drawText` / `measureText`、
+`chartrender/` 全部（`ChartRenderer`——入口是 `Gc.charts`、`LineSeriesRenderer`、
+`ScatterSeriesRenderer`、`SeriesBuffer`、`SeriesShaders`；用法见「图表」一节）
 
 **未实现 / 待办**
-- **图表绘制后端**（子项目 D-②）：把 `chart/` 的产物变成 GL 顶点与 draw call
-  （波形、散点、柱、热力图、瀑布）。**图表框架本身（D-①）已经做完，但还没有任何
-  绘制能力**——`chart/` 只算不画。
+- **其余图型的渲染器**：`STEP` / `AREA` / `BAR` / `HEATMAP` / `WATERFALL`
+  目前一律**抛异常**（`chart/` 里有这些 `ChartType`，但没有渲染器）。
+  属于 ③ 或更后面的事。
+  同样地，`LINE_AND_MARKERS` **只画折线那半**，标记点那半还没接（见
+  `LineSeriesRenderer.requireSupported` 的 Javadoc）。
+- **非线性轴的 GPU 路径**：`LOGARITHMIC` / `TEXT` 轴在 `ChartRenderLayout` 里明确抛异常。
 - **GPU 计算**（子项目 D-③）：FFT、降采样、包络、密度累积（数字荧光）。
   `gpu/GPUFFT.java` 已经在那儿且**可用**（`#version 430`，见「前置事实」一节），
   但它现在**没有任何人引用**——是死代码，不是废代码。

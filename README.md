@@ -11,6 +11,8 @@
 - ✂️ **状态栈与裁剪**：`save` / `restore` / `translate` / `scale` / `rotate` / `clipRect`
 - 🖼️ **嵌入 JavaFX 场景图**：GL 画布就是一个普通 `Node`，与 JavaFX 布局共存
 - 📐 **纯计算几何层**：`geom/` 不依赖 GL 上下文，可脱离 OpenGL 单独测试
+- 📈 **图表**：折线与散点走 GPU 实例化绘制，数据常驻显存、每帧只上传新增的点，
+  滚动缩放零重传
 
 ## 快速开始
 
@@ -73,12 +75,17 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
 # 文本
 mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
     -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.example.TextVerifierKt"
+
+# 图表
+mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
+    "-Dexec.args=-cp %classpath com.bingbaihanji.jfgl.example.ChartVerifierKt"
 ```
 
 **改哪条路径就跑哪个校验器**：动了顶点/几何/描边跑 `PipelineVerifier`，
 动了拾取（`pickId`、ID pass、`PickBuffer`）跑 `PickVerifier`，
-动了文本（`text/`、`fontSize`、`drawText`）跑 `TextVerifier`。
-三个都过不代表没漏——它们只证明自己断言过的那些点，见文末「验证」一节。
+动了文本（`text/`、`fontSize`、`drawText`）跑 `TextVerifier`，
+动了图表绘制（`chartrender/`、`Gc.charts`、`Gc.flush`）跑 `ChartVerifier`。
+四个都过不代表没漏——它们只证明自己断言过的那些点，见文末「测试」一节。
 
 > **不要用 `mvn exec:java`**：该插件的类加载器会让 openglfx 链接到另一份
 > `com.sun.prism.GraphicsPipeline`（静态字段永远为 null），启动即抛
@@ -203,38 +210,77 @@ gc.drawText("可点的标签", 40f, 200f)
 
 ### 图表
 
-图表框架（`chart/`）是**纯计算**的：数据容器、轴与刻度、配色 LUT、图表装配。
-**绘制后端尚未实现**——它现在只算不画，所以下面这段代码算得出刻度，但还没有
-任何东西出现在屏幕上。
+图表分两层：**`chart/` 是纯计算**（数据容器、轴与刻度、配色 LUT、图表装配，
+零 GL 依赖，可脱离 OpenGL 单测），**`chartrender/` 是 GPU 绘制后端**（把装配结果画成
+实例化 draw call）。两者是**兄弟包**，`chart/` 里一条 GL 依赖都没有，由
+`ChartPackageIsolationTest` 递归守卫。
+
+`chart/` 能算不能画，`chartrender/` 只管画——数据系列是**当场就画**的
+（不在 `Gc` 的批处理里），所以夹在"网格"与"标注"之间的 z 序要靠 `gc.flush()`：
 
 ```java
-// 静态数据
+// ── ① 装配（纯计算，任意线程；也可以只算不画）──
 ArrayChartData data = new ArrayChartData(
         new AxisRange[]{new AxisRange(0, 10, "时间", "s"), new AxisRange(-1, 1, "电压", "V")},
         new double[][]{{0, 1, 2, 3}, {0.1, -0.2, 0.3, 0.0}});
 
-Axis x = new Axis(AxisType.LINEAR, data.axisRange(0)).setDisplayLength(800);
-Axis y = new Axis(AxisType.LINEAR, data.axisRange(1)).setDisplayLength(600);
+Axis x = new Axis(AxisType.LINEAR, data.axisRange(0)).setDisplayLength(600);  // = 绘图区宽
+Axis y = new Axis(AxisType.LINEAR, data.axisRange(1)).setDisplayLength(400);  // = 绘图区高
 
 Chart chart = new Chart(x, y);
 chart.addLayer("主").add(new Series("电压", data, ChartType.LINE).color(0xFF00FF00));
 
-Tick[] ticks = x.ticks();               // 主/中/次三级刻度，位置已装配好
-
-// 流式数据：采集线程写、GL 线程读，SPSC 无锁
-RingChartData stream = new RingChartData(new AxisRange[]{AxisRange.of(0, 1)}, 1 << 16);
-stream.append(0.5);                     // 采集线程
-double v = stream.value(0, 0);          // GL 线程；窗口之外返回 NaN（缺口）
+Tick[] ticks = x.ticks();               // 主/中/次三级刻度，position 已按本轴换算好
 ```
 
+```kotlin
+// ── ② 画出来（每帧、GL 线程，即 onRender 的 gc 回调里）──
+val plot = Rect(100f, 100f, 600f, 400f)
+
+gc.fill = 0xFF101020.toInt()
+gc.fillRect(plot.x, plot.y, plot.width, plot.height)   // 绘图区底色
+gc.stroke = 0xFF404040.toInt()
+gc.lineWidth = 1f
+for (t in y.ticks()) {                                  // 横网格线（值越大越靠上）
+    val sy = plot.y + plot.height - t.position().toFloat()
+    gc.drawLine(plot.x, sy, plot.x + plot.width, sy)
+}
+for (t in x.ticks()) {                                  // 竖网格线
+    val sx = plot.x + t.position().toFloat()
+    gc.drawLine(sx, plot.y, sx, plot.y + plot.height)
+}
+
+gc.flush()                                              // ★ 网格先落定
+gc.charts.draw(chart, plot, gc.width, gc.height)         // ★ 数据系列
+
+gc.fill = 0xFFC0C0C0.toInt()                             // 标注画在数据之上（顺序即 z 序）
+gc.fontSize = 12f
+for (t in x.ticks()) {
+    gc.drawText(t.label(), plot.x + t.position().toFloat(), plot.y + plot.height + 16f)
+}
+```
+
+- **不支持的图型会明确抛异常**，不会静默不画：本期只有 `LINE`、`LINE_AND_MARKERS`
+  （只画折线那半）与 `SCATTER` 三种；`STEP` / `AREA` / `BAR` / `HEATMAP` / `WATERFALL`
+  还没有渲染器。`LOGARITHMIC` / `TEXT` 轴同样抛异常（GPU 路径只支持线性换算）。
 - **脏区间**：`dirtyRange(sinceRevision)` 让渲染器只上传新增的那一段；
   `revision` 不变时报空，静态数据一次上传后永不重传。
+  数据在 GPU 里存的是**数值不是屏幕坐标**，所以滚动/缩放/改窗口尺寸只是改 uniform、
+  **零重传**；每点 4 字节。
 - **缺口是 NaN**：丢包与传感器故障是同一种表示，渲染器的规则只有一条——遇到 NaN 就断开折线。
   **不能连过去**：连过去的那条直线显示的信号并不存在，比不显示更糟。
 - **流式数据只有一个写者**：`RingChartData` 是 SPSC 无锁环形缓冲。
   数据源若变成网络/串口回调（回调线程不固定），这个前提就不成立，必须换设计。
 - **轴不持有数据**：范围由数据自己声明，轴只是显示窗口，多 Y 轴因此是自然结果。
 - **时间轴按 UTC 格式化**；配色是 1×256 的 LUT（换配色 = 换一张纹理）。
+
+流式数据的写法（采集线程写、GL 线程读）：
+
+```java
+RingChartData stream = new RingChartData(new AxisRange[]{AxisRange.of(0, 1)}, 1 << 16);
+stream.append(0.5);                     // 采集线程
+double v = stream.value(0, 0);          // GL 线程；窗口之外返回 NaN（缺口）
+```
 
 ### 坐标系与颜色
 
@@ -261,6 +307,7 @@ src/main/java/com/bingbaihanji/jfgl/
 ├── math/        # Vec2、Mat3、Transform
 ├── renderer/    # 顶点侧热路径：VertexFormat、VertexWriter、DrawCommand、RenderBatch
 ├── chart/       # 图表框架（纯计算）：ChartData、Axis、TickGenerator、ColorMapping、Chart
+├── chartrender/ # 图表 GPU 绘制后端：ChartRenderer、Line/ScatterSeriesRenderer、SeriesBuffer
 ├── text/        # SDF 文本：FontFile(stb)、GlyphRasterizer、SdfGenerator、GlyphAtlas、TextLayout
 └── util/        # Color、Rect、Disposable
 
@@ -275,6 +322,10 @@ src/main/kotlin/com/bingbaihanji/jfgl/
 `geom/` 对 `gl/` **零依赖**（由 `GeomPackageIsolationTest` 强制），因为它是纯计算，
 可以脱离 GL 上下文单独测试。
 
+`chartrender/` 与 `chart/` 是**兄弟包**——`chart/` 只放能单测的纯计算，
+绘制后端单独一个包，也是同样的理由（`ChartPackageIsolationTest` 递归遍历 `chart/`
+整棵子树，按包名白名单守卫）。
+
 `src/main/resources/fonts/` 放着字体文件与它的授权/换字体说明（见该目录的 README）。
 
 ## 测试
@@ -284,22 +335,32 @@ mvn test                     # 全部测试
 mvn test -Dtest=PathTest     # 单个测试类
 ```
 
-`geom/`、`renderer/` 的顶点侧、`math/`、`util/` 都是纯计算，不依赖 GL 上下文。
+当前 **308 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+`@Disabled` 的已知缺陷）。分布：`geom/` 69、`renderer/` 97、`gl/` 10、`text/` 32、
+`chart/` 56、`chartrender/` 44。
 
-**改渲染路径跑 `PipelineVerifier`，改拾取跑 `PickVerifier`，改文本跑 `TextVerifier`**（见上面「运行」一节）。
+`geom/`、`renderer/` 的顶点侧、`math/`、`util/`、`chart/` 都是纯计算，不依赖 GL 上下文；
+`chartrender/` 里 `WindowRange`、`SeriesUploadPlan`、`ChartRenderLayout` 是纯算术，
+`SeriesBuffer` 只依赖 `GLAbstraction` 接口（用 `FakeGLAbstraction` 就能测）。
+
+**改渲染路径跑 `PipelineVerifier`，改拾取跑 `PickVerifier`，改文本跑 `TextVerifier`，
+改图表绘制跑 `ChartVerifier`**（见上面「运行」一节）。
 本管线的多数缺陷属于「静默错误输出」：编译通过、单元测试全绿、画面却是错的。
 校验器把**最终像素**作为口径，回读帧缓冲后断言，这是唯一拦得住这类缺陷的办法——
 它曾据此发现描边丢失整条闭合边的 bug，而当时的单元测试没有一个发现。
 
+`ChartVerifier` 除此之外还断言了一件**像素拦不住**的事：整个图表后端的主张是
+「每帧只上传新增的点」，而增量上传与每帧全量重传**画出来的图逐像素相同**——
+所以那条断言观测的是**上传字节数**（`ChartRenderer.takeUploadedBytes`），
+判据是"每一帧恰好 K×4 字节"。改图表绘制路径时它也必须过。
+
 **但校验器也有盲区**：它只证明自己断言过的那些点。开发拾取校验器时就撞上一次——
-24 条断言全绿，却漏掉了一个真缺陷（`PickBuffer.clear()` 受 `GL_SCISSOR_TEST` 影响，
+当时的 24 条断言全绿，却漏掉了一个真缺陷（`PickBuffer.clear()` 受 `GL_SCISSOR_TEST` 影响，
 只清掉了裁剪盒内那部分，盒外保留上一帧的 ID → 拾取到已消失的对象）。
 原因是**它的场景每帧完全相同**，陈旧 ID 与新鲜 ID 恰好一致。
 所以校验器的场景要会变：至少包含「某个图元在后续帧消失／移动」，
 并专门断言「不该有东西的地方是干净的」，而不只是「该有东西的地方是对的」。
-
-`chart/` 也是纯计算（零 GL 依赖，由 `ChartPackageIsolationTest` 强制），
-所以它的验收全部落在单元测试上——不需要、也不该有像素校验器。
+`ChartVerifier` 就是这么写的（有几张实验图只在观察期画、有一条系列中途整条消失）。
 
 ## 依赖
 
