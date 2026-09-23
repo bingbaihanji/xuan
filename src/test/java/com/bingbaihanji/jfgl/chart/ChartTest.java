@@ -70,6 +70,21 @@ class ChartTest {
     }
 
     @Test
+    void 频谱不属于折线族() {
+        // 这条把"频谱必须由独立渲染器实现"钉住。
+        // 若有人把它归进折线族，ChartRenderer 会把它路由给 LineSeriesRenderer，
+        // 而那会把**频域数据**当普通点连成折线——画面看起来像频谱，
+        // 实际上 x 轴的含义全错（频率被当成了样本序号）。
+        assertFalse(ChartType.SPECTRUM.polylineFamily(),
+                "频谱的顶点不来自逐样本的点，必须由独立渲染器实现");
+        assertFalse(ChartType.SPECTRUM.connectsSamples());
+        assertFalse(ChartType.SPECTRUM.drawsMarkers());
+        assertFalse(ChartType.SPECTRUM.drawsBars());
+        assertFalse(ChartType.SPECTRUM.stepped());
+        assertFalse(ChartType.SPECTRUM.fillsUnderCurve());
+    }
+
+    @Test
     void 非法装配会抛异常() {
         Chart chart = new Chart(new Axis(AxisType.LINEAR, AxisRange.of(0, 10)));
         assertThrows(IllegalArgumentException.class, () -> chart.addLayer(""));

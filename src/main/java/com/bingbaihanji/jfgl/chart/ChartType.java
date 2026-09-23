@@ -44,7 +44,17 @@ public enum ChartType {
     HEATMAP(0),
 
     /** 瀑布图：滚动的一列一列，由独立渲染器实现。 */
-    WATERFALL(0);
+    WATERFALL(0),
+
+    /**
+     * 频谱：数据是频域幅度，由 GPU 上的 FFT 算出（子项目 ③-1）。
+     *
+     * <p><strong>它不是"折线的一种画法"，是"顶点怎么来"的问题</strong>——
+     * 与热力图、瀑布图同类，所以 {@link #polylineFamily()} 对它返回 {@code false}，
+     * 由独立的 {@code SpectrumSeriesRenderer} 实现（见本类文档关于
+     * "<b>属性组合管"同一套顶点怎么画"，独立渲染器管"顶点怎么来"</b>"那条边界）。
+     */
+    SPECTRUM(0);
 
     private final int flags;
 
