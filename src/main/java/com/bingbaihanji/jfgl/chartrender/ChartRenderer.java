@@ -47,9 +47,14 @@ import java.util.function.Consumer;
  * 发号成本与点数无关——一条百万点的曲线也只注册一个 ID。
  *
  * <h2>不支持的图型明确报错</h2>
- * <p>热力图与瀑布图（{@code polylineFamily() == false}）本期没有渲染器；
- * 散点（Task 14）也还没有。遇到它们<b>抛异常</b>——静默不画是本项目最典型的
- * 静默错误输出：画面里少一张图，与"这张图没数据"在视觉上完全一样。
+ * <p>热力图与瀑布图（{@code polylineFamily() == false}）本期没有渲染器，
+ * 阶梯图、面积图与柱状图也还没有（它们会落到折线渲染器里、由它抛异常）。
+ * 遇到这些<b>抛异常</b>——静默不画是本项目最典型的静默错误输出：
+ * 画面里少一张图，与"这张图没数据"在视觉上完全一样。
+ *
+ * <p>本期已实现的图型只有三种：{@link ChartType#LINE} 与
+ * {@link ChartType#LINE_AND_MARKERS}（折线渲染器，后者只画折线那半）以及
+ * {@link ChartType#SCATTER}（散点渲染器）。
  */
 public final class ChartRenderer implements Disposable {
 
@@ -73,17 +78,27 @@ public final class ChartRenderer implements Disposable {
     /** 折线族渲染器，全局一个（它自己不持有数据）。 */
     private final LineSeriesRenderer lineRenderer;
 
-    /** 绘制用的着色器。 */
-    private final ShaderProgram lineShader;
+    /** 散点渲染器，全局一个（它自己不持有数据）。 */
+    private final ScatterSeriesRenderer scatterRenderer;
 
     /**
-     * 拾取用的着色器。
+     * 四个着色器程序：{@code {折线, 散点} × {绘制, 拾取}}。
      *
-     * <p>与 {@link #lineShader} 共用一份顶点源码，只换片段着色器——与 {@code RenderBatch}
-     * 里"SDF 文本复用同一个顶点着色器"是同一个做法。消费者是
-     * {@link LineSeriesRenderer} 的 ID pass。
+     * <p>两个维度各自正交——<b>顶点程序按"一个实例是什么"分</b>（线段 / 点），
+     * <b>片段程序按"这一趟是画还是拾取"分</b>。于是四个程序、四份源码，
+     * 每个组合各一份，不需要在着色器里塞分支。
+     *
+     * <p>{@link #scatterPickShader} <b>不能省</b>：拿 {@link #pickShader}（折线的顶点源码）
+     * 去画散点的热区，会得到一条从数据值竖直拉到 0 的长条——点中哪里都命中，
+     * 而画面完全正常。
      */
+    private final ShaderProgram lineShader;
+
     private final ShaderProgram pickShader;
+
+    private final ShaderProgram scatterShader;
+
+    private final ShaderProgram scatterPickShader;
 
     /**
      * 拾取缓冲的借用入口，透传给 {@link GLRenderContextImpl}。
@@ -114,7 +129,12 @@ public final class ChartRenderer implements Disposable {
         this.pickPass = pickPass;
         this.lineShader = gl.createShader(SeriesShaders.LINE_VERTEX, SeriesShaders.LINE_FRAGMENT);
         this.pickShader = gl.createShader(SeriesShaders.LINE_VERTEX, SeriesShaders.PICK_FRAGMENT);
+        this.scatterShader =
+                gl.createShader(SeriesShaders.SCATTER_VERTEX, SeriesShaders.LINE_FRAGMENT);
+        this.scatterPickShader =
+                gl.createShader(SeriesShaders.SCATTER_VERTEX, SeriesShaders.PICK_FRAGMENT);
         this.lineRenderer = new LineSeriesRenderer(gl);
+        this.scatterRenderer = new ScatterSeriesRenderer(gl);
     }
 
     /**
@@ -145,7 +165,8 @@ public final class ChartRenderer implements Disposable {
         }
         ChartRenderLayout layout = new ChartRenderLayout(plotRect, axes[0], axes[1]);
         GLRenderContextImpl ctx = new GLRenderContextImpl(
-                gl, lineShader, pickShader, pickPass, layout, viewportWidth, viewportHeight);
+                gl, lineShader, pickShader, scatterShader, scatterPickShader,
+                pickPass, layout, viewportWidth, viewportHeight);
 
         for (Layer layer : chart.layers()) {
             for (Series series : layer.series()) {
@@ -209,9 +230,16 @@ public final class ChartRenderer implements Disposable {
      * 图型 → 渲染器。不支持的图型明确抛异常，不静默不画。
      *
      * <p>查表规则与 {@link ChartType} 的属性组合一一对应：
-     * 不在折线族里的（热力图、瀑布图）本期没有渲染器；只画标记点的（散点）
-     * 是独立的渲染器（Task 14），本期也还没有。其余归折线渲染器，
+     * 不在折线族里的（热力图、瀑布图）本期没有渲染器；
+     * <b>只画标记点的（散点）归散点渲染器</b>；其余归折线渲染器，
      * 由它自己再守一道"这个图型我画不画得出来"（见 {@code requireSupported}）。
+     *
+     * <p><strong>{@link ChartType#LINE_AND_MARKERS} 不走散点这条分支</strong>——
+     * 它的 {@code drawsMarkers()} 也为真，但 {@code connectsSamples()} 同时为真，
+     * 而本期只画它的折线部分（标记点那半是写在 {@code LineSeriesRenderer.requireSupported}
+     * 文档里的已知缺口）。多一个 {@code !connectsSamples()} 就是为了把它挡在门外：
+     * 少了它会走散点渲染器，于是折线整条消失、只剩一串点——而"只有点"看起来
+     * 像一种刻意的风格，不像缺陷。
      */
     private SeriesRenderer rendererFor(ChartType type) {
         if (!type.polylineFamily()) {
@@ -221,10 +249,7 @@ public final class ChartRenderer implements Disposable {
                             + "画面里少一张图，与\"这张图没数据\"在视觉上完全一样。");
         }
         if (type.drawsMarkers() && !type.connectsSamples()) {
-            throw new UnsupportedOperationException(
-                    "散点渲染器（Task 14）尚未实现，图型 " + type + " 暂时画不出来。"
-                            + "明确报错而不是把它当折线画：散点图连成线之后，"
-                            + "两条相邻的采样值之间会多出一条不存在的信号。");
+            return scatterRenderer;
         }
         return lineRenderer;
     }
@@ -245,8 +270,11 @@ public final class ChartRenderer implements Disposable {
         buffers.values().forEach(SeriesBuffer::dispose);
         buffers.clear();
         lineRenderer.dispose();
+        scatterRenderer.dispose();
         lineShader.dispose();
         pickShader.dispose();
+        scatterShader.dispose();
+        scatterPickShader.dispose();
         disposed = true;
     }
 }

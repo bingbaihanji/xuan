@@ -26,11 +26,34 @@ public interface GLRenderContext extends RenderContext {
     /** GL 抽象层。 */
     GLAbstraction gl();
 
-    /** 绘制用的着色器程序。 */
+    /** 折线族绘制用的着色器程序。 */
     ShaderProgram lineShader();
 
-    /** 拾取用的着色器程序。绘制路径不设它，只有 ID pass 用。 */
+    /**
+     * 散点绘制用的着色器程序。
+     *
+     * <p>与 {@link #lineShader()} 共用一份片段源码，只有顶点程序不同——
+     * 一个实例的概念从"线段"变成了"点"（见 {@code SeriesShaders.SCATTER_VERTEX}）。
+     */
+    ShaderProgram scatterShader();
+
+    /**
+     * 折线族拾取用的着色器程序。绘制路径不设它，只有 ID pass 用。
+     *
+     * <p><b>不能用它做散点的 ID pass</b>：顶点程序决定实例的几何，而这个程序的顶点源码
+     * 是 {@code LINE_VERTEX}——散点走它会画出一个"从数据值竖直拉到 0"的长条热区
+     * （第二个实例属性没人喂、恒为 0），<b>画面完全正常，只有点击落在错误的对象上</b>。
+     * 散点的 ID pass 用 {@link #scatterPickShader()}。
+     */
     ShaderProgram pickShader();
+
+    /**
+     * 散点拾取用的着色器程序：{@code SCATTER_VERTEX} + {@code PICK_FRAGMENT}。
+     *
+     * <p>与 {@link #scatterShader()} 共用同一份顶点源码，因此绘制与拾取的几何
+     * <b>逐顶点一致</b>（只差容差那一个 uniform）。理由见 {@link #pickShader()}。
+     */
+    ShaderProgram scatterPickShader();
 
     /** 绘图区与映射。 */
     ChartRenderLayout layout();

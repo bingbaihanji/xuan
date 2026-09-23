@@ -81,6 +81,23 @@ class WindowRangeTest {
     }
 
     @Test
+    void 点数版本不排除最后一个点() {
+        // 折线版本要 writeIndex - 2（线段需要右端），点数版本到 writeIndex - 1。
+        // 这个差别就是两个方法的全部区别，必须专门钉住。
+        List<WindowRange.Segment> segs = WindowRange.computePoints(0.0, 100.0, 5L, CAP);
+        int total = segs.stream().mapToInt(WindowRange.Segment::instanceCount).sum();
+        assertEquals(5, total, "散点要把 5 个点都画出来，不是 4 个");
+    }
+
+    @Test
+    void 点数版本跨环绕也切两段() {
+        List<WindowRange.Segment> segs = WindowRange.computePoints(6.0, 12.0, 12L, CAP);
+        assertEquals(2, segs.size());
+        int total = segs.stream().mapToInt(WindowRange.Segment::instanceCount).sum();
+        assertEquals(6, total, "可见点是 [6, 12) 与有效范围 [4, 12) 的交，共 6 个");
+    }
+
+    @Test
     void 小数窗口边界向上取整() {
         // 窗口左边界 1.5 -> 第一个可画的线段是 2（线段 1 从 1 开始，左端落在窗口外）
         List<WindowRange.Segment> segs = WindowRange.compute(1.5, 4.0, 8L, CAP);

@@ -64,6 +64,18 @@ import kotlin.system.exitProcess
  *       "实现了"与"生效了"分开的场景。</li>
  * </ol>
  *
+ * <p>Task 14 <b>散点</b>又补了两组（第 16、17 节）：
+ *
+ * <ol>
+ *   <li><b>点与点之间没有连线</b>（[SCATTER_VALUES] 那一节）。**这是散点与折线的唯一区别**，
+ *       而"每个数据点位置有像素"对折线同样成立（折线的顶点就落在数据点上）——
+ *       只断言它等于放任"把散点画成折线"全绿，而画面上那是一条显示着<b>不存在的信号</b>
+ *       的线。判别的量是<b>相邻两点的中点</b>：正确实现那里什么都没有。
+ *       同组还钉住"热区也没把两点连起来"（拾取坏了画面不会变坏）。</li>
+ *   <li><b>标记尺寸真的被用上了</b>（第 17 节）。断言的量是<b>像素数 = 点数 × 边长²</b>，
+ *       而不是"有像素"——后者对任何非 0 的 markerSize 都成立。</li>
+ * </ol>
+ *
  * <h2>观察期与校验期</h2>
  *
  * <p>第 1 条需要"滚动若干帧"才成立（一帧是量不出增量的），第 3 条需要"前后两帧"，
@@ -392,6 +404,82 @@ private const val WRAP_TOTAL = 20
 private const val WRAP_WINDOW_START = 12.0
 private const val WRAP_WINDOW_END = 20.0
 
+// ---------------------------------------------------------------------------
+// Task 14 的两张实验图：散点
+//
+// 与 Task 12/13 的实验图一样**只在观察期画**（理由同上："画面只有这 7 种颜色"
+// 那条断言不许改弱），而它们要验的东西只需要"某一帧画过"。
+// ---------------------------------------------------------------------------
+
+/** 散点图的绘图区：主绘图区**右侧**那块空地（主图到 x = 700 为止，跨帧图在 y < 100）。 */
+private const val SCATTER_PLOT_X = 710f
+private const val SCATTER_PLOT_Y = 100f
+private const val SCATTER_PLOT_W = 260f
+private const val SCATTER_PLOT_H = 180f
+
+/**
+ * 标记尺寸对比图的绘图区：凑散点图正下方。
+ *
+ * <p>**尺寸、数据、x 窗口都与散点图完全相同**，唯一的变量是 markerSize——
+ * 只有这样，"像素数变多"才只可能是 markerSize 造成的。
+ */
+private const val MARKER_PLOT_X = 710f
+private const val MARKER_PLOT_Y = 300f
+private const val MARKER_PLOT_W = 260f
+private const val MARKER_PLOT_H = 180f
+
+/** 散点图的点数：5 个点、4 个间隔，每格 52 px。 */
+private const val SCATTER_POINTS = 5
+
+/**
+ * 散点图的 x 轴窗口：左右各留**半格**，于是 5 个标记全都落在绘图区内部。
+ *
+ * <p>不这么做的话，最左/最右那两个标记会被 scissor 切掉一部分，像素计数会变成
+ * 49 或者 81 这种"说不清"的数——而"断言只是差了几个像素"是最难判断的一类失败。
+ */
+private const val SCATTER_WINDOW_MIN = -0.5
+private const val SCATTER_WINDOW_MAX = 4.5
+
+/** 小标记的**边长**（设备像素）。取偶数，让四边形正好压在整数边界上。 */
+private const val SCATTER_MARKER_SMALL = 10f
+
+/** 大标记的边长：正好是小标记的 2 倍，于是期望像素数是 4 倍（面积随边长的平方）。 */
+private const val SCATTER_MARKER_BIG = 20f
+
+/**
+ * 散点图的数据：**只有 5 个点，相邻两点一个 0.1 一个 0.9**。
+ *
+ * <p><strong>为什么必须这么陡。</strong>本组唯一能区分"散点"与"折线"的量是
+ * **相邻两点中点处有没有像素**：正确实现在那里什么都没有，而把点连成线的实现在那里
+ * 有一条线。数据要是不够陡（例如斜坡那种每格只差 2 px 的），中点就离两端太近——
+ * 标记点自身（以及它的边界）会糊住中点，"中点为空"于是变成一条恒假的断言。
+ * 这里相邻两点差 0.8，纵向是 **144 px**，而横向只有 52 px：
+ * 中点到两端的距离远超任何标记半径。
+ *
+ * <p>四段全是陡的（0→1 与 2→3 是下折、1→2 与 3→4 是上折），四段都参与判定。
+ */
+private val SCATTER_VALUES = doubleArrayOf(0.1, 0.9, 0.1, 0.9, 0.1)
+
+/**
+ * "空白处也拾取不到"的那个探测点（用户坐标）。它**不在任何标记附近**，
+ * 却**正落在一条特定的坏热区上**——所以它能把"热区形状正确"与"热区是一条斜带"分开。
+ *
+ * <p><strong>它是怎么算出来的。</strong>散点的 ID pass 一旦错用折线的顶点程序
+ * （`LINE_VERTEX`），第二个实例属性 `aY1` 就没人喂（散点的 VAO 里没有它），
+ * 于是每个实例的热区是"从 (x_k, y_k) 斜拉到 (x_k + 1 格, 值 0 那一行)"的一条带子。
+ * 第 0 个点的值是 0.1、屏幕 y = 262；值 0 落在屏幕 y = 280（绘图区下边缘）。
+ * 于是那条带子从 (736, 262) 走到 (788, 280)，在 x = 762 处中心 y = 271、
+ * 竖直半宽 4.2 px——**探测点 (762, 271) 的像素中心正好落在那条带子里**。
+ *
+ * <p>而在正确实现下，它的热区是标记周围 10×10 的方块，离这一点最近的标记
+ * 也在 26 px 之外，所以那里什么都没有。
+ *
+ * <p>这一对断言（"标记上命中" + "旁边空白处不命中"）必须成对：
+ * 只有"标记上命中"对"热区开成整个绘图区"同样成立。
+ */
+private const val SCATTER_BLANK_X = 762f
+private const val SCATTER_BLANK_Y = 271f
+
 /**
  * 校验器的启动入口。
  *
@@ -485,6 +573,18 @@ class ChartVerifierApp : Application() {
 
     /** 跨环绕实验的折线色。 */
     private val wrapRgb = 0xFF4000
+
+    // ---- Task 14 的两张实验图的颜色 ----
+    // 同上：只在观察期画，所以也不在画面的常驻颜色集合里。
+
+    /** 散点图的标记色（小标记）。 */
+    private val scatterRgb = 0x00FF80
+
+    /** 标记尺寸对比图的标记色（大标记）。 */
+    private val markerBigRgb = 0xC000FF
+
+    private val scatterArgb = scatterRgb or (0xFF shl 24)
+    private val markerBigArgb = markerBigRgb or (0xFF shl 24)
 
     private val pickProbeArgb = pickProbeRgb or (0xFF shl 24)
     private val wrapArgb = wrapRgb or (0xFF shl 24)
@@ -676,6 +776,82 @@ class ChartVerifierApp : Application() {
     /** 跨环绕实验的数据是否已经写完（只写一次，像真实采集那样）。 */
     private var wrapWritten = false
 
+    // -----------------------------------------------------------------------
+    // Task 14 的两张实验图：散点
+    // -----------------------------------------------------------------------
+
+    private val scatterRect = Rect(SCATTER_PLOT_X, SCATTER_PLOT_Y,
+        SCATTER_PLOT_W, SCATTER_PLOT_H)
+
+    private val markerRect = Rect(MARKER_PLOT_X, MARKER_PLOT_Y,
+        MARKER_PLOT_W, MARKER_PLOT_H)
+
+    /**
+     * 散点实验的数据。两张实验图**共用同一份**——只有 markerSize 不同。
+     *
+     * <p>x 那一维的值（0..4）其实没人读：x 由"样本在缓冲里的位置"隐含给出
+     * （`SeriesBuffer` 只存 y），这里给的是下标本身，读起来最不容易误会。
+     */
+    private val scatterData = ArrayChartData(
+        arrayOf(
+            AxisRange(SCATTER_WINDOW_MIN, SCATTER_WINDOW_MAX, "样本", ""),
+            AxisRange(0.0, 1.0, "值", "")
+        ),
+        arrayOf(
+            DoubleArray(SCATTER_POINTS) { it.toDouble() },
+            SCATTER_VALUES.copyOf()
+        )
+    )
+
+    /**
+     * 小标记的散点系列。**lineWidth 设成 4 是刻意留的**：散点根本不用它，
+     * 但如果哪天这个系列被错当成折线画（变异验证就是这么做的），那条线必须足够粗，
+     * 中点那 5×17 的盒子才一定被盖住——否则"中点为空"会因为线太细而变成恒真。
+     */
+    private val scatterSeries = Series("散点", scatterData, ChartType.SCATTER)
+        .color(scatterArgb).markerSize(SCATTER_MARKER_SMALL).lineWidth(4f)
+
+    /** 大标记的系列：同一份数据、同一个绘制路径，只有 markerSize 不同。 */
+    private val markerBigSeries = Series("大标记", scatterData, ChartType.SCATTER)
+        .color(markerBigArgb).markerSize(SCATTER_MARKER_BIG)
+
+    private val scatterChart: Chart = buildScatterChart()
+    private val markerChart: Chart = buildMarkerChart()
+
+    /** 散点图里数据下标 → 屏幕 x。**与折线的顶点取同一个映射**（不加半格）。 */
+    private fun scatterX(index: Double): Double = SCATTER_PLOT_X +
+            (index - SCATTER_WINDOW_MIN) / (SCATTER_WINDOW_MAX - SCATTER_WINDOW_MIN) * SCATTER_PLOT_W
+
+    /** 散点图里数值 → 屏幕 y（与 ChartRenderLayout 同一条映射，值越大越靠上）。 */
+    private fun scatterY(value: Double): Double = SCATTER_PLOT_Y + (1.0 - value) * SCATTER_PLOT_H
+
+    /** 两张散点实验图的快照（观察期抓，校验期断言）。 */
+    private var scatterSnapshot: Shot? = null
+    private var markerSnapshot: Shot? = null
+
+    /** 散点图上三个探测点的拾取结果，在它们还画着的那一帧记录下来。 */
+    private var scatterPickCaptured = false
+
+    /** 探测点 1（第一个标记的中心）读回的 ID，以及 payload 是不是那个系列对象。 */
+    private var scatterOnMarkerId = 0
+    private var scatterOnMarkerPayloadOk = false
+
+    /** 探测点 2（第二个标记的中心）读回的 ID。系列级发号时它必须与上面那个相同。 */
+    private var scatterOnMarker2Id = 0
+
+    /** 探测点 3（相邻两点的中点）读回的 ID。它必须是 0——**热区同样不许把两点连起来**。 */
+    private var scatterMidId = 0
+
+    /**
+     * 探测点 4（[SCATTER_BLANK_X] / [SCATTER_BLANK_Y]）读回的 ID。它必须是 0。
+     *
+     * <p>这一点不在任何标记附近，却**落在"错用折线顶点程序"那条斜带上**
+     * （见 [SCATTER_BLANK_Y] 的推导）。它管的是热区的**形状**：少了它，
+     * 一个把热区画成"从数据值斜拉到绘图区底部"的长条的实现照样全绿——
+     * 而那时用户点标记下方二十几像素的空白也会命中，画面却完全正常。
+     */
+    private var scatterBlankId = 0
+
     // ---- 观察期抓下来的快照（校验期才断言，见 [captureObservations]）----
 
     private var streamSnapshot: Shot? = null
@@ -831,6 +1007,49 @@ class ChartVerifierApp : Application() {
         val chart = Chart(xAxis, yAxis)
         chart.addLayer("跨环绕").add(wrapSeries)
         return chart
+    }
+
+    /**
+     * 造散点实验图：5 个点、值在 0.1 与 0.9 之间大幅折返，见 [SCATTER_VALUES]。
+     *
+     * <p>x 窗口左右各留半格，于是 5 个标记都完整落在绘图区内部。
+     */
+    private fun buildScatterChart(): Chart {
+        val xAxis = Axis(AxisType.LINEAR, scatterData.axisRange(0))
+            .setDisplayLength(SCATTER_PLOT_W.toDouble())
+            .setWindow(SCATTER_WINDOW_MIN, SCATTER_WINDOW_MAX)
+        val yAxis = Axis(AxisType.LINEAR, scatterData.axisRange(1))
+            .setDisplayLength(SCATTER_PLOT_H.toDouble())
+        val chart = Chart(xAxis, yAxis)
+        chart.addLayer("散点").add(scatterSeries)
+        return chart
+    }
+
+    /**
+     * 造标记尺寸对比图：**与散点图逐项相同，只换 markerSize**（见 [MARKER_PLOT_X]）。
+     *
+     * <p>轴不能共用（轴是可变的），所以要另起两根，但数据与系列之外的配置一字不差。
+     */
+    private fun buildMarkerChart(): Chart {
+        val xAxis = Axis(AxisType.LINEAR, scatterData.axisRange(0))
+            .setDisplayLength(MARKER_PLOT_W.toDouble())
+            .setWindow(SCATTER_WINDOW_MIN, SCATTER_WINDOW_MAX)
+        val yAxis = Axis(AxisType.LINEAR, scatterData.axisRange(1))
+            .setDisplayLength(MARKER_PLOT_H.toDouble())
+        val chart = Chart(xAxis, yAxis)
+        chart.addLayer("标记尺寸").add(markerBigSeries)
+        return chart
+    }
+
+    /**
+     * Task 14 的两张散点实验图。
+     *
+     * <p>第二张（大标记）只是同一个场景换了 markerSize——两张图的数据、x 窗口、
+     * 绘图区尺寸全部相同，唯一的变量就是标记边长。
+     */
+    private fun drawScatterCharts(gc: Gc) {
+        gc.charts.draw(scatterChart, scatterRect, gc.width, gc.height)
+        gc.charts.draw(markerChart, markerRect, gc.width, gc.height)
     }
 
     /** 跨环绕实验里数据下标 → 屏幕 x。 */
@@ -1001,6 +1220,8 @@ class ChartVerifierApp : Application() {
             // Task 13 的两张实验图，同样只在观察期画。理由见文件上方"Task 13 的两张实验图"。
             drawPickProbeChart(gc)
             drawWrapChart(gc)
+            // Task 14 的两张散点实验图，同样只在观察期画（同样的理由）。
+            drawScatterCharts(gc)
         }
 
         // 4) 标注：在图表**之后**画的普通图元。它必须盖在数据系列之上——
@@ -1110,6 +1331,10 @@ class ChartVerifierApp : Application() {
             pickProbeSnapshot = grab(h, pickProbeRect)
             wrapSnapshot = grab(h, wrapRect)
             capturePickProbes(bridge)
+            // Task 14 的两张散点实验图也在这一帧上取样：它们同样**只在观察期画**。
+            scatterSnapshot = grab(h, scatterRect)
+            markerSnapshot = grab(h, markerRect)
+            captureScatterPicks(bridge)
         }
         // 移除之前的那一帧（`frame` 是"已完成帧数"，所以它等于下标 + 1）。
         if (frame == CROSS_REMOVE_FRAME) {
@@ -1142,6 +1367,29 @@ class ChartVerifierApp : Application() {
         pickBesideId = gc.pick(PICK_PROBE_X, PICK_PROBE_BESIDE_Y)?.id() ?: 0
         pickFarId = gc.pick(PICK_PROBE_X, PICK_PROBE_FAR_Y)?.id() ?: 0
         pickProbeCaptured = true
+    }
+
+    /**
+     * 在散点图还画着的那一帧，把三个探测点的拾取结果记下来（理由同 [capturePickProbes]）。
+     *
+     * <p>三个点分别是：第一个标记的中心、第二个标记的中心、以及**相邻两点的中点**。
+     * 第三个点问的是"热区有没有把两点连起来"——它是画面那条"中点为空"的孪生断言：
+     * 拾取坏了**画面一点都不会变坏**，只会让点击落在不该命中的地方。
+     */
+    private fun captureScatterPicks(bridge: FXGLTransfer) {
+        val gc = bridge.gc() ?: return
+        val onMarker = gc.pick(
+            scatterX(0.0).toFloat(), scatterY(SCATTER_VALUES[0]).toFloat())
+        scatterOnMarkerId = onMarker?.id() ?: 0
+        scatterOnMarkerPayloadOk = onMarker?.payload() === scatterSeries
+        scatterOnMarker2Id = gc.pick(
+            scatterX(1.0).toFloat(), scatterY(SCATTER_VALUES[1]).toFloat())?.id() ?: 0
+        scatterMidId = gc.pick(
+            ((scatterX(0.0) + scatterX(1.0)) / 2.0).toFloat(),
+            ((scatterY(SCATTER_VALUES[0]) + scatterY(SCATTER_VALUES[1])) / 2.0).toFloat()
+        )?.id() ?: 0
+        scatterBlankId = gc.pick(SCATTER_BLANK_X, SCATTER_BLANK_Y)?.id() ?: 0
+        scatterPickCaptured = true
     }
 
     /**
@@ -1762,6 +2010,113 @@ class ChartVerifierApp : Application() {
                 whole.first == 0 && whole.second <= 2 && whole.third == 0,
                 "局部 x 1..287：缺 ${whole.first} 列，最大跳变 ${whole.second} px，" +
                         "反向 ${whole.third} 处（期望：都不缺列、跳变 ≤ 2、无反向）")
+        }
+
+        // ---- 16. ★ 散点：点与点之间没有连线 ----
+        //
+        // **这一组唯一有判别力的量是"相邻两点的中点处有没有像素"。**
+        // 那看起来更直观的"每个数据点位置有像素"对**折线**同样成立——折线的顶点
+        // 恰恰就落在数据点上（ChartVerifier 第 1 组那条"斜坡恰好穿过 (250,380)"
+        // 就是这么写的）。所以只断言"点上有像素"是橡皮图章：一个把散点画成折线的
+        // 实现会全绿，而画面上那是一条**显示着不存在信号**的线。
+        //
+        // 数据刻意挑陡（见 SCATTER_VALUES）：相邻两点纵向差 144 px、横向只差 52 px，
+        // 中点到两端的距离远超任何标记半径，"中点为空"因此不是一条恒真的断言。
+        //
+        // **变异验证（两条，结论不同，都实跑过）**：
+        //   (1) 把 `rendererFor` 里的 SCATTER 改路由到折线渲染器、并让
+        //       `LineSeriesRenderer` 放行 SCATTER：本组 8 条**全失败**——
+        //       那样连标记都不见了，"标记像素数 = 点数 × 边长²"那几条自然一起倒。
+        //   (2) **标记照画，只是额外把相邻两点用同色连起来**：标记那几条与拾取那几条
+        //       **照常通过**，唯一失败的就是下面这条"中点为空"（实测 52/53/52/53 px）。
+        //       第 (2) 条才是"这条断言不可替代"的证据；第 (1) 条只说明整组是活的。
+        println("\n-- ★ 散点：点与点之间没有连线 --")
+        val scatShot = scatterSnapshot
+        val markerShot = markerSnapshot
+        if (scatShot == null || markerShot == null || !scatterPickCaptured) {
+            report("前提：两张散点实验图的快照与拾取结果都取到了", false,
+                "scatterSnapshot=${scatShot != null}，markerSnapshot=${markerShot != null}，" +
+                        "scatterPickCaptured=$scatterPickCaptured")
+        } else {
+            // 局部坐标：快照就是 SCATTER_PLOT 那一块，左上角为原点。
+            val markerPts = (0 until SCATTER_POINTS).map {
+                Pair((scatterX(it.toDouble()) - SCATTER_PLOT_X).toInt(),
+                    (scatterY(SCATTER_VALUES[it]) - SCATTER_PLOT_Y).toInt())
+            }
+
+            // (a) 每个数据点位置上都是标记。盒子取 5×5：它整个落在边长 10 的标记内部，
+            //     所以期望是**恰好** 25 px——是数出来的，不是"有像素"。
+            //     这一条同时是下面中点那条的前提：中点为空不能靠"整张图都没画"来满足。
+            val pointHits = markerPts.map { (px, py) ->
+                scatShot.countIn(px - 2, py - 2, px + 2, py + 2, scatterRgb)
+            }
+            report("每个数据点位置上都是标记（点周围 5×5 各 25 px）",
+                pointHits.all { it == 25 },
+                "5 个点分别 ${pointHits.joinToString()} px，期望都是 25" +
+                        "（5×5 的盒子完全落在边长 $SCATTER_MARKER_SMALL 的标记内部）")
+
+            // (b) ★ 相邻两点的中点处一个该系列颜色的像素都没有——**"散点不是折线"的判据**。
+            //
+            // 盒子取 5 列 × 17 行（而不是 5×5）：连线的斜率是 144/52 ≈ 2.8，
+            // 横向 ±2 px 对应纵向 ±5.5 px，17 行给足了余量——**连线必然穿过这个盒子**。
+            // 而它离最近的标记也有 20 px 以上，所以正确实现那里只可能是底色。
+            val segFails = ArrayList<String>()
+            for (i in 0 until SCATTER_POINTS - 1) {
+                val (ax, ay) = markerPts[i]
+                val (bx, by) = markerPts[i + 1]
+                val mx = (ax + bx) / 2
+                val my = (ay + by) / 2
+                val n = scatShot.countIn(mx - 2, my - 8, mx + 2, my + 8, scatterRgb)
+                if (n != 0) segFails.add("第 ${i}→${i + 1} 段的中点 ($mx,$my) 附近 $n px")
+            }
+            report("相邻两点的中点处【没有】该系列的像素（散点没有连线）",
+                segFails.isEmpty(),
+                if (segFails.isEmpty())
+                    "4 段各自的 5×17 盒子全空——把点连成线的实现会在那里留下一条线"
+                else segFails.joinToString("；") + "，期望 0——" +
+                        "非 0 说明两点被连了起来，而那条线显示的是一个不存在的信号")
+
+            // (c) 拾取：标记上的像素命中该系列（散点与折线共用同一套 ID 机制），
+            //     而且**热区也没有把两点连起来**——它是 (b) 的孪生断言。
+            //     拾取坏了画面一点都不会变坏，只会让点击落在不该命中的地方。
+            report("标记点上的像素命中散点系列（payload 就是那个 Series 对象）",
+                scatterOnMarkerId != 0 && scatterOnMarkerPayloadOk,
+                "标记上 ID=$scatterOnMarkerId（期望非 0），payload 是散点系列=$scatterOnMarkerPayloadOk")
+            report("系列级 ID：同一系列的两个标记读到同一个 ID",
+                scatterOnMarkerId != 0 && scatterOnMarkerId == scatterOnMarker2Id,
+                "第一个标记 ID=$scatterOnMarkerId，第二个标记 ID=$scatterOnMarker2Id（期望相等且非 0）")
+            report("相邻两点的中点处拾取不到任何东西（热区也没把两点连起来）",
+                scatterMidId == 0,
+                "中点 ID=$scatterMidId，期望 0——非 0 说明散点的 ID pass 用了几何形状不对的顶点程序" +
+                        "（例如错用了折线那份：第二个实例属性没人喂、恒为 0，" +
+                        "热区会变成一条从数据值竖直拉到 0 的长条）")
+            report("标记之外的空白处拾取不到（热区的形状就是标记本身，不是一条斜带）",
+                scatterBlankId == 0,
+                "(${SCATTER_BLANK_X.toInt()},${SCATTER_BLANK_Y.toInt()}) ID=$scatterBlankId，期望 0——" +
+                        "这一点离最近的标记有 26 px，却正落在\"错用折线顶点程序\"那条斜带上" +
+                        "（见 SCATTER_BLANK_X 的推导）；非 0 就是那个形状错误的热区")
+
+            // ---- 17. ★ 标记尺寸：markerSize 变大，覆盖的像素确实变多 ----
+            //
+            // "有像素"对任何非 0 的 markerSize 都成立，是橡皮图章。这里的量是**像素数**：
+            // 四边形是轴对齐的正方形、边长就是 markerSize，所以解析期望是 点数 × 边长²。
+            // 两种实现会被这两条分开：把 markerSize 当半径用的会得到 4 倍于期望的值；
+            // 只认默认值、忽略 setter 的会让两张图的像素数一模一样。
+            println("\n-- ★ 标记尺寸：markerSize 变大时覆盖的像素真的变多 --")
+            val smallCount = scatShot.count(scatterRgb)
+            val bigCount = markerShot.count(markerBigRgb)
+            val smallExpected = SCATTER_POINTS * SCATTER_MARKER_SMALL.toInt() * SCATTER_MARKER_SMALL.toInt()
+            val bigExpected = SCATTER_POINTS * SCATTER_MARKER_BIG.toInt() * SCATTER_MARKER_BIG.toInt()
+            report("小标记图（边长 $SCATTER_MARKER_SMALL）：标记像素数 = 点数 × 边长² = $smallExpected",
+                smallCount == smallExpected,
+                "实际 $smallCount px（局部 ${scatShot.w}×${scatShot.h}）")
+            report("大标记图（边长 $SCATTER_MARKER_BIG）：标记像素数 = 点数 × 边长² = $bigExpected",
+                bigCount == bigExpected,
+                "实际 $bigCount px（局部 ${markerShot.w}×${markerShot.h}）")
+            report("标记变大 → 覆盖的像素确实变多（面积是边长的平方，这里约 4 倍）",
+                bigCount > smallCount * 3,
+                "小标记 $smallCount px，大标记 $bigCount px（比值 " +
+                        "${"%.2f".format(bigCount.toDouble() / smallCount.coerceAtLeast(1))}，期望约 4）")
         }
 
         println("\n画面出现的颜色：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")

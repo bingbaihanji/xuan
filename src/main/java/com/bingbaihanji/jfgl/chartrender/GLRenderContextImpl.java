@@ -26,7 +26,17 @@ final class GLRenderContextImpl implements GLRenderContext {
 
     private final ShaderProgram lineShader;
 
+    /**
+     * 折线族拾取用的程序（{@code LINE_VERTEX} + {@code PICK_FRAGMENT}）。
+     *
+     * <p>散点有<b>自己</b>的一份拾取程序（见 {@link #scatterPickShader}）：顶点程序决定
+     * 实例的几何，拿折线的顶点程序去画散点的热区会得到一个错误形状的拾取面。
+     */
     private final ShaderProgram pickShader;
+
+    private final ShaderProgram scatterShader;
+
+    private final ShaderProgram scatterPickShader;
 
     /**
      * 拾取缓冲的借用入口，由 {@code ChartRenderer} 收进来的
@@ -50,11 +60,14 @@ final class GLRenderContextImpl implements GLRenderContext {
     private int pickId;
 
     GLRenderContextImpl(GLAbstraction gl, ShaderProgram lineShader, ShaderProgram pickShader,
+                        ShaderProgram scatterShader, ShaderProgram scatterPickShader,
                         Consumer<Runnable> pickPass, ChartRenderLayout layout,
                         int viewportWidth, int viewportHeight) {
         this.gl = gl;
         this.lineShader = lineShader;
         this.pickShader = pickShader;
+        this.scatterShader = scatterShader;
+        this.scatterPickShader = scatterPickShader;
         this.pickPass = pickPass;
         this.layout = layout;
         this.viewportWidth = viewportWidth;
@@ -87,8 +100,18 @@ final class GLRenderContextImpl implements GLRenderContext {
     }
 
     @Override
+    public ShaderProgram scatterShader() {
+        return scatterShader;
+    }
+
+    @Override
     public ShaderProgram pickShader() {
         return pickShader;
+    }
+
+    @Override
+    public ShaderProgram scatterPickShader() {
+        return scatterPickShader;
     }
 
     @Override
