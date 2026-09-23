@@ -332,18 +332,48 @@ class FftWindowTest {
     }
 
     @Test
+    void 相干增益在常量信号上精确成立() {
+        // 常量信号的能量全在 bin 0，而 bin 0 就是系数之和——**没有任何泄漏**，
+        // 所以这条可以钉得很紧（1e-9）。它精确地把"相干增益"这个量本身钉住。
+        for (FftWindow w : FftWindow.values()) {
+            double sum = 0;
+            for (int i = 0; i < N; i++) {
+                sum += w.coefficient(i, N);
+            }
+            assertEquals(sum, w.coherentGain(N) * N, 1e-9,
+                    w + " 的相干增益不是系数之和除以长度");
+            assertEquals(sum, peakOf(w, N, 0.0), 1e-9,
+                    w + " 在常量信号上的 bin 0 应当精确等于系数之和");
+        }
+    }
+
+    @Test
     void 补偿后谱峰回到不加窗的高度() {
-        // ★ 这是本测试类里唯一能把"窗写对了"与"窗写错了"分开的断言。
+        // ★ 这是把"窗写对了"与"窗写错了"分开的断言。
         //
-        // 加窗会让谱峰变矮（变矮多少 = 相干增益）。乘上补偿之后，
-        // 谱峰必须回到与矩形窗相同的高度——否则用户换个窗就会发现
-        // "幅度读数变了"，而那种错误在画面上完全看不出来（谱的形状是对的）。
+        // ⚠️ **容差是量出来的，不是推出来的。** 这个量展开是：
+        //
+        //     peakOf(w, N, k0) = |Σ w·cos(θ)·e^{-iθ}| = ½·|W[0] + W[2k0]|
+        //
+        // 第二项**不是零**——它是窗函数自身在 bin 2k₀ 处的谱值。所以补偿之后
+        // 会留下一个残差。**这个残差有多大，不要靠"旁瓣是多少 dB"去推**：
+        // 那样会把它当成该窗的**最高**旁瓣（Hann 是 −31 dB），
+        // 而 bin 2k₀ 落在旁瓣裙边的深处，实际低得多。
+        //
+        // **实测的残差（N=512, k0=7，逐条跑出来的）**：
+        //     矩形 0%   Hann 0.0010%   Hamming 0.0009%   BH 0.0001%
+        //
+        // 所以取 **1e-4（0.01%）**：比实测的最大残差宽 10 倍，
+        // 又比"补偿写成 1/(1+g) 之类"的误差小两个数量级，两头都不擦边。
+        //
+        // ⚠️ **不要把它改回 1e-9**——那个值**每条都会失败**（实测残差比它大 4 个数量级），
+        // 而失败信息会指向"窗增益补偿写错了"，把人引到完全错误的方向。
         int k0 = 7;
         double unwindowed = peakOf(FftWindow.RECTANGULAR, N, k0);
         for (FftWindow w : FftWindow.values()) {
             double compensated = peakOf(w, N, k0) * w.compensation(N);
-            assertEquals(unwindowed, compensated, unwindowed * 1e-9,
-                    w + " 补偿后的谱峰与不加窗时不一致——窗增益补偿写错了");
+            assertEquals(unwindowed, compensated, unwindowed * 1e-4,
+                    w + " 补偿后的谱峰与不加窗时差得太远——窗增益补偿写错了");
         }
     }
 
