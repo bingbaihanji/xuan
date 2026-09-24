@@ -78,10 +78,10 @@ private const val FIRST_ASSERT_FRAME = 6
 /**
  * 断言的帧数：一个变体一帧，见 [PathVerifierApp.drawnVariant]。
  *
- * <p>五个变体依次是：①两条横线 / ②一条横线 / ③闭合的直角方框 / ④同一份几何的**开放对照**
- * / ⑤**开放**的直角折线（走 [Gc.strokePath]，见 [PathVerifierApp.drawOpenPolylineCase]）。
+ * <p>六个变体依次是：①两条横线 / ②一条横线 / ③闭合的直角方框 / ④同一份几何的**开放对照**
+ * / ⑤**开放**的直角折线（走 [Gc.strokePath]）/ ⑥带孔填充（[Gc.fillPath]）。
  */
-private const val ASSERT_FRAME_COUNT = 5
+private const val ASSERT_FRAME_COUNT = 6
 
 /** 最后一次断言的帧号。 */
 private const val LAST_ASSERT_FRAME = FIRST_ASSERT_FRAME + ASSERT_FRAME_COUNT - 1
@@ -145,6 +145,42 @@ private const val OPEN_X0 = 60f
 private const val OPEN_Y0 = 400f
 private const val OPEN_X1 = 260f
 private const val OPEN_Y1 = 500f
+
+// ---------------------------------------------------------------------------
+// 带孔填充：外轮廓 + 内挖空
+// ---------------------------------------------------------------------------
+
+/** 圆环（外轮廓 + 内挖空）的中心与内外半径。 */
+private const val RING_CX = 200f
+private const val RING_CY = 380f
+private const val RING_R_OUTER = 70f
+private const val RING_R_INNER = 35f
+
+/**
+ * 用多边形逼近圆的段数。
+ *
+ * <p>取 128 是为了让"环带面积"的期望值可以按 `π(R²−r²)` 写：128 边形的面积比圆小
+ * 0.04%，远在 5% 容差之内。段数太少（例如 32）会让期望值必须改写成
+ * `n/2·R²·sin(2π/n)`，而那条公式与"填充对不对"没关系，只会让断言更难读。
+ */
+private const val RING_SEGMENTS = 128
+
+/** 两个**互不相交、互不包含**的正方形外轮廓的左上角与边长。 */
+private const val SQ1_X = 500f
+private const val SQ1_Y = 320f
+private const val SQ2_X = 650f
+private const val SQ2_Y = 320f
+private const val SQ_SIDE = 120f
+
+/**
+ * 带孔填充的填充色。
+ *
+ * <p>它钉住的是 `Gc.fillPath` 的**分类**行为：外轮廓与洞由**包含关系**决定，
+ * 不是靠"第一个子路径是外轮廓、后面都是洞"这种位置约定——后者对"两个互不相交的
+ * 外轮廓"（下面的两个正方形）会把第二个当成洞，而那种洞落在外轮廓之外，
+ * `Tessellator` 的契约里属于病态输入，会静默丢掉一块面积。
+ */
+private const val HOLE_FILL_RGB = 0x8000FF
 
 /**
  * 校验器的启动入口。
@@ -216,7 +252,8 @@ class PathVerifierApp : Application() {
                 1 -> drawSubPathCase(gc, twoSegments = false)
                 2 -> drawClosedJoinCase(gc, closed = true)
                 3 -> drawClosedJoinCase(gc, closed = false)
-                else -> drawOpenPolylineCase(gc)
+                4 -> drawOpenPolylineCase(gc)
+                else -> drawHoleFillCase(gc)
             }
         } catch (t: Throwable) {
             println("\n=== 绘制过程抛出异常，判为失败 ===")
@@ -318,6 +355,69 @@ class PathVerifierApp : Application() {
         gc.lineTo(OPEN_X1, OPEN_Y0)
         gc.lineTo(OPEN_X1, OPEN_Y1)
         gc.strokePath()
+    }
+
+    /**
+     * 带孔填充的场景：**一条路径里四条子路径**，交给一次 [Gc.fillPath]。
+     *
+     * <p>四条子路径分两类，各自对应一种必须成立的行为：
+     *
+     * <ul>
+     *   <li>同心圆环（大圆 + 小圆）：小圆**整个落在大圆内部** → 它必须是洞，
+     *       环心那块必须露背景。</li>
+     *   <li>两个互不相交、互不包含的正方形：两个都是**外轮廓** → 两块都该被填满。
+     *       这一对是"按包含关系分类"与"按位置约定分类"的分水岭：后者会把第二个正方形
+     *       当成一个落在外轮廓之外的洞，`Tessellator` 对那种输入只能尽力而为
+     *       （少画一块面积、且不会报错）。</li>
+     * </ul>
+     *
+     * <p>`Tessellator` 只接受"一个外轮廓 + 若干洞"，所以多条外轮廓必须**分别**三角化；
+     * 而"哪条是外轮廓"只能靠几何（包含关系）判断，不能靠子路径的先后顺序。
+     *
+     * @param gc 当前帧的绘制上下文
+     */
+    private fun drawHoleFillCase(gc: Gc) {
+        gc.fill = HOLE_FILL_RGB or (0xFF shl 24)
+        gc.beginPath()
+        appendCircleSubPath(gc, RING_CX, RING_CY, RING_R_OUTER)
+        appendCircleSubPath(gc, RING_CX, RING_CY, RING_R_INNER)
+        appendSquareSubPath(gc, SQ1_X, SQ1_Y, SQ_SIDE)
+        appendSquareSubPath(gc, SQ2_X, SQ2_Y, SQ_SIDE)
+        gc.fillPath()
+    }
+
+    /**
+     * 追加一条正多边形逼近的**圆形子路径**（`MOVE_TO` 起、`CLOSE` 收）。
+     *
+     * @param gc 当前帧的绘制上下文
+     * @param cx 圆心 x
+     * @param cy 圆心 y
+     * @param r  半径
+     */
+    private fun appendCircleSubPath(gc: Gc, cx: Float, cy: Float, r: Float) {
+        for (i in 0 until RING_SEGMENTS) {
+            val a = 2.0 * Math.PI * i / RING_SEGMENTS
+            val x = cx + (r * Math.cos(a)).toFloat()
+            val y = cy + (r * Math.sin(a)).toFloat()
+            if (i == 0) gc.moveTo(x, y) else gc.lineTo(x, y)
+        }
+        gc.closePath()
+    }
+
+    /**
+     * 追加一条正方形的子路径（`MOVE_TO` 起、`CLOSE` 收）。
+     *
+     * @param gc   当前帧的绘制上下文
+     * @param x    左上角 x
+     * @param y    左上角 y
+     * @param side 边长
+     */
+    private fun appendSquareSubPath(gc: Gc, x: Float, y: Float, side: Float) {
+        gc.moveTo(x, y)
+        gc.lineTo(x + side, y)
+        gc.lineTo(x + side, y + side)
+        gc.lineTo(x, y + side)
+        gc.closePath()
     }
 
     /**
@@ -502,7 +602,7 @@ class PathVerifierApp : Application() {
             // 再加四个 50 px² 的接头三角形（+200）= 15800。
             approx("方框描边像素总数 = 4 条边 - 4 处重叠 + 4 个接头", counts[CLOSED_JOIN_RGB] ?: 0,
                 15800.0, 0.01)
-        } else {
+        } else if (drawnVariant < 5) {
             println("\n-- 开放子路径：不该被当成闭合 --")
             val ox0 = OPEN_X0.toInt(); val ox1 = OPEN_X1.toInt()
             val oy0 = OPEN_Y0.toInt(); val oy1 = OPEN_Y1.toInt()
@@ -531,6 +631,48 @@ class PathVerifierApp : Application() {
             // 那是数量级的差异，不需要靠容差去分辨。
             approx("开放折线像素总数 = 两条腿 - 拐角重叠 + 接头", counts[SUB_PATH_RGB] ?: 0,
                 1200.0, 0.02)
+        } else {
+            println("\n-- 带孔填充：外轮廓按包含关系分类 --")
+            val rcx = RING_CX.toInt(); val rcy = RING_CY.toInt()
+            val rOut = RING_R_OUTER.toInt(); val rIn = RING_R_INNER.toInt()
+            val side = SQ_SIDE.toInt()
+            val sq1x = SQ1_X.toInt(); val sq1y = SQ1_Y.toInt()
+            val sq2x = SQ2_X.toInt(); val sq2y = SQ2_Y.toInt()
+
+            // 判别式之一：环心那块必须是背景。小圆整个落在大圆内部，按包含关系它是**洞**；
+            // 一旦退化成"各填各的"或普通子路径，环心会被填成实心——而那个画面看上去
+            // "就是个实心圆"，没有任何别的地方不对劲。方框取得比内圆小一圈（±8 < r=35），
+            // 保证它完全落在洞里，不会碰到环带。
+            val center = countIn(rcx - 8, rcy - 8, rcx + 8, rcy + 8, HOLE_FILL_RGB)
+            report("环心被挖空（小圆是洞，不是又一块填充）", center == 0, "实际 $center px")
+
+            // 判别式之二：两个互不相交的正方形**都**得被填满。按位置约定分类的实现
+            // （"第一个子路径作外轮廓、其余作洞"）会把第二个正方形当成洞，而它落在外轮廓
+            // 之外——`Tessellator` 对那种输入只能尽力而为，结果是一块面积被静默丢掉。
+            for (i in 0..1) {
+                val x = if (i == 0) sq1x else sq2x
+                val y = if (i == 0) sq1y else sq2y
+                val n = countIn(x, y, x + side - 1, y + side - 1, HOLE_FILL_RGB)
+                report("第 ${i + 1} 个正方形铺满 ${side}x$side", n == side * side,
+                    "实际 $n，期望 ${side * side}")
+            }
+
+            // 环带面积按 π(R²−r²) 写：128 边形的面积只比圆小 0.04%。
+            val band = countIn(rcx - rOut, rcy - rOut, rcx + rOut, rcy + rOut, HOLE_FILL_RGB)
+            approx("环带像素数 = π(R²−r²)", band,
+                Math.PI * (RING_R_OUTER.toDouble() * RING_R_OUTER - RING_R_INNER.toDouble() * RING_R_INNER))
+
+            // 包围盒把四块都框住：环在最左、也在最上最下（它的极值点正好落在 0°/90°/180°/270°，
+            // 128 边形的顶点里有这四个方向），第二个正方形在最右。
+            val bx = rcx - rOut
+            val by = rcy - rOut
+            bbox("带孔填充的包围盒（环 + 两个正方形）", HOLE_FILL_RGB,
+                bx, by, sq2x + side - 1 - bx + 1, rcy + rOut - 1 - by + 1)
+
+            println("\n-- 无杂散像素（覆盖整幅画面）--")
+            approx("填充色像素总数 = 两个正方形 + 环带", counts[HOLE_FILL_RGB] ?: 0,
+                2.0 * side * side + Math.PI * (RING_R_OUTER.toDouble() * RING_R_OUTER
+                        - RING_R_INNER.toDouble() * RING_R_INNER), 0.02)
         }
 
         report("画面只有 $EXPECTED_COLORS 种颜色（无杂散像素）", counts.size == EXPECTED_COLORS,

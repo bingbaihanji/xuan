@@ -796,6 +796,17 @@ class Gc constructor(private val batch: RenderBatch) {
      */
     private var subScratchPoints = FloatArray(INITIAL_SCRATCH_FLOATS)
 
+    /**
+     * [fillPath] 交给 [Tessellator.tessellateContours] 的子路径表：每条子路径第一个顶点
+     * 在 [scratchPoints] 中的**顶点下标**，与它的顶点数 [contourCounts]。
+     *
+     * <p>做成 Gc 的字段而不是每次调用现搭两个数组：填充在每帧的热路径上。
+     */
+    private var contourOffsets = IntArray(INITIAL_CONTOURS)
+
+    /** 与 [contourOffsets] 配套的顶点数表。 */
+    private var contourCounts = IntArray(INITIAL_CONTOURS)
+
     /** 开始一条新路径，丢弃之前累积的全部子路径。 */
     fun beginPath() {
         path.reset()
@@ -858,11 +869,14 @@ class Gc constructor(private val batch: RenderBatch) {
      * <p>曲线按 [matrixScale] 换算出的设备像素容差平坦化（默认 0.25 设备像素），
      * 因此缩放越大、曲线越平滑。
      *
-     * <p>**已知限制**：路径中的所有子路径会被平坦化后当作**单个**多边形三角化，
-     * 因此"外轮廓 + 内挖空"这类多子路径填充结果不正确。
-     * 修正方式是改用 `Tessellator.tessellateWithHoles`，按子路径起点切分
-     * （`Flattener.subPathCount()` / `subPathStart(i)` 已提供该信息），
-     * 第一个子路径作外轮廓、其余作洞。此项在需要环形/饼图填充时补上。
+     * <p>**每个子路径都是独立的一条轮廓**，谁是外轮廓、谁是洞由
+     * [Tessellator.tessellateContours] 按**包含关系**判断（不看子路径的先后顺序）。
+     * 于是"外轮廓 + 内挖空"（环图、饼图的空心）与"一条路径里画好几块"
+     * （多个互不相交的外轮廓）同时成立。
+     *
+     * <p>曾经的行为是把所有子路径平坦化后当成**单个**多边形：环图会被填成实心，
+     * 而多块图形里排在后面的块会整块消失（子路径首尾相连成的自相交多边形在耳切法下
+     * 没有确定的结果）——两者都不报错，画面上只是"多了/少了一块颜色"。
      */
     fun fillPath() {
         if (path.isEmpty) {
@@ -873,8 +887,57 @@ class Gc constructor(private val batch: RenderBatch) {
             return
         }
         val count = flattenToScratch()
-        tessellator.tessellate(scratchPoints, count)
+        val contours = fillContourTable(count)
+        tessellator.tessellateContours(scratchPoints, contourOffsets, contourCounts, contours)
         emitTriangles(tessellator.rawTriangles(), tessellator.triangleCount() * 6, fill)
+    }
+
+    /**
+     * 把当前路径的子路径表填进 [contourOffsets] / [contourCounts]，返回轮廓条数。
+     *
+     * <p>子路径起点来自 [Flattener.subPathStart]，与 [Flattener] 的编号一致
+     * （两者都在每条 `MOVE_TO` 处开一条新子路径）。一条 `MOVE_TO` 都没有的退化路径
+     * （例如直接 `lineTo`）没有子路径起点可用，此时整条路径按**一条轮廓**处理。
+     *
+     * <p>顶点数少于 3 的子路径照样进表，由 [Tessellator] 判为退化轮廓跳过——
+     * 在这里过滤会让"表里的下标与 [Flattener] 的子路径下标对齐"这条不变量变复杂，
+     * 而那边本来就要判一次。
+     *
+     * @param pointCount 平坦化后的顶点总数
+     * @return 轮廓条数（≥ 1）
+     */
+    private fun fillContourTable(pointCount: Int): Int {
+        val subPaths = flattener.subPathCount()
+        if (subPaths == 0) {
+            ensureContourCapacity(1)
+            contourOffsets[0] = 0
+            contourCounts[0] = pointCount
+            return 1
+        }
+        ensureContourCapacity(subPaths)
+        for (i in 0 until subPaths) {
+            contourOffsets[i] = flattener.subPathStart(i)
+            val end = if (i + 1 < subPaths) flattener.subPathStart(i + 1) else pointCount
+            contourCounts[i] = end - contourOffsets[i]
+        }
+        return subPaths
+    }
+
+    /**
+     * 保证子路径表能容纳 `count` 条轮廓。只在扩容时分配，稳态下 [fillPath] 零分配。
+     *
+     * @param count 需要的轮廓条数
+     */
+    private fun ensureContourCapacity(count: Int) {
+        if (contourOffsets.size >= count) {
+            return
+        }
+        var size = contourOffsets.size
+        while (size < count) {
+            size *= 2
+        }
+        contourOffsets = IntArray(size)
+        contourCounts = IntArray(size)
     }
 
     /**
@@ -1262,6 +1325,9 @@ class Gc constructor(private val batch: RenderBatch) {
 
         /** [scratchPoints] 的初始长度（float 个数）。 */
         private const val INITIAL_SCRATCH_FLOATS = 256
+
+        /** 子路径表的初始条数。按需翻倍，常见的路径远达不到。 */
+        private const val INITIAL_CONTOURS = 4
 
         /**
          * 样式栈的初始层数。

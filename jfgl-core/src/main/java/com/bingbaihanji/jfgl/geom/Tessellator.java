@@ -17,6 +17,10 @@ import java.util.Arrays;
  * <p>带孔洞的多边形用 {@link #tessellateWithHoles}：先把每个洞用一对重合边桥接到
  * 轮廓上合并成单个简单多边形，再走同一套耳切法。
  *
+ * <p>一条**由多个子路径组成的路径**（例如环图的"外圈 + 挖空"，或者一条路径里画好几块）
+ * 用 {@link #tessellateContours}：它先按<strong>包含关系</strong>把每个轮廓判成外轮廓或洞
+ * （不看子路径的先后顺序），再让每个外轮廓连同它自己的洞走 {@link #tessellateWithHoles}。
+ *
  * <p><b>输入契约</b>（超出契约的输入不会抛异常、也不会死循环，但结果不保证正确，
  * 可能凭空丢掉一部分面积）：
  * <ul>
@@ -67,6 +71,15 @@ public final class Tessellator {
     /** 桥接时洞顶点的 y 坐标工作区。 */
     private float[] holeY = new float[64];
 
+    /** [tessellateContours] 用的每条轮廓嵌套深度；跨调用复用、按需扩容。 */
+    private int[] depth = new int[8];
+
+    /** [tessellateContours] 传给 [tessellateWithHolesInto] 的洞顶点数组视图（按需扩容）。 */
+    private float[][] holeBuffers = new float[8][];
+
+    /** 与 [holeBuffers] 配套的顶点数视图。尾部的槽位会被清成 0 表示"本次没有这个洞"。 */
+    private int[] holeCountsView = new int[8];
+
     /** 创建三角化器。 */
     public Tessellator() {
         // 使用默认初始容量
@@ -79,11 +92,12 @@ public final class Tessellator {
      * @param count 顶点个数
      * @return 多边形面积
      */
-    private static double polygonArea(float[] pts, int count) {
+    private static double polygonArea(float[] pts, int offset, int count) {
         double sum = 0;
         for (int i = 0; i < count; i++) {
-            int j = (i + 1) % count;
-            sum += (double) pts[i * 2] * pts[j * 2 + 1] - (double) pts[j * 2] * pts[i * 2 + 1];
+            int a = offset + i;
+            int b = offset + (i + 1) % count;
+            sum += (double) pts[a * 2] * pts[b * 2 + 1] - (double) pts[b * 2] * pts[a * 2 + 1];
         }
         return Math.abs(sum * 0.5);
     }
@@ -714,13 +728,27 @@ public final class Tessellator {
      */
     public void tessellate(float[] points, int count) {
         reset();
+        tessellateInto(points, 0, count);
+    }
+
+    /**
+     * {@link #tessellate} 的"不清空结果"版本：把结果**追加**到当前三角形列表上。
+     *
+     * <p>给 {@link #tessellateContours} 用——一条路径的多个外轮廓要分别三角化，
+     * 结果必须落在同一份输出里。
+     *
+     * @param points 扁平顶点数组 {@code [x0,y0, x1,y1, ...]}
+     * @param offset 该多边形的第一个顶点在 {@code points} 中的**顶点下标**（不是 float 下标）
+     * @param count  顶点个数
+     */
+    private void tessellateInto(float[] points, int offset, int count) {
         if (count < 3) {
             return;
         }
         ensureScratch(count);
         for (int i = 0; i < count; i++) {
-            scratchX[i] = points[i * 2];
-            scratchY[i] = points[i * 2 + 1];
+            scratchX[i] = points[(offset + i) * 2];
+            scratchY[i] = points[(offset + i) * 2 + 1];
         }
 
         if (signedArea(scratchX, scratchY, count) < 0f) {
@@ -764,12 +792,29 @@ public final class Tessellator {
     public void tessellateWithHoles(float[] outer, int outerCount,
                                     float[][] holes, int[] holeCounts) {
         reset();
+        tessellateWithHolesInto(outer, 0, outerCount, holes, holeCounts);
+    }
+
+    /**
+     * {@link #tessellateWithHoles} 的"不清空结果"版本，并允许外轮廓是某个大数组里的一段。
+     *
+     * <p>给 {@link #tessellateContours} 用：一条路径的多个外轮廓共用同一块扁平数组，
+     * 每个外轮廓只是它的一段；结果要追加到同一份输出上。
+     *
+     * @param outer       外轮廓所在的扁平顶点数组
+     * @param outerOffset 外轮廓第一个顶点在 {@code outer} 中的**顶点下标**
+     * @param outerCount  外轮廓顶点数
+     * @param holes       每个洞的扁平顶点数组
+     * @param holeCounts  每个洞的顶点数
+     */
+    private void tessellateWithHolesInto(float[] outer, int outerOffset, int outerCount,
+                                         float[][] holes, int[] holeCounts) {
         if (outerCount < 3) {
             return;
         }
         if (holes == null || holes.length == 0) {
-            tessellate(outer, outerCount);
-            checkArea(outer, outerCount, null, null);
+            tessellateInto(outer, outerOffset, outerCount);
+            checkArea(outer, outerOffset, outerCount, null, null);
             return;
         }
 
@@ -785,8 +830,8 @@ public final class Tessellator {
         float[] mergedY = new float[capacity];
         int n = 0;
         for (int i = 0; i < outerCount; i++) {
-            mergedX[n] = outer[i * 2];
-            mergedY[n] = outer[i * 2 + 1];
+            mergedX[n] = outer[(outerOffset + i) * 2];
+            mergedY[n] = outer[(outerOffset + i) * 2 + 1];
             n++;
         }
         // 外轮廓统一为逆时针，洞才能以顺时针"挖去"
@@ -839,13 +884,184 @@ public final class Tessellator {
             poly[i * 2] = mergedX[i];
             poly[i * 2 + 1] = mergedY[i];
         }
-        tessellate(poly, n);
-        checkArea(outer, outerCount, holes, holeCounts);
+        tessellateInto(poly, 0, n);
+        checkArea(outer, outerOffset, outerCount, holes, holeCounts);
+    }
+
+    /**
+     * 三角化一条**由多个轮廓（子路径）组成的路径**：按<strong>包含关系</strong>把轮廓分成
+     * 外轮廓与洞，每个外轮廓连同它直接包含的洞一起走 {@link #tessellateWithHoles}。
+     *
+     * <p>这是 {@code Gc.fillPath} 那条路要用的入口。它比 {@link #tessellateWithHoles} 多做的
+     * 只有一件事：**判断哪个轮廓是外轮廓、哪个是洞**。判据是几何而不是顺序——
+     * 一个轮廓被别的轮廓包含了几次（嵌套深度）决定了它的身份：
+     * 深度为偶数的是外轮廓（含 0），奇数的是洞；洞归属于"包含它、且深度正好比它小 1"
+     * 的那个外轮廓，因此"洞里的岛"（深度 2）会作为**独立的外轮廓**被单独三角化。
+     *
+     * <p><b>为什么不按位置约定分类</b>（"第一个子路径作外轮廓、其余作洞"）：那个约定在
+     * 一张图有多个互不相交的外轮廓时（例如一条路径里画两个圆）会把第二个圆当成洞，
+     * 而它落在外轮廓之外——那属于 {@link #tessellateWithHoles} 契约里的病态输入，
+     * 结果是**静默丢掉一块面积**，画面上只是"少画了一个圆"。
+     * 按包含关系分类则两边都对：相交的两个外轮廓各自成块，洞被挖在正确的那一块上。
+     *
+     * <p><b>判定用的"代表点"是轮廓的第一个顶点</b>（所以轮廓之间**不能相切或共边**：
+     * 代表点正好落在另一个轮廓的边上时，内外判定没有确定答案）。这与
+     * {@link #tessellateWithHoles} 的输入契约是同一条要求。
+     *
+     * <p>输入的轮廓顶点被复制进本实例复用的缓冲，稳态下不产生分配（扩容时除外）。
+     * 退化轮廓（顶点数少于 3）被跳过，既不画也不参与包含关系。
+     *
+     * @param points       所有轮廓共用的扁平顶点数组 {@code [x0,y0, x1,y1, ...]}
+     * @param offsets      每条轮廓第一个顶点在 {@code points} 中的**顶点下标**（不是 float 下标）
+     * @param counts       每条轮廓的顶点数
+     * @param contourCount 轮廓条数
+     */
+    public void tessellateContours(float[] points, int[] offsets, int[] counts, int contourCount) {
+        reset();
+        if (points == null || offsets == null || counts == null) {
+            return;
+        }
+        int n = Math.min(contourCount, Math.min(offsets.length, counts.length));
+        if (n <= 0) {
+            return;
+        }
+
+        // 只有一条可用轮廓时没有任何包含关系可言，直接走既有的单多边形路径
+        int first = -1;
+        int usable = 0;
+        for (int i = 0; i < n; i++) {
+            if (counts[i] >= 3) {
+                if (first < 0) {
+                    first = i;
+                }
+                usable++;
+            }
+        }
+        if (usable == 0) {
+            return;
+        }
+        if (usable == 1) {
+            tessellateInto(points, offsets[first], counts[first]);
+            return;
+        }
+
+        // 每个轮廓的嵌套深度 = 包含它的轮廓个数
+        ensureContourScratch(n);
+        for (int i = 0; i < n; i++) {
+            if (counts[i] < 3) {
+                depth[i] = 0;
+                continue;
+            }
+            float px = points[offsets[i] * 2];
+            float py = points[offsets[i] * 2 + 1];
+            int d = 0;
+            for (int j = 0; j < n; j++) {
+                if (i != j && counts[j] >= 3
+                        && containsPoint(points, offsets[j], counts[j], px, py)) {
+                    d++;
+                }
+            }
+            depth[i] = d;
+        }
+
+        // 深度为偶数的都是外轮廓；每个外轮廓配它自己直接包含的那些洞
+        for (int o = 0; o < n; o++) {
+            if (counts[o] < 3 || (depth[o] & 1) != 0) {
+                continue;
+            }
+            int holeNum = 0;
+            for (int h = 0; h < n; h++) {
+                if (h == o || counts[h] < 3 || depth[h] != depth[o] + 1) {
+                    continue;
+                }
+                // 深度差 1 且包含 → 它就是 o 的直接子洞
+                if (!containsPoint(points, offsets[o], counts[o],
+                        points[offsets[h] * 2], points[offsets[h] * 2 + 1])) {
+                    continue;
+                }
+                holeBuffers[holeNum] = copyContour(points, offsets[h], counts[h], holeNum);
+                holeCountsView[holeNum] = counts[h];
+                holeNum++;
+            }
+            // 视图剩下的槽位清成"不可用"：tessellateWithHolesInto 按数组长度扫，
+            // 上一次调用留在后面的洞数组不能被当成这一次的洞
+            for (int k = holeNum; k < n; k++) {
+                holeCountsView[k] = 0;
+            }
+            tessellateWithHolesInto(points, offsets[o], counts[o], holeBuffers, holeCountsView);
+        }
     }
 
     // ------------------------------------------------------------------
     // 辅助
     // ------------------------------------------------------------------
+
+    /**
+     * 判断点 {@code (px,py)} 是否落在指定轮廓内部（射线法，奇偶规则）。
+     *
+     * <p>只数"向上穿过"的边，且用半开区间 `(yi > py) != (yj > py)` 判定，因此顶点正好
+     * 落在射线上时不会重复计数。顺/逆时针都适用。
+     *
+     * @param pts    扁平顶点数组
+     * @param offset 该轮廓第一个顶点的顶点下标
+     * @param count  顶点数
+     * @param px     待判定点的 x 坐标
+     * @param py     待判定点的 y 坐标
+     * @return 落在内部返回 {@code true}
+     */
+    private static boolean containsPoint(float[] pts, int offset, int count,
+                                         float px, float py) {
+        boolean inside = false;
+        for (int i = 0, j = count - 1; i < count; j = i++) {
+            float yi = pts[(offset + i) * 2 + 1];
+            float yj = pts[(offset + j) * 2 + 1];
+            if ((yi > py) == (yj > py)) {
+                continue;
+            }
+            float xi = pts[(offset + i) * 2];
+            float xj = pts[(offset + j) * 2];
+            double xCross = xi + (double) (py - yi) / (yj - yi) * (xj - xi);
+            if (px < xCross) {
+                inside = !inside;
+            }
+        }
+        return inside;
+    }
+
+    /**
+     * 把指定轮廓复制进第 {@code slot} 块复用缓冲，返回那块缓冲。
+     *
+     * @param points 源扁平顶点数组
+     * @param offset 该轮廓第一个顶点的顶点下标
+     * @param count  顶点数
+     * @param slot   复用槽位（同一次调用里每条轮廓一个槽，互不覆盖）
+     * @return 装着该轮廓顶点的数组（长度可能大于所需，调用方另传顶点数）
+     */
+    private float[] copyContour(float[] points, int offset, int count, int slot) {
+        int need = count * 2;
+        if (holeBuffers[slot] == null || holeBuffers[slot].length < need) {
+            holeBuffers[slot] = new float[need];
+        }
+        System.arraycopy(points, offset * 2, holeBuffers[slot], 0, need);
+        return holeBuffers[slot];
+    }
+
+    /**
+     * 保证嵌套深度表、洞数组视图与洞顶点缓冲池都能容纳 {@code contourCount} 条轮廓。
+     *
+     * @param contourCount 轮廓条数
+     */
+    private void ensureContourScratch(int contourCount) {
+        if (depth.length < contourCount) {
+            depth = new int[contourCount];
+        }
+        if (holeCountsView.length < contourCount) {
+            holeCountsView = new int[contourCount];
+        }
+        if (holeBuffers.length < contourCount) {
+            holeBuffers = Arrays.copyOf(holeBuffers, contourCount);
+        }
+    }
 
     /**
      * 三角化之后自查面积：把输出三角形的总面积和"外轮廓减掉所有洞"的期望面积对一遍，
@@ -855,21 +1071,23 @@ public final class Tessellator {
      * <b>只告警不抛异常</b>：病态路径下渲染库宁可画出个大概并说清楚，
      * 也好过整帧崩掉。
      *
-     * @param outer      外轮廓的扁平顶点数组
-     * @param outerCount 外轮廓顶点数
-     * @param holes      每个洞的扁平顶点数组，可为 {@code null}
-     * @param holeCounts 每个洞的顶点数，可为 {@code null}
+     * @param outer       外轮廓所在的扁平顶点数组
+     * @param outerOffset 外轮廓第一个顶点在 {@code outer} 中的顶点下标
+     * @param outerCount  外轮廓顶点数
+     * @param holes       每个洞的扁平顶点数组，可为 {@code null}
+     * @param holeCounts  每个洞的顶点数，可为 {@code null}
      */
-    private void checkArea(float[] outer, int outerCount, float[][] holes, int[] holeCounts) {
+    private void checkArea(float[] outer, int outerOffset, int outerCount,
+                           float[][] holes, int[] holeCounts) {
         if (outer == null || outerCount < 3) {
             return;
         }
-        double expected = polygonArea(outer, outerCount);
+        double expected = polygonArea(outer, outerOffset, outerCount);
         int holeNum = 0;
         int holeLimit = holes == null ? 0 : holes.length;
         for (int h = 0; h < holeLimit && h < holeCounts.length; h++) {
             if (isUsableHole(holes, holeCounts, h)) {
-                expected -= polygonArea(holes[h], holeCounts[h]);
+                expected -= polygonArea(holes[h], 0, holeCounts[h]);
                 holeNum++;
             }
         }

@@ -164,8 +164,8 @@ quadTo(cx, cy, x, y)                                  // 二次贝塞尔
 bezierCurveTo(c1x, c1y, c2x, c2y, x, y)               // 三次贝塞尔
 closePath()
 
-fillPath()
-strokePath()
+fillPath()      // 每个子路径是一条轮廓：按**包含关系**判定外轮廓与洞（环图、空心饼图、多块图形）
+strokePath()    // 每个子路径**独立**描边；末条命令是 CLOSE 的子路径补首尾接头
 ```
 
 ### 拾取
