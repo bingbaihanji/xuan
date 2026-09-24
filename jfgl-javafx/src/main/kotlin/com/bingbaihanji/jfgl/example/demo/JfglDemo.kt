@@ -67,13 +67,20 @@ data class Placed(val shape: Shape, val pickId: Int)
 class JfglDemoApp : Application() {
 
     private var transfer: FXGLTransfer? = null
-    private lateinit var canvas: Node
     private val status = Label("拖动鼠标画一个矩形").apply {
         padding = Insets(6.0, 10.0, 6.0, 10.0)
         style = "-fx-font-size: 13px; -fx-text-fill: #1b1b1b;"
     }
 
-    // ---- 跨线程状态：JavaFX 线程写，GL 线程读。全部是不可变快照。 ----
+    // ---- JavaFX 线程写、GL 线程读的状态。**分三类，别混。** ----
+    //
+    //   ① **引用快照**（`shapes` / `selection` / `marqueePending`）：整表替换、
+    //      从不原地改，所以 GL 线程读到的永远是一个自洽的快照；
+    //   ② **需要跨线程的标量**（`mode` / `kind`）：`@Volatile`；
+    //   ③ **分别发布的标量**（`dragStart*` / `marquee[XYWH]`）：也 `@Volatile`，
+    //      但它们是**逐字段发布、成组读取**的，所以允许**单帧不一致**
+    //      （例如"新的起点 + 旧的轨迹"），只影响那一帧的预览观感。
+    //      **不要把它们说成"快照"**——那条承诺比实际强。
 
     /** 已画完的图形。整表替换，不做原地改。 */
     private val shapes = AtomicReference<List<Placed>>(emptyList())
@@ -81,13 +88,30 @@ class JfglDemoApp : Application() {
     /** 选中集（pickId）。 */
     private val selection = AtomicReference<Set<Int>>(emptySet())
 
-    /** 当前模式 / 图形种类 / 样式 / 颜色 / 字号。 */
+    /**
+     * 当前模式与图形种类。**这两个真的跨线程**：`mode` 被 GL 线程的
+     * [drawScene] / [drawDragPreview] / [onDrag] 读，`kind` 被 [drawDragPreview] 读，
+     * 而它们由菜单在 JavaFX 线程写——所以需要 `@Volatile`。
+     */
     @Volatile private var mode = Mode.DRAW
     @Volatile private var kind = ShapeKind.RECT
-    @Volatile private var style = ShapeStyle.FILL_AND_STROKE
-    @Volatile private var color = PALETTE[0]
-    @Volatile private var lineWidth = 2f
-    @Volatile private var fontSize = FONT_SIZES[1]
+
+    // ---- 以下是**只在 JavaFX 线程**读写的状态，因此**不需要** `@Volatile`。 ----
+    //
+    //   它们的唯一读点是 [commitShape]（以及 Task 8 的 `commitText`），两者都在
+    //   JavaFX 线程上（由鼠标事件 / 菜单触发）；即使 Task 8 把 `fontSize` 装进
+    //   `TextShape` 再交给 GL 线程使用，那个交接也发生在"构造快照"这一步，
+    //   而不是靠这个字段跨线程可见。
+    //   **别顺手给它们加 `@Volatile`**——那会让人以为它们跨线程，从而看不出
+    //   真正的跨线程字段是哪两个。
+
+    /** 新画图形用的样式 / 颜色 / 线宽。**只在 JavaFX 线程读写。** */
+    private var style = ShapeStyle.FILL_AND_STROKE
+    private var color = PALETTE[0]
+    private var lineWidth = 2f
+
+    /** 文本模式的字号。**只在 JavaFX 线程读写。** */
+    private var fontSize = FONT_SIZES[1]
 
     /**
      * 三个"当前模式是什么"的 JavaFX 属性，**只为菜单的启用/禁用服务**。
@@ -121,8 +145,8 @@ class JfglDemoApp : Application() {
      *
      * <p><strong>取舍记录</strong>：这条写法的代价是 O(n²)——每个拖拽事件一次
      * `copyOf(size + 2)`，一笔 n 个事件的拖拽累计约 n² 次 float 拷贝。
-     * 量级上**可忽略**：10000 个事件（十秒连续涂鸦）累计约 2×10⁸ 次拷贝 ≈ 400 MB 的
-     * `arraycopy`，摊在那十秒里约 40 ms。
+     * 量级上**可忽略**：10000 个事件（十秒连续涂鸦）累计约 **10⁸ 次 float 拷贝**
+     * （4×10⁸ 字节 = 400 MB 的 `arraycopy`），摊在那十秒里约 40 ms。
      *
      * <p>**不用"预分配缓冲 + 计数"去换掉它**，虽然那是 O(1) 摊还。真正的代价**不是** JMM
      * （几何级数扩容仍可保持"每次整体替换、不共享可变状态"），而是它引入了
@@ -134,41 +158,44 @@ class JfglDemoApp : Application() {
      */
     @Volatile private var trajectory = FloatArray(0)
 
-    /** 待框选的矩形（左,上,宽,高，设备像素）。NaN 宽度表示没有。 */
+    /**
+     * 待框选的矩形（左, 上, 宽, 高，设备像素）。`marqueeW` 为 NaN 表示没有框选在进行。
+     *
+     * <p>这四个是**分别发布**的（见类顶部第 ③ 类），所以 GL 线程可能读到
+     * "新的 `marqueeW` + 旧的 `marqueeH`"——**允许**，只影响那一帧选框的高度。
+     * 真正跨线程交付给 GL 线程的那个矩形走的是下面 [marqueePending]（一个不可变对象），
+     * **没有**这个问题——这个对照正是"为什么交付用一个对象、而预览用四个标量"的理由。
+     */
     @Volatile private var marqueeX = Float.NaN
     @Volatile private var marqueeY = 0f
     @Volatile private var marqueeW = Float.NaN
     @Volatile private var marqueeH = 0f
 
-    /** 待处理的框选请求（GL 线程消费）。 */
+    /** 待处理的框选请求（GL 线程消费）。**用对象快照，不用上面那四个标量。** */
     private val marqueePending = AtomicReference<Rect?>(null)
-
-    /** 下一个要用的拾取 ID（只在 GL 线程递增）。 */
-    private var nextPickId = 1
 
     override fun start(stage: Stage) {
         val bridge = FXGLTransfer()
         bridge.onInit {
-            bridge.gc()?.let { gc ->
-                // ★ 启动自检：纯计算部分在这里被验证，失败以非 0 退出。
-                //   放在这里是因为它不需要 GL，但需要一个"确定跑过一次"的时机。
-                val failures = selfCheckShapeMath()
-                if (failures != 0) {
-                    System.err.println("[自检] 失败 $failures 项，demo 不可信，退出")
-                    // ★ 退出**交给 JavaFX 线程**，不在这里（GL 线程）直接 exitProcess。
-                    //   仓库既有的两个自检都是从 JavaFX 线程退出的（`ClickDslExample.kt:161`
-                    //   与 `:182` 后者在 `Platform.runLater` 内）。GL 回调里直接 `System.exit`
-                    //   会触发 JavaFX 的关闭钩子、而此刻本线程正卡在 openglfx 的原生回调里——
-                    //   那是**没人测过**的一条路径，没必要为省一次 `runLater` 去赌它。
-                    Platform.runLater { exitProcess(1) }
-                    return@let
-                }
-                println("[自检] 全部通过")
-                // 注册发生在**数据变化时**，不是每帧。此刻画布是空的，所以这里什么都不注册；
-                // 新图形在 [commitShape] 里注册（Task 6）。
-                // 反复注册会耗尽 ID 空间——PickRegistry 会抛异常，不会静默。
-                nextPickId = 1
+            // ★ 启动自检**放在 `gc()` 的 let 之外**——它只用 println / System.err，
+            //   **根本不需要 `Gc`**。包在 `let` 里的话就多出一条"静默跳过"路径：
+            //   哪天 `FXGLTransfer` 的初始化顺序变了（比如 onInitCallback 早于 `gc = Gc(batch)`
+            //   被调用），自检**一条都不跑**、`[自检] 全部通过` 不打印、进程以 0 退出。
+            //   而本模块没有 junit / 没有 surefire（见计划开头的「关于验证口径」），
+            //   **这份自检是唯一的自动化闸门**——仓库自己写过判据：
+            //   "被静默跳过的断言比失败的断言更坏"。
+            val failures = selfCheckShapeMath()
+            if (failures != 0) {
+                System.err.println("[自检] 失败 $failures 项，demo 不可信，退出")
+                // ★ 退出**交给 JavaFX 线程**，不在这里（GL 线程）直接 exitProcess。
+                //   仓库既有的两个自检都是从 JavaFX 线程退出的（`ClickDslExample.kt:161`
+                //   与 `:182` 后者在 `Platform.runLater` 内）。GL 回调里直接 `System.exit`
+                //   会触发 JavaFX 的关闭钩子、而此刻本线程正卡在 openglfx 的原生回调里——
+                //   那是**没人测过**的一条路径，没必要为省一次 `runLater` 去赌它。
+                Platform.runLater { exitProcess(1) }
+                return@onInit
             }
+            println("[自检] 全部通过")
         }
         bridge.onFrame { gc -> drawScene(gc) }
         // ★ 框选的拾取读回挂在这里，**不是** onFrame 里。
@@ -176,12 +203,16 @@ class JfglDemoApp : Application() {
         //   那时 `pickBufferValid` 是 false（`beginFrame` 刻意置的），
         //   `gc.pickRect` 会恒返回空列表——框选会**永远选不中任何东西且不报错**。
         //   `onRender` 跑在 `endFrame()` **之后**，此刻本帧的 ID pass 刚渲染完。
-        //   它没有 gc 参数，但同一线程上 `bridge.gc()` 拿得到，且我们确实在 GL 线程。
-        bridge.onRender { transfer?.gc()?.let { gc -> consumeMarquee(gc) } }
+        //
+        // ★ 这里用 **`bridge.gc()`**，不是 `transfer?.gc()`。`transfer` 是个**普通**字段
+        //   （JavaFX 线程在下一行才写、GL 线程在这里每帧读），两侧没有任何 happens-before 边，
+        //   读它属于数据竞争。`bridge` 是**本方法的局部变量**——发生在同一个线程、
+        //   在 `onRender` 注册之前就已构造完成，所以它和它的 `gc()`（`FXGLTransfer` 内部
+        //   那个 `gc` 字段是在 GL 线程的 `onInit` 里赋值的）都是安全的。
+        bridge.onRender { bridge.gc()?.let { gc -> consumeMarquee(gc) } }
         transfer = bridge
 
         val view = bridge.createGlFXView()
-        canvas = view
         wireMouse(bridge, view)
 
         val mainView = MainView().apply {
@@ -290,13 +321,41 @@ class JfglDemoApp : Application() {
         trajectory = next
     }
 
+    /**
+     * 清掉"有一次交互正在进行"的全部状态：拖拽起点、轨迹、以及框选的有效性标志。
+     *
+     * <p>**必须在三处调用**，否则不变式"`dragStartX` 非 NaN ⟺ 真的有一次 DRAW 拖拽在进行"
+     * 不被任何东西维护：
+     * ① 拖拽正常结束（[onRelease] 的 DRAW 分支）；
+     * ② 框选正常结束（[onRelease] 的 SECONDARY 分支）——**顺带把主键拖拽也取消掉**：
+     *    双键同时按下是个语义含糊的手势（左键拖到一半再按右键），
+     *    取消它比"按当前鼠标位置提交到错误的终点"好；
+     * ③ **模式被切走时**（[buildMenuBar] 的 `modeItem`）。
+     *
+     * <p>③ 是最容易漏的那一处，而漏掉的后果是**静默错画**：
+     * 绘图模式按下并拖动 → **按住不放**、用键盘切到文本 → 松开（走 `Mode.TEXT -> Unit`，
+     * 什么都不清）→ 切回绘图。此刻残留的 `dragStartX` 让 [drawDragPreview] **凭空画一个预览框**；
+     * 更糟的是接着在任意处按下再松开时，`moved` 从那个**旧起点**量起、
+     * [commitShape] 还会用**旧轨迹**，于是**落下一个用户从没拖过的图形**，
+     * 而状态栏正常显示"已画：…"——正是本仓库最防的那类"静默错画"。
+     *
+     * <p>（可达性已核实：Windows 上 Alt/F10 能在**鼠标按键按住时**走菜单，
+     * 因为 JavaFX 的 `Scene` 只在**所有**键抬起后才结束 press-drag-release 手势。）
+     */
+    private fun resetDragState() {
+        dragStartX = Float.NaN
+        dragStartY = Float.NaN
+        trajectory = FloatArray(0)
+        marqueeW = Float.NaN
+    }
+
     private fun onRelease(bridge: FXGLTransfer, node: Node, e: MouseEvent) {
         if (e.button == MouseButton.SECONDARY) {
             if (!marqueeW.isNaN()) {
                 val r = Rect(minOf(marqueeX, marqueeX + marqueeW), minOf(marqueeY, marqueeY + marqueeH),
                     abs(marqueeW), abs(marqueeH))
                 marqueePending.set(r)          // GL 线程在下一帧消费
-                marqueeW = Float.NaN
+                resetDragState()               // 见它的说明：顺带取消掉可能在进行的主键拖拽
             }
             return
         }
@@ -310,18 +369,19 @@ class JfglDemoApp : Application() {
         when (mode) {
             Mode.DRAW -> {
                 if (moved < CLICK_SLOP) {
-                    // 单击：拾取选中
-                    dragStartX = Float.NaN
-                    bridge.clickAsyncAtNode(node, e.x, e.y) { hit -> onPick(hit) }
+                    // 单击：拾取选中。**把换算后的设备坐标一起带进回调**——见 [onPick] 的说明。
+                    resetDragState()
+                    bridge.clickAsyncAtNode(node, e.x, e.y) { hit -> onPick(hit, dx, dy) }
                 } else {
                     commitShape(dx, dy)
-                    dragStartX = Float.NaN
-                    dragStartY = Float.NaN
-                    trajectory = FloatArray(0)
+                    resetDragState()
                 }
             }
             // 文本模式**在 Task 8 接上**：`commitText` 与 `Shape.TextShape` 都是那边的交付物。
             // 这里先什么都不做——**不放假占位**（占位会让"这个分支有没有实现"无从判断）。
+            // ⚠️ Task 8 把它改成调用 `commitText` 时，**别忘了在末尾也 `resetDragState()`**：
+            //    `onPress` 的 TEXT 分支是 `Unit`（不记起点），所以文本模式下
+            //    `dragStartX` 只可能来自更早的一次 DRAW 拖拽——那正是上面 ③ 说的残留。
             Mode.TEXT -> Unit
             Mode.CHART -> Unit
         }
@@ -342,37 +402,70 @@ class JfglDemoApp : Application() {
             if (pts == null) null
             else if (kind == ShapeKind.POLYGON) Shape.PolygonShape(pts, color, style, lineWidth)
             else Shape.BezierShape(pts, color, style, lineWidth)
-        } else when (kind) {
-            ShapeKind.RECT -> Shape.RectShape(minOf(sx, endX), minOf(sy, endY), abs(w), abs(h), color, style, lineWidth)
-            ShapeKind.CIRCLE -> {
-                val r = hypot(w.toDouble(), h.toDouble()).toFloat() / 2f
-                Shape.CircleShape(sx + w / 2f, sy + h / 2f, r, color, style, lineWidth)
+        } else {
+            // 面状的三种（矩形 / 圆 / 椭圆）**要求两轴都非零**：纯水平或纯竖直地拖会得到
+            // `h = 0` 的"矩形"、`ry = 0` 的"椭圆"、`r = 0` 的"圆"——它们什么都画不出来，
+            // 却占着一个拾取号与一条列表项。而同一个 demo 里 `polygonFrom` / `bezierFrom`
+            // 对退化输入是**明确拒绝**的（理由见 ShapeMath 的说明），两种口径不该并存。
+            // 直线不受这条约束：任意两点都是一条合法的线段。
+            val planar = abs(w) > 0f && abs(h) > 0f
+            when (kind) {
+                ShapeKind.RECT -> if (planar)
+                    Shape.RectShape(minOf(sx, endX), minOf(sy, endY), abs(w), abs(h), color, style, lineWidth)
+                else null
+
+                // **内切于拖拽框**（半径 = 较短边的一半），与椭圆同一条尺规，
+                // 也与设计文档 §4.2 写的"圆**内切于**该框"一致。
+                // 早先这里用的是 `hypot(w,h)/2`，那是**外接**圆（直径 = 对角线）——
+                // 于是同一个框拖出的圆**比预览框还大**，而预览画的正是那个框
+                // （[drawDragPreview] 画 `strokeRect`），用户看不出多出来的那一圈从哪来。
+                ShapeKind.CIRCLE -> if (planar)
+                    Shape.CircleShape(sx + w / 2f, sy + h / 2f, minOf(abs(w), abs(h)) / 2f,
+                        color, style, lineWidth)
+                else null
+
+                ShapeKind.ELLIPSE -> if (planar)
+                    Shape.EllipseShape(sx + w / 2f, sy + h / 2f, abs(w) / 2f, abs(h) / 2f, color, style, lineWidth)
+                else null
+
+                ShapeKind.LINE -> Shape.LineShape(sx, sy, endX, endY, color, style, lineWidth)
+                else -> null
             }
-            ShapeKind.ELLIPSE -> Shape.EllipseShape(sx + w / 2f, sy + h / 2f, abs(w) / 2f, abs(h) / 2f, color, style, lineWidth)
-            ShapeKind.LINE -> Shape.LineShape(sx, sy, endX, endY, color, style, lineWidth)
-            else -> null
         }
         if (s == null) {
             // **用常量拼提示，不要写死数字**：写死的话，改了 ShapeMath 的阈值、
             // 这句提示说的数就与实际判据不一致——而它恰恰是**用户唯一能看到**的那句话。
+            // 两种拒绝理由共用这一句：轨迹型是"点数不够"，面状是"有一轴为零"。
             status.text = "拖得太短，没有形成图形" +
                 "（多边形至少 ${ShapeMath.MIN_POLYGON_POINTS} 个点、" +
-                "曲线至少 ${ShapeMath.MIN_CURVE_POINTS} 个点）"
+                "曲线至少 ${ShapeMath.MIN_CURVE_POINTS} 个点；" +
+                "矩形/圆/椭圆要求横竖都不为零）"
             return
         }
         shapes.set(shapes.get() + Placed(s, 0))     // pickId 在 Task 6 接上
         status.text = "已画：${s.describe()} · 共 ${shapes.get().size} 个"
     }
 
-    /** 拾取结果回调。**在 JavaFX 线程上执行**。 */
-    private fun onPick(hit: PickHit?) {
+    /**
+     * 拾取结果回调。**在 JavaFX 线程上执行**。
+     *
+     * <p>**坐标从参数传进来，不从 [PickHit] 里取。** `PickHit.x()/y()` 只在**命中**时
+     * 才有意义（它是"命中发生在哪个像素"），未命中时 `hit` 就是 null——
+     * 早先写成 `hit?.x() ?: 0` 的后果是**每一次未命中都显示"设备像素 0,0"**，
+     * 而状态栏是用户唯一能看到的反馈。那属于小号的静默错误输出。
+     *
+     * @param hit 命中结果；未命中为 null
+     * @param dx  本次点击的设备像素 x（已换算）
+     * @param dy  本次点击的设备像素 y（已换算）
+     */
+    private fun onPick(hit: PickHit?, dx: Float, dy: Float) {
         val item = hit?.payload() as? Shape
         val id = hit?.id() ?: 0
         selection.set(if (item == null) emptySet() else setOf(id))
         status.text = if (item == null) {
-            "未命中（设备像素 ${hit?.x()?.toInt() ?: 0},${hit?.y()?.toInt() ?: 0}）"
+            "未命中（设备像素 ${dx.toInt()},${dy.toInt()}）"
         } else {
-            "命中：${item.describe()}"
+            "命中：${item.describe()}（设备像素 ${dx.toInt()},${dy.toInt()}）"
         }
     }
 
@@ -406,7 +499,20 @@ class JfglDemoApp : Application() {
         //   `gc.pickRect` 会**恒返回空列表**。它在 [start] 里挂到 onRender 上。
     }
 
-    /** 拖拽预览：两点定义的那四种画一个临时图形；轨迹定义的那两种画原始轨迹。 */
+    /**
+     * 拖拽预览：两点定义的那四种画一个临时图形；轨迹定义的那两种画原始轨迹。
+     *
+     * <p>**`gc.pickId = 0` 写在 `save()` 之后，不靠调用方的帧首复位**：`save` 会保存并恢复
+     * `pickId`，所以"块内不设"等于**继承外层的值**。Task 6 之后图形循环会给每个图形发号，
+     * 若 `drawScene` 那时忘了在循环后复位，这个预览框就会**带着最后一个图形的 ID 被画出来**
+     * ——一行的事，把承诺变成局部的。
+     *
+     * <p>**这里不加 `try/finally`**（与 `DemoShapes.drawWith` 那边**刻意不同**）：那边加，
+     * 是因为"栈平衡要在本文件内闭合"。这里加**挡不住真正的风险**——`body` 抛异常会让
+     * `FXGLTransfer` 的 `endFrame()` **整个被跳过**、`frameActive` 停在 true、此后每帧都抛
+     * （见 `DemoShapes` 里那段 ⚠️）。既然挡不住，就不写一段**看着像有防护**的代码。
+     * 这条差异是**有意的**，写出来免得下一个人以为是漏了。
+     */
     private fun drawDragPreview(gc: Gc) {
         if (mode != Mode.DRAW) return
         val sx = dragStartX
@@ -414,6 +520,7 @@ class JfglDemoApp : Application() {
         if (sx.isNaN()) return
         val pts = trajectory
         gc.save()
+        gc.pickId = 0
         gc.stroke = HIGHLIGHT
         gc.lineWidth = 1f
         if (kind.isTrajectory) {
@@ -426,11 +533,17 @@ class JfglDemoApp : Application() {
         gc.restore()
     }
 
-    /** 框选矩形：半透明填充 + 描边。pickId 为 0，不参与拾取。 */
+    /**
+     * 框选矩形：半透明填充 + 描边。**pickId 必须是 0**，否则框选矩形自己会被拾取到。
+     *
+     * <p>理由与 [drawDragPreview] 同：`pickId = 0` 写在 `save()` 之后，不靠调用方的帧首复位
+     * （`save` 会恢复 `pickId`，块内不设就是继承外层）。不加 `try/finally` 的理由也见那里。
+     */
     private fun drawMarquee(gc: Gc) {
         val w0 = marqueeW
         if (w0.isNaN()) return
         gc.save()
+        gc.pickId = 0
         gc.globalAlpha = 0.25f
         gc.fill = HIGHLIGHT
         gc.fillRect(minOf(marqueeX, marqueeX + w0), minOf(marqueeY, marqueeY + marqueeH), abs(w0), abs(marqueeH))
@@ -463,6 +576,18 @@ class JfglDemoApp : Application() {
      * 单像素拾取有 `pickAsync` / `clickAsync` 兜着，区域拾取没有。）
      */
     private fun consumeMarquee(gc: Gc) {
+        // ★ **先确认这一帧真的渲染过，再去取请求。**
+        //   `FXGLTransfer` 在"本帧没有渲染"（首帧布局未完成、画布尺寸为 0）时**仍然会调
+        //   `onRender`**，而那时本帧的 ID pass 没跑过、`pickRect` 只能返回空。
+        //   若先 `getAndSet(null)` 再发现查不了，这个请求就被**静默吞掉**了：
+        //   选中集被清空、状态栏写"框选到 0 个图形"——用户以为没框到东西。
+        //
+        // ⚠️ **仍有残留缺口，照实写出来**：`gc.width/height` 是 `beginFrame` 设的，
+        //   而"帧被跳过"时 `beginFrame` 不会被调用，所以它保留的是**上一次成功帧**的值。
+        //   因此这行只能挡住"还没渲染过任何一帧"（那时它是 0），
+        //   挡不住"窗口被缩到 0 尺寸"那类跳过。要彻底挡住，需要 `FXGLTransfer`
+        //   只在真的渲染过时才调 `onRender`——那是库的改动，不在本 demo 范围内。
+        if (gc.width <= 0 || gc.height <= 0) return
         val r = marqueePending.getAndSet(null) ?: return
         val hits = gc.pickRect(r.x, r.y, r.width, r.height)
         val ids = hits.map { it.id() }.toSet()
@@ -477,7 +602,14 @@ class JfglDemoApp : Application() {
         fun modeItem(m: Mode) = RadioMenuItem(m.label).apply {
             toggleGroup = modeGroup
             isSelected = (m == Mode.DRAW)
-            setOnAction { mode = m; status.text = "模式：${m.label}"; syncModeProperties() }
+            setOnAction {
+                mode = m
+                status.text = "模式：${m.label}"
+                syncModeProperties()
+                // ★ 切模式必须把进行中的交互清掉——否则会**凭空落一个用户没拖过的图形**。
+                //   完整的时序与理由见 [resetDragState] 的说明。
+                resetDragState()
+            }
         }
         val modeMenu = Menu("模式").apply { items.addAll(Mode.entries.map { modeItem(it) }) }
 
