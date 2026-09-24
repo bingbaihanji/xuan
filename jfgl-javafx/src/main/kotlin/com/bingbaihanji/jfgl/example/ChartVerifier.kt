@@ -863,6 +863,99 @@ private const val DECOR_IDENTITY_FRAME = 98
 private const val DECOR_TITLE_TEXT = "T"
 private const val DECOR_SERIES_NAME = "A"
 
+// ---------------------------------------------------------------------------
+// 左/右图例、底部标题、以及"带子边界"那一组实验
+//
+// 它挤在 x ∈ [20,128)、y ∈ [502,540) 这一块：右边是频谱图（从 128 起）、
+// 左边是装配实验的竖条（x ∈ [0,20)）、下面是移动方块的地盘（y ∈ [540,580)，
+// 而方块正是"跨帧残留"的探针，不能挪它）。
+//
+// **同一块矩形上按帧轮流画三个变体**（见 [drawOverflowCharts] 与 [captureOverflow]）：
+//   A 帧：左图例 + 底部标题      B 帧：右图例 + 底部标题      C 帧：底部图例 + 超长标签
+// 三者的**带子位置**互不相同，而一块 108×38 的地方只装得下一个变体，
+// 所以按帧轮换、各自在自己那一段的最后抓一张快照（快照必须是"那一帧刚画完"时取的）。
+//
+// 全部期望值仍然**手算**，而且刻意只用与字体无关的量：带子高（字号 × 行高系数）、
+// 色块位置、绘图区的上下边缘。左右图例的**带宽**与字体有关（= 色块 + 间隙 + 文字宽度），
+// 所以那几条断言只钉"绘图区从带子之后开始""文字在色块右边"这类关系，
+// 不去写一个"猜出来的"固定列号——那种期望值在换字体时会红，而它红的原因与缺陷无关。
+// ---------------------------------------------------------------------------
+
+/** 三个变体共用的外框（x ∈ [20,128) 那一条的上半段）。 */
+private const val OVER_X = 20
+private const val OVER_Y = 502
+private const val OVER_W = 108
+private const val OVER_H = 38
+
+/** 四边各 2px 的外边距：内框 x ∈ [22,126)、y ∈ [504,538)。 */
+private const val OVER_PADDING = 2f
+
+private const val OVER_FONT = 8f
+private const val OVER_SWATCH = 6f
+private const val OVER_TITLE_GAP = 2f
+private const val OVER_LEGEND_GAP = 3f
+
+/** 数据值 0.5 → 线落在绘图区正中。 */
+private const val OVER_VALUE = 0.5
+
+/** 线宽 2 → 半宽 1 → 墨迹两行。 */
+private const val OVER_LINE_WIDTH = 2f
+
+/** 底部标题的文字。 */
+private const val OVER_TITLE_TEXT = "T"
+
+/** 正常长度的系列名（变体 A / B 用）。 */
+private const val OVER_NAME = "A"
+
+/**
+ * 变体 C 的超长系列名：40 个 `W`。
+ *
+ * <p>要**比内框宽（104px）**才能触发"过界"那条路径：8px 下每个 `W` 约 7px，
+ * 40 个约 280px，远超带宽。取一堆同字符是为了让"它比带子宽"这件事一眼可算，
+ * 而不是依赖某个具体字形。
+ */
+private const val OVER_LONG_NAME = "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"
+
+/**
+ * 把四个变体的快照按像素**原样打印出来**（`.` 背景 / `#` 系列色 / `?` 其它）。
+ *
+ * <p>默认关着。留着它是因为这一组断言写第一遍时，六条红里有五条是**断言的期望值**算错了
+ * （色块在竖排图例里是从带子顶部开始堆的，而不是垂直居中），而失败输出里
+ * "色块 0 px"与"图例压根没画"长得一模一样。把原始像素打出来，一眼就分开了
+ * ——这正是 `CLAUDE.md` 里那条"失败时先打原始像素，不要先怀疑实现"。
+ */
+private const val OVER_DEBUG_DUMP = false
+
+/** 变体 C 的最后那一列（内框右边缘的前一列，**局部**）：文字必须画到这里才说明它被切断了。 */
+private const val OVER_LOCAL_CUT = OVER_W - OVER_PADDING.toInt() - 1
+
+/** 五个变体各占 20 帧（观察期一共 100 帧）。 */
+private const val OVER_SWITCH_AB = 20
+private const val OVER_SWITCH_BC = 40
+private const val OVER_SWITCH_CD = 60
+private const val OVER_SWITCH_DE = 80
+
+/** 变体 D 的轴标题间隙与刻度预留（取值见 overChartD 的说明）。 */
+private const val OVER_AXIS_GAP = 2f
+private const val OVER_TICK_RESERVE = 2f
+
+/** 抓快照的帧号（`frame` 是"已完成帧数"，所以它等于最后一帧的下标 + 1）。 */
+private const val OVER_SHOT_A = OVER_SWITCH_AB
+private const val OVER_SHOT_B = OVER_SWITCH_BC
+private const val OVER_SHOT_C = OVER_SWITCH_CD
+private const val OVER_SHOT_D = OVER_SWITCH_DE
+private const val OVER_SHOT_E = 100
+
+/** 变体 E 的 x 轴窗口：比数据范围宽，好让两个样本都不落在绘图区的边界上（见 overChartE）。 */
+private const val OVER_E_WINDOW_MIN = -0.5
+private const val OVER_E_WINDOW_MAX = 1.5
+
+/** 变体 E 的标记点半径（用户坐标单位）——着色器里的边长是它的两倍（见散点渲染器）。 */
+private const val OVER_E_MARKER_RADIUS = 3f
+
+/** 变体 C 的文字墨迹的判别色：随便一个不与其它颜色冲突的 RGB。 */
+private val overSeriesRgb = 0xD07020
+
 /**
  * 校验器的启动入口。
  *
@@ -1543,6 +1636,155 @@ class ChartVerifierApp : Application() {
     private var kindPickAreaFill = false
     private var kindPickStepRiser = false
 
+    // -----------------------------------------------------------------------
+    // 左/右图例、底部标题、带子边界、轴标题：四个变体共用一块矩形
+    // -----------------------------------------------------------------------
+
+    private val overRect = Rect(OVER_X.toFloat(), OVER_Y.toFloat(),
+        OVER_W.toFloat(), OVER_H.toFloat())
+
+    /** 三个变体共用的数据：两个点、同一个值 0.5，画出来是一条水平线。 */
+    private val overData = ArrayChartData(
+        arrayOf(AxisRange(0.0, 1.0, "样本", ""), AxisRange(0.0, 1.0, "值", "")),
+        arrayOf(doubleArrayOf(0.0, 1.0), doubleArrayOf(OVER_VALUE, OVER_VALUE))
+    )
+
+    private val overArgb = overSeriesRgb or (0xFF shl 24)
+
+    /** 四个变体在观察期各自最后那一帧的快照。 */
+    private var overSnapshotA: Shot? = null
+    private var overSnapshotB: Shot? = null
+    private var overSnapshotC: Shot? = null
+    private var overSnapshotD: Shot? = null
+    private var overSnapshotE: Shot? = null
+
+    /** 变换守卫的探针结果：带着 `translate` 调 `drawChart` 时抛出的那个异常。 */
+    private var transformGuardError: Throwable? = null
+
+    /**
+     * 造一个变体：图例放哪一边 + 可选的底部标题 + 外边距。
+     *
+     * <p>轴的 displayLength 传的是**外框**尺寸而不是绘图区尺寸——本实验不画刻度，
+     * 所以它对像素没有任何影响（与装配实验同一情况，见那里的说明）。
+     */
+    private fun buildOverChart(name: String, side: ChartSide, withTitle: Boolean): Chart {
+        val xAxis = Axis(AxisType.LINEAR, overData.axisRange(0))
+            .setDisplayLength(OVER_W.toDouble())
+            .setWindow(0.0, 1.0)
+        val yAxis = Axis(AxisType.LINEAR, overData.axisRange(1))
+            .setDisplayLength(OVER_H.toDouble())
+        val chart = Chart(xAxis, yAxis)
+        chart.addLayer("溢出实验").add(
+            Series(name, overData, ChartType.LINE).color(overArgb).lineWidth(OVER_LINE_WIDTH)
+        )
+        chart.legendSide(side).legendFontSize(OVER_FONT).legendSwatchSize(OVER_SWATCH)
+            .legendGap(OVER_LEGEND_GAP)
+        if (withTitle) {
+            chart.title(OVER_TITLE_TEXT).titleSide(ChartSide.BOTTOM)
+                .titleFontSize(OVER_FONT).titleGap(OVER_TITLE_GAP)
+        }
+        chart.padding(ChartInsets.uniform(OVER_PADDING))
+        return chart
+    }
+
+    /** 变体 A：**左**图例 + 底部标题。 */
+    private val overChartA = buildOverChart(OVER_NAME, ChartSide.LEFT, withTitle = true)
+
+    /** 变体 B：**右**图例 + 底部标题。 */
+    private val overChartB = buildOverChart(OVER_NAME, ChartSide.RIGHT, withTitle = true)
+
+    /** 变体 C：**底部**图例 + 一个比带子还长的系列名。 */
+    private val overChartC = buildOverChart(OVER_LONG_NAME, ChartSide.BOTTOM, withTitle = false)
+
+    /**
+     * 变体 D：轴标题 + 刻度预留（其余都关掉，好让绘图区还剩下几像素画得下一条线）。
+     *
+     * <p>带子从内框下边往上依次是：图例带（8×1.4 = 11.2）→ 图例间隙 3 →
+     * 轴标题带（11.2）→ 轴标题间隙 2 → 刻度预留 2 → 绘图区。剩下的绘图区高 4.6px，
+     * 数据线（值 0.5、线宽 2）因此落在两行上——**那两行的位置就是"带子真的挤过"的证据**：
+     * 少了轴标题带与刻度预留，绘图区会高 15.2px，线会落到局部第 10、11 行。
+     */
+    private val overChartD: Chart = buildOverChart(OVER_NAME, ChartSide.BOTTOM, withTitle = false)
+        .axisTitlesVisible(true).axisTitleFontSize(OVER_FONT).axisTitleGap(OVER_AXIS_GAP)
+        .tickLabelReserve(ChartSide.BOTTOM, OVER_TICK_RESERVE)
+
+    /**
+     * 变体 E：{@code LINE_AND_MARKERS}——**折线 + 标记点那一半**。
+     *
+     * <p>x 窗口取 [-0.5, 1.5]（比数据范围宽）：两个样本因此落在绘图区的 1/4 与 3/4 处，
+     * 标记点（边长 2×半径 = 6）整个在绘图区里。窗口贴着数据取 [0,1] 的话，两个标记会正好压在
+     * 绘图区左右边界上、各被 `glScissor` 裁掉一半——那样"两个 6×6 的块"这条断言就废了。
+     *
+     * <p>关掉图例：这一变体要的是"线的行号 + 标记的两块"都落在可手算的位置上。
+     */
+    private val overChartE: Chart = run {
+        val xAxis = Axis(AxisType.LINEAR, overData.axisRange(0))
+            .setDisplayLength(OVER_W.toDouble())
+            .setWindow(OVER_E_WINDOW_MIN, OVER_E_WINDOW_MAX)
+        val yAxis = Axis(AxisType.LINEAR, overData.axisRange(1))
+            .setDisplayLength(OVER_H.toDouble())
+        val chart = Chart(xAxis, yAxis)
+        chart.addLayer("标记").add(
+            Series(OVER_NAME, overData, ChartType.LINE_AND_MARKERS)
+                .color(overArgb).lineWidth(OVER_LINE_WIDTH).markerSize(OVER_E_MARKER_RADIUS)
+        )
+        chart.legendVisible(false)
+        chart.padding(ChartInsets.uniform(OVER_PADDING))
+        chart
+    }
+
+    /** 本帧该画哪个变体（五个变体按帧轮换，见 [captureOverflow]）。 */
+    private fun overChartAt(n: Int): Chart = when {
+        n < OVER_SWITCH_AB -> overChartA
+        n < OVER_SWITCH_BC -> overChartB
+        n < OVER_SWITCH_CD -> overChartC
+        n < OVER_SWITCH_DE -> overChartD
+        else -> overChartE
+    }
+
+    /**
+     * 画本帧该画的变体。**只在观察期画**（与其它实验图同一个理由：校验帧的画面上
+     * 不该有它，否则"画面只有这 7 种颜色"那条会被它的颜色打破）。
+     */
+    private fun drawOverflowChart(gc: Gc, n: Int) {
+        gc.charts.drawChart(overChartAt(n), overRect, gc.width, gc.height)
+    }
+
+    /**
+     * 在**画面真的有东西**的那一帧把四个变体的快照抓下来（"必须在那一帧抓"的理由见
+     * [captureObservations]）。`frame` 是"已完成帧数"，所以它等于最后一帧的下标 + 1。
+     *
+     * <p>顺手做一次**变换守卫**的探针：带着 `translate` 调 {@code drawChart} 必须抛异常。
+     * 这件事在画面上**没有任何痕迹**（它本来就该什么都不画），所以只能直接问一次。
+     * 探针放在抓快照**之前**：万一守卫失效（变异），平移过的装饰会画进这一帧的快照里，
+     * 下面那些像素断言跟着红——而不是"静默地绿"。
+     *
+     * <p>反向对照是现成的：每一帧的 [drawOverflowChart] 都**不带变换**调同一个
+     * {@code drawChart}，它要是抛异常，`drawError` 会先让校验判负。
+     */
+    private fun captureOverflow(bridge: FXGLTransfer, h: Int) {
+        when (frame) {
+            OVER_SHOT_A -> overSnapshotA = grab(h, overRect)
+            OVER_SHOT_B -> overSnapshotB = grab(h, overRect)
+            OVER_SHOT_C -> overSnapshotC = grab(h, overRect)
+            OVER_SHOT_D -> overSnapshotD = grab(h, overRect)
+            OVER_SHOT_E -> overSnapshotE = grab(h, overRect)
+        }
+        if (frame == OVER_SHOT_A) {
+            val gc = bridge.gc() ?: return
+            gc.save()
+            gc.translate(3f, 3f)
+            transformGuardError = try {
+                gc.charts.drawChart(overChartA, overRect, gc.width, gc.height)
+                null
+            } catch (t: Throwable) {
+                t
+            } finally {
+                gc.restore()
+            }
+        }
+    }
+
     /**
      * 造柱状图：两个柱状系列在同一层，x 轴窗口左右各留半格。
      *
@@ -2198,6 +2440,8 @@ class ChartVerifierApp : Application() {
             drawKindCharts(gc)
             // 装配实验图（标题 / 图例 / 外边距），同样只在观察期画。
             drawDecorChart(gc)
+            // 左/右图例、底部标题、带子边界、轴标题：四个变体按帧轮换，同样只在观察期画。
+            drawOverflowChart(gc, n)
         }
 
         // 4) 标注：在图表**之后**画的普通图元。它必须盖在数据系列之上——
@@ -2411,6 +2655,9 @@ class ChartVerifierApp : Application() {
             // 装配实验图也在这一帧上取样。
             decorSnapshot = grab(h, decorRect)
         }
+        // 左/右图例那一组：四个变体各自在自己那一段的**最后一帧**上取样
+        // （那时画面上正是它，下一变体一画就把这块矩形整个换掉）。
+        captureOverflow(bridge, h)
         // 身份断言的两张快照：第 [DECOR_IDENTITY_FRAME] 帧走 drawChart、
         // 下一帧走 draw（后者就是上面 STREAM_FRAMES 那一帧抓的 barSnapshot）。
         if (frame == DECOR_IDENTITY_FRAME + 1) {
@@ -3774,6 +4021,261 @@ class ChartVerifierApp : Application() {
                 } else "两张快照逐像素相同（${plain.w}×${plain.h}）")
         }
 
+        // ---- 23. ★ 左/右图例、底部标题、轴标题、以及"带子就是边界" ----
+        //
+        // 四个变体共用一块 108×38 的矩形、按帧轮换（见那一组常量的说明）。全部期望值
+        // **手算**，而且只用与字体无关的量：带子高（字号 × 行高系数）、色块位置、
+        // 绘图区的上下边缘。左右图例的**带宽**与字体有关（色块 + 间隙 + 文字宽度），
+        // 所以那几条只钉"绘图区从带子之后开始""文字在色块右边"这类关系，
+        // 不写一个猜出来的固定列号——那种期望值换字体时会红，而红的原因与缺陷无关。
+        //
+        // 这一节补的是三处"只有几何单测、没有像素断言"的地方（左/右图例、底部标题），
+        // 外加两条新的能力：带子边界（超出部分被裁）与轴标题。
+        println("\n-- ★ 左/右图例 / 底部标题 / 轴标题 / 带子边界 --")
+        val overInnerLeft = OVER_PADDING.toInt()
+        val overInnerRight = OVER_W - OVER_PADDING.toInt()
+        val overInnerTop = OVER_PADDING.toInt()
+        val overInnerBottom = OVER_H - OVER_PADDING.toInt()
+        val overBandH = OVER_FONT * ChartLayout.LINE_HEIGHT_FACTOR
+
+        // 文字墨迹 = 既不是背景、也不是系列色。与装配实验同一个口径（不比对那个灰色：
+        // 抗锯齿之后没有哪一个像素等于纯色），也同样是 RGB 口径。
+        fun overInk(s: Shot, x0: Int, y0: Int, x1: Int, y1: Int): Int {
+            var n = 0
+            for (yy in y0..y1) {
+                for (xx in x0..x1) {
+                    val c = s.at(xx, yy)
+                    if (c != background && c != overSeriesRgb) n++
+                }
+            }
+            return n
+        }
+
+        /** 行区间里所有带文字墨迹的列（升序）。 */
+        fun overInkColumns(s: Shot, y0: Int, y1: Int): List<Int> =
+            (0 until s.w).filter { xx -> (y0..y1).any { yy -> s.at(xx, yy) != background && s.at(xx, yy) != overSeriesRgb } }
+
+        /** 行区间里带系列色的列（升序）——用来"看见"绘图区从哪一列到哪一列。 */
+        fun overSeriesColumns(s: Shot, y0: Int, y1: Int): List<Int> =
+            (0 until s.w).filter { xx -> (y0..y1).any { yy -> s.at(xx, yy) == overSeriesRgb } }
+
+        val overA = overSnapshotA
+        val overB = overSnapshotB
+        if (OVER_DEBUG_DUMP) {
+            listOf("A" to overA, "B" to overB, "C" to overSnapshotC, "D" to overSnapshotD,
+                "E" to overSnapshotE)
+                .forEach { (name, shot) ->
+                    println("---- 变体 $name 的原始像素（. 背景 / # 系列色 / ? 其它）----")
+                    shot?.let { s ->
+                        for (y in 0 until s.h) {
+                            val row = StringBuilder()
+                            for (x in 0 until s.w) {
+                                val c = s.at(x, y)
+                                row.append(
+                                    when (c) {
+                                        background -> '.'
+                                        overSeriesRgb -> '#'
+                                        else -> '?'
+                                    }
+                                )
+                            }
+                            println("%3d %s".format(y, row))
+                        }
+                    }
+                }
+        }
+        val overC = overSnapshotC
+        val overD = overSnapshotD
+        val overE = overSnapshotE
+
+        // ---- 23a. 变换守卫：带着变换调 drawChart 必须抛 ----
+        //
+        // 这件事在画面上没有任何痕迹（它本来就该什么都不画），所以只能直接问一次
+        // （探针见 captureOverflow）。消息里必须提到"变换"——否则"抛了异常"也可能
+        // 是因为别的入口检查（例如矩形非法），那就是一条对不上因的断言。
+        report("★ 带着变换调 drawChart 抛 IllegalStateException（装饰的布局算在设备像素上）",
+            transformGuardError is IllegalStateException &&
+                    transformGuardError?.message?.contains("变换") == true,
+            "抛的是 ${transformGuardError?.javaClass?.simpleName ?: "什么都没抛"}，" +
+                    "消息：${transformGuardError?.message?.take(60) ?: "—"}")
+
+        if (overA == null || overB == null || overC == null || overD == null || overE == null) {
+            report("五个变体的快照都抓到了（否则下面整节都是橡皮图章）", false,
+                "A=${overA != null} B=${overB != null} C=${overC != null} " +
+                        "D=${overD != null} E=${overE != null}")
+        } else {
+            // 手算的公共量：数据线（值 0.5、线宽 2）在各自绘图区里的墨迹行范围。
+            // 装配实验那条用的是同一个式子：行 = ceil(sy-1.5) .. floor(sy+0.5)。
+            fun lineRows(plotTop: Double, plotH: Double): IntRange {
+                val sy = plotTop + (1.0 - OVER_VALUE) * plotH
+                return kotlin.math.ceil(sy - 1.5).toInt()..kotlin.math.floor(sy + 0.5).toInt()
+            }
+
+            // ---- 23b. 变体 A：左图例 + 底部标题 ----
+            //
+            // 手算：内框 y ∈ [2,36)。底部标题带 = 11.2（字号 8 × 1.4）→ 绘图区 y ∈ [2, 22.8)。
+            // 左图例带占满内框高，宽 = 6 + 4 + "A" 的宽度（与字体有关）。
+            val aPlotH = overInnerBottom - overInnerTop - overBandH - OVER_TITLE_GAP
+            val aLineRows = lineRows(overInnerTop.toDouble(), aPlotH.toDouble())
+            val aSwatch = overA.countIn(overInnerLeft, 5, overInnerLeft + 5, 10, overSeriesRgb)
+            report("★ A（左图例）：色块 6×6 = 36 px 且贴内框左边缘、在图例带最上面那一行（局部行 5..10）",
+                aSwatch == 36,
+                "内框左上角 6×6 里 ${aSwatch} px，期望 36——色块不在这里说明图例没摆在左边" +
+                        "（上下放的图例色块会在底部带子里）")
+            val aLine = overA.inkRange(60, overSeriesRgb)
+            report("★ A：数据线落在第 $aLineRows 行（底部标题带真的把绘图区挤矮了）",
+                aLine == aLineRows,
+                "第 60 列上的系列色行范围 $aLine，期望 $aLineRows" +
+                        "（不挤的话绘图区高 15.2px，线会落到局部第 11、12 行上）")
+            val aTextCols = overInkColumns(overA, 5, 10)
+            report("A：图例文字从色块右边（局部列 ${overInnerLeft + 10} 附近）起画",
+                aTextCols.firstOrNull()?.let { it in (overInnerLeft + 9)..(overInnerLeft + 12) } == true,
+                "色块那一行（局部行 5..10）里文字墨迹的列 $aTextCols，" +
+                        "期望最左一列 ≈ ${overInnerLeft + 10}（色块 6 + 间隙 4）")
+            val aTitleCols = overInkColumns(overA, (overInnerBottom - overBandH).toInt() + 1,
+                overInnerBottom - 1)
+            report("A：底部标题画在内框左下角（标题带里最左的墨迹从内框左边缘起）",
+                aTitleCols.firstOrNull()?.let { it <= overInnerLeft + 2 } == true,
+                "标题带（局部行 ${(overInnerBottom - overBandH).toInt() + 1}..${overInnerBottom - 1}）" +
+                        "里最左的墨迹列 ${aTitleCols.firstOrNull()}，期望 ≤ ${overInnerLeft + 2}" +
+                        "（左图例的文字在更右边，所以「跑到最左边」只可能是标题画的）")
+            report("A：绘图区里没有文字墨迹（标题与图例都没画到数据上）",
+                overInk(overA, 30, overInnerTop, overInnerRight - 1, aLineRows.first - 2) == 0,
+                "绘图区上部 ${overInk(overA, 30, overInnerTop, overInnerRight - 1, aLineRows.first - 2)} px")
+
+            // ---- 23c. 变体 B：右图例 + 底部标题 ----
+            //
+            // 与 A 逐条成对，判别式只有一条：**色块在右半边**（A 的在最左边）。
+            // 这条能分开"图例摆错了边"，而"绘图区被挤"由数据线的行号钉着（两者同高）。
+            val bSwatch = overB.countIn(53, 5, 105, 10, overSeriesRgb)
+            report("★ B（右图例）：色块 36 px 且落在内框右半边（局部列 ≥ 53）",
+                bSwatch == 36,
+                "右下角 6×6 里 ${bSwatch} px，期望 36——0 说明图例摆在了左边（那是 A 的样子）")
+            report("B：左图例那一块（局部列 ${overInnerLeft}..7、行 5..10）里一个色块像素都没有",
+                overB.countIn(overInnerLeft, 5, overInnerLeft + 5, 10, overSeriesRgb) == 0,
+                "内框左上角里 ${overB.countIn(overInnerLeft, 5, overInnerLeft + 5, 10, overSeriesRgb)} px 系列色" +
+                        "（数据线在行 11、12，不在这个区间里）")
+            val bLine = overB.inkRange(30, overSeriesRgb)
+            report("★ B：数据线落在第 $aLineRows 行（与 A 同：底部标题带把绘图区挤到同样高）",
+                bLine == aLineRows,
+                "第 30 列上的系列色行范围 $bLine，期望 $aLineRows")
+            val bInkCols = overInkColumns(overB, 5, 10)
+            val bSwatchCols = overSeriesColumns(overB, 5, 10)
+            report("B：图例文字在色块右边（最左一列 ${bInkCols.firstOrNull()} 在色块右边缘之后）",
+                bInkCols.isNotEmpty() && bSwatchCols.isNotEmpty() &&
+                        bInkCols.first() > bSwatchCols.last(),
+                "文字墨迹的列 ${bInkCols.firstOrNull()}，色块列 ${bSwatchCols.firstOrNull()}..${bSwatchCols.lastOrNull()}")
+            val bTitleCols = overInkColumns(overB, (overInnerBottom - overBandH).toInt() + 1,
+                overInnerBottom - 1)
+            report("B：底部标题画在内框左下角（与 A 逐条成对）",
+                bTitleCols.firstOrNull()?.let { it <= overInnerLeft + 2 } == true,
+                "标题带里最左的墨迹列 ${bTitleCols.firstOrNull()}，期望 ≤ ${overInnerLeft + 2}")
+
+            // ---- 23d. 变体 C：底部图例 + 一个比带子还长的系列名 ----
+            //
+            // 手算：底部图例带 = 11.2 → 带子 y ∈ [24.8, 36)；色块垂直居中 → 行 27..32。
+            // 40 个 W（每个约 7px）从局部列 12 起，远超内框宽 104px → 右边必然被切断。
+            val cBandTop = overInnerBottom - overBandH
+            val cSwatch = overC.countIn(overInnerLeft, 27, overInnerLeft + 5, 32, overSeriesRgb)
+            report("C：底部图例的色块 36 px 且贴内框左下角（局部行 27..32）",
+                cSwatch == 36, "左下角 6×6 里 ${cSwatch} px，期望 36")
+            val cTextCols = overInkColumns(overC, cBandTop.toInt(), overInnerBottom - 1)
+            report("★ C：超长系列名一直画到内框右边缘的前一列（局部列 $OVER_LOCAL_CUT），" +
+                    "说明它**真的**比带子宽、被切断了",
+                cTextCols.lastOrNull() == OVER_LOCAL_CUT,
+                "图例带里文字墨迹的最右一列 ${cTextCols.lastOrNull()}，期望 $OVER_LOCAL_CUT" +
+                        "（比它小说明这条断言是橡皮图章：文字根本没长到那里）")
+            report("★ C：内框右边缘之外（那 2px 外边距）一个墨迹像素都没有——超出的部分被裁掉了",
+                overInk(overC, overInnerRight, 0, OVER_W - 1, OVER_H - 1) == 0,
+                "右边距两列里有 ${overInk(overC, overInnerRight, 0, OVER_W - 1, OVER_H - 1)} px" +
+                        "（不裁的话 40 个 W 会一直画到快 300px 处）")
+            report("C：绘图区里没有长标签的墨迹（带子也挡住了纵向的越界）",
+                overInk(overC, 30, overInnerTop, overInnerRight - 1, cBandTop.toInt() - 2) == 0,
+                "绘图区 ${overInk(overC, 30, overInnerTop, overInnerRight - 1, cBandTop.toInt() - 2)} px")
+
+            // ---- 23e. 变体 D：轴标题 + 刻度预留 ----
+            //
+            // 手算（内框 y ∈ [2,36)）：底部图例带 11.2 → 间隙 3 → 轴标题带 11.2
+            // → 轴标题间隙 2 → 刻度预留 2 → 绘图区 y ∈ [2, 6.6)，高 4.6。
+            // 线（值 0.5）因此落在局部第 3、4 行——**那两行就是"带子真的挤过"的证据**：
+            // 少了轴标题带与预留，绘图区会高 15.2px，线会落到第 10、11 行。
+            val dPlotBottom = overInnerBottom - overBandH - OVER_LEGEND_GAP - overBandH -
+                    OVER_AXIS_GAP - OVER_TICK_RESERVE
+            val dLineRows = lineRows(overInnerTop.toDouble(),
+                (dPlotBottom - overInnerTop).toDouble())
+            val dLineCols = overSeriesColumns(overD, dLineRows.first, dLineRows.last)
+            val dAxisBandTop = (overInnerBottom - overBandH - OVER_LEGEND_GAP - overBandH).toInt()
+            // 轴标题带的上边缘 = 内框下边 - 图例带 - 图例间隙 - 轴标题带高；下边缘 = 减去前两项
+            val dAxisBandBottom = overInnerBottom - overBandH - OVER_LEGEND_GAP
+            report("★ D：数据线落在第 $dLineRows 行（轴标题带 + 刻度预留真的把绘图区挤矮了）",
+                overD.inkRange(60, overSeriesRgb) == dLineRows,
+                "第 60 列上的系列色行范围 ${overD.inkRange(60, overSeriesRgb)}，期望 $dLineRows" +
+                        "（不挤的话绘图区高 20.2px，线会落到局部第 10、11 行）")
+            report("★ D：轴标题画在轴标题带里（局部行 $dAxisBandTop..${dAxisBandBottom.toInt() - 1}）",
+                overInk(overD, 30, dAxisBandTop, overInnerRight - 1,
+                    dAxisBandBottom.toInt() - 1) > 0,
+                "轴标题带里的墨迹 ${overInk(overD, 30, dAxisBandTop, overInnerRight - 1, dAxisBandBottom.toInt() - 1)} px")
+            report("D：绘图区那几行里没有轴标题的墨迹（它被带子挡在外面）",
+                overInk(overD, 30, overInnerTop, overInnerRight - 1, dAxisBandTop - 2) == 0,
+                "绘图区 + 预留带 + 轴标题间隙里 ${overInk(overD, 30, overInnerTop, overInnerRight - 1, dAxisBandTop - 2)} px")
+            if (dLineCols.isEmpty()) {
+                report("D：绘图区的横向范围可以从数据线读出来（否则下一条是橡皮图章）", false, "没有读到系列色")
+            } else {
+                val plotLeft = dLineCols.first()
+                val plotRight = dLineCols.last()
+                val titleCols = overInkColumns(overD, dAxisBandTop, dAxisBandBottom.toInt() - 1)
+                    .filter { it >= plotLeft }
+                // 居中时：文字左边缘离绘图区左边缘约 (绘图区宽 - 文字宽) / 2 ≈ 43；
+                // 左对齐时约 0；右对齐时文字右边缘会贴到 plotRight。两条一起把三者分开。
+                val centeredLeft = titleCols.firstOrNull()?.let { it - plotLeft } ?: -1
+                val centeredRight = titleCols.lastOrNull()?.let { plotRight - it } ?: -1
+                report("★ D：轴标题**居中**于轴（不是左对齐也不是右对齐）",
+                    centeredLeft >= 20 && centeredRight >= 5,
+                    "文字左边缘离绘图区左边缘 $centeredLeft px（居中应约 43、左对齐约 0）、" +
+                            "右边缘离右边缘 $centeredRight px（右对齐约 0）")
+            }
+            // ---- 23f. 变体 E：LINE_AND_MARKERS 的**两个半边都要在** ----
+            //
+            // 手算（内框 y ∈ [2,36)，没有图例也没有标题，绘图区就是整个内框）：
+            // 值 0.5 → 线的中心行 = 2 + 17 = 19 → 线占局部行 18、19（线宽 2）。
+            // x 窗口 [-0.5, 1.5] → 每样本 52px，两个样本落在局部列 28 与 80；
+            // 标记的边长是 2×半径 = 6 → 两个 6×6 的块，行 16..21、列 25..30 / 77..82。
+            //
+            // 两条断言合起来才是"两半都在"：只画点不画线 → 线那条红；
+            // 只画线不画点 → 标记那条红（标记比线高、也比线宽，所以它躲不掉）。
+            val eMarkerRows = overE.countIn(0, 16, OVER_W - 1, 17, overSeriesRgb) +
+                    overE.countIn(0, 20, OVER_W - 1, 21, overSeriesRgb)
+            report("★ E（LINE_AND_MARKERS）：两个标记各 6×6，线的上下各 2 行里共 48 px 系列色",
+                eMarkerRows == 48,
+                "线的上下各 2 行（局部行 16、17、20、21）里有 $eMarkerRows px，期望 48" +
+                        "（2 个标记 × 6 列 × 4 行）——0 说明标记点那一半压根没画；" +
+                        "24 说明标记的边长写成了半径（3 而不是 6）")
+            val eMarkerCols = (0 until OVER_W).filter { xx ->
+                (16..17).any { yy -> overE.at(xx, yy) == overSeriesRgb } ||
+                        (20..21).any { yy -> overE.at(xx, yy) == overSeriesRgb }
+            }
+            report("★ E：标记画在两个样本的位置上（局部列 25..30 与 77..82）",
+                eMarkerCols == (25..30).toList() + (77..82).toList(),
+                "标记墨迹的列 $eMarkerCols，期望 ${(25..30).toList() + (77..82).toList()}")
+            val eLineRows = overE.countIn(0, 18, OVER_W - 1, 19, overSeriesRgb)
+            val eLineCols = overSeriesColumns(overE, 18, 19)
+            // 线的两端各被标记盖住 3 列（线横跨 28..79，标记横跨 25..30 与 77..82），
+            // 所以这两行上的总数 = 52 列 × 2 行 + 6 列 × 2 行 = 104 + 12 = 116。
+            // 写成"116"而不是"≥104"：只画点不画线时这里是 24，只画线不画点时是 104，
+            // 两者都与 116 差得很远，不必靠容差去猜。
+            report("★ E：折线那一半还在（局部行 18、19 上是 116 px 系列色、列 25..82）",
+                eLineRows == 116 && eLineCols == (25..82).toList(),
+                "行 18、19 上有 $eLineRows px、列 ${eLineCols.firstOrNull()}..${eLineCols.lastOrNull()}，" +
+                        "期望 116 px、列 25..82（线段 52 列 + 两个标记各探出线端 3 列）" +
+                        "——104 说明标记没画、24 说明折线被丢掉了（只剩一串点，看起来像刻意的散射风格）")
+            report("E：绘图区之外一个像素都没有（标记没有越出裁剪盒）",
+                overE.countIn(0, 0, OVER_W - 1, OVER_PADDING.toInt() - 1, overSeriesRgb) == 0 &&
+                        overE.countIn(0, OVER_H - OVER_PADDING.toInt(), OVER_W - 1, OVER_H - 1,
+                            overSeriesRgb) == 0,
+                "上下外边距里的系列色 " +
+                        "${overE.countIn(0, 0, OVER_W - 1, OVER_PADDING.toInt() - 1, overSeriesRgb) + overE.countIn(0, OVER_H - OVER_PADDING.toInt(), OVER_W - 1, OVER_H - 1, overSeriesRgb)} px")
+
+        }
         println("\n画面出现的颜色：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")
         println("背景 ${counts[background] ?: 0} px，绘图区底色 ${counts[plotBackground] ?: 0} px")
         println("斜坡 ${counts[rampRgb] ?: 0} px，溢出 ${counts[spillRgb] ?: 0} px")
