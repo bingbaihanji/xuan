@@ -1359,6 +1359,20 @@ class ChartVerifierApp : Application() {
     private var stepSnapshot: Shot? = null
 
     /**
+     * 图型实验的拾取结果（观察期抓，校验期断言）。
+     *
+     * <p>拾取坏了<b>画面一点都不会变坏</b>，只会让点击落在错误的对象上——
+     * 所以它必须单独断言。而这几条还有一层：柱状图的拾取要把**柱心的偏移**也算进去，
+     * 忘了偏移的 ID pass 会在样本中心周围盖一个方方的热区，而它<b>照样能命中</b>——
+     * 只有"点在柱的边缘（离样本中心 7px 处）"能把两种实现分开。
+     */
+    private var kindPickBarSlotA = false
+    private var kindPickBarSlotB = false
+    private var kindPickBarBelow = false
+    private var kindPickAreaFill = false
+    private var kindPickStepRiser = false
+
+    /**
      * 造柱状图：两个柱状系列在同一层，x 轴窗口左右各留半格。
      *
      * <p>半格余量是**必须**的：柱心落在样本的屏幕 x 上，所以窗口取 [0,3] 时
@@ -2199,6 +2213,7 @@ class ChartVerifierApp : Application() {
             areaSlopeSnapshot = grab(h, areaSlopeRect)
             areaLineSnapshot = grab(h, areaLineRect)
             stepSnapshot = grab(h, stepRect)
+            captureKindPicks(bridge)
         }
         // 移除之前的那一帧（`frame` 是"已完成帧数"，所以它等于下标 + 1）。
         if (frame == CROSS_REMOVE_FRAME) {
@@ -2237,6 +2252,28 @@ class ChartVerifierApp : Application() {
         pickBesideId = gc.pick(PICK_PROBE_X, PICK_PROBE_BESIDE_Y)?.id() ?: 0
         pickFarId = gc.pick(PICK_PROBE_X, PICK_PROBE_FAR_Y)?.id() ?: 0
         pickProbeCaptured = true
+    }
+
+    /**
+     * 在图型实验的四张图还画着的那一帧，把五个探测点的拾取结果记下来
+     * （理由同 [capturePickProbes]：那四张图只在观察期画）。
+     *
+     * <p>坐标都是设备像素（用户坐标 1:1）：柱状图在局部列 [2,10) 与 [14,22)
+     * 各有一根柱，探针取**柱内偏边**的位置（局部 x = 5 与 15，而样本中心在 12），
+     * 因为"忘了柱心偏移"的 ID pass 会在样本中心周围盖一个半宽 4px 的方热区
+     * （覆盖局部 x ∈ [8,16]）——柱中心那一点照样命中，只有偏边的这一点能分开。
+     */
+    private fun captureKindPicks(bridge: FXGLTransfer) {
+        val gc = bridge.gc() ?: return
+        kindPickBarSlotA = gc.pick(5f, BAR_PLOT_Y + 56f)?.payload() === barSeriesA
+        kindPickBarSlotB = gc.pick(15f, BAR_PLOT_Y + 56f)?.payload() === barSeriesB
+        // 下沿（局部行 64）以下：那里一根柱都没有，所以必须落空。
+        kindPickBarBelow = gc.pick(5f, BAR_PLOT_Y + 80f) == null
+        // 面积填充的深处（离曲线 40px）：只有填充自己的 ID pass 能命中，
+        // 轮廓线那条路径（线宽 0，热区 4px）离得太远，够不着。
+        kindPickAreaFill = gc.pick(95f, AREA_PLOT_Y + 40f)?.payload() === areaSlopeSeries
+        // 阶梯的竖段上一点。
+        kindPickStepRiser = gc.pick(32f, STEP_PLOT_Y + 40f)?.payload() === stepSeries
     }
 
     /**
@@ -3322,7 +3359,8 @@ class ChartVerifierApp : Application() {
                 "行 46..49 里 ${areaLine.countIn(0, 46, KIND_PLOT_W - 1, 49, areaLineRgb)} px、" +
                         "行 0..45 里 ${areaLine.countIn(0, 0, KIND_PLOT_W - 1, 45, areaLineRgb)} px、" +
                         "行 50.. 里 ${areaLine.countIn(0, 50, KIND_PLOT_W - 1, KIND_PLOT_H - 1, areaLineRgb)} px")
-            report("面积填充：曲线之下（行 50..95）是**半透明**的填充（46 行 × 96 列）",
+            report("面积填充：曲线之下（行 50..95）整片都是填充（46 行 × 96 列，" +
+                    "与曲线之上那一片成对：那边 0 px、这边铺满）",
                 areaLine.countNonBackgroundInRows(50, KIND_PLOT_H - 1, background) ==
                         46 * KIND_PLOT_W,
                 "实际 ${areaLine.countNonBackgroundInRows(50, KIND_PLOT_H - 1, background)} px，" +
@@ -3372,7 +3410,30 @@ class ChartVerifierApp : Application() {
                 step.countNonBackgroundInRows(0, 21, background) == 0,
                 "实际 ${step.countNonBackgroundInRows(0, 21, background)} px，期望 0")
 
-            // ---- 21e. 跨帧：这四张图在校验帧上必须已经不在画面里 ----
+            // ---- 21e. 拾取：三个新图型的 ID pass ----
+            //
+            // 拾取坏了**画面一点都不会变坏**，只会让点击落在错误的对象上。
+            // 柱状那两条还格外有判别力：ID pass 要把柱心偏移算进去，
+            // 忘了偏移的实现会在样本中心周围盖一个方热区（局部 x ∈ [8,16]），
+            // 而探针刻意取在柱内偏边处（局部 x = 5 与 15）——中心的点照样命中，
+            // 只有偏边的点能把两种实现分开。
+            println("\n-- 图型：拾取（柱状 / 面积 / 阶梯）--")
+            report("拾取：柱状左槽位（柱内偏边，局部 x=5，样本中心在 12）命中系列 A",
+                kindPickBarSlotA,
+                "payload 是不是「柱A」= $kindPickBarSlotA——漏了 uBarOffset 的 ID pass 会在" +
+                        "样本中心周围盖热区，而这一点离样本中心 7px、落在热区之外，于是这里落空")
+            report("拾取：柱状右槽位（局部 x=15）命中系列 B", kindPickBarSlotB,
+                "payload 是不是「柱B」= $kindPickBarSlotB")
+            report("拾取：柱的下沿以下（局部行 80）什么都没命中（与上面两条成对）",
+                kindPickBarBelow,
+                "那里必须有柱才该命中；命中说明热区被撑到了下沿以下")
+            report("拾取：面积填充的深处（离曲线 40px）命中该系列" +
+                    "（轮廓线那条路径够不到那里，所以只可能是填充自己的 ID pass）",
+                kindPickAreaFill, "payload 是不是「面积斜率」= $kindPickAreaFill")
+            report("拾取：阶梯的竖段上命中该系列", kindPickStepRiser,
+                "payload 是不是「阶梯」= $kindPickStepRiser")
+
+            // ---- 21f. 跨帧：这四张图在校验帧上必须已经不在画面里 ----
             //
             // 它们只在观察期画。校验帧上那一带必须是干净的背景——
             // 否则"画面恰好只有这 7 种颜色"那条既有断言会失败，而那条断言
