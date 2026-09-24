@@ -3621,18 +3621,11 @@ git commit -m "docs: 更新 CLAUDE.md 以反映单一批处理管线"
 - **子项目 C（GPU 拾取）**：ID 通道 FBO、PBO 异步读回、hover/click/drag 状态机。顶点格式中的 `id` 属性（location 3）已就位，只需新增一个输出 ID 的 fragment shader 与读回逻辑。
 - **子项目 D（科学绘图图表）**：标度、刻度算法、坐标轴、系列类型、colormap/热力图/等值线。建立在本计划的 `Gc` 之上。
 
-### 待办：`LwjglGLAbstraction.createTexture` 不做 ARGB→RGBA 转换
+### 已完成：`LwjglGLAbstraction.createTexture` 的 ARGB→RGBA 转换
 
-`GLAbstraction.createTexture(int width, int height, int[] pixels)` 的 Javadoc 写的是"像素数据（RGBA 格式）"，
-但 `LwjglGLAbstraction` 直接把 `int[]` 交给 `glTexImage2D(..., GL_RGBA, GL_UNSIGNED_BYTE, pixels)` ——
-数组被当作**裸内存**读取，没有任何重排或字节交换。
-
-后果：`0xAARRGGBB` 在小端内存里是 `BB GG RR AA`，GL 按 `(R,G,B,A)` 读出来就是**红蓝互换**。
-本计划里之所以没出事，纯粹是因为 1×1 白色纹理用的 `0xFFFFFFFF` **逐字节对称**，对称性掩盖了这个缺陷。
-
-**这会在 Paint 体系落地时爆掉**：`GradientPaint` 的 1×256 LUT 与 `ImagePaint` 的纹素都是普通 ARGB 打包整数，
-一上屏颜色就整体红蓝颠倒。修法是二选一：在 `createTexture` 里显式做 ARGB→RGBA 重排（旧 `gl/Texture.java`
-就是这么做的），或改用 `GL_BGRA` 作为输入格式。**在实现 Paint 之前必须先定这件事。**
+`GLAbstraction.createTexture(int width, int height, int[] pixels)` 现在明确接受公共 API 的
+`0xAARRGGBB` 像素，并在 `LwjglGLAbstraction` 入口显式转换成 OpenGL 的 RGBA 字节流。
+这条契约由 `LwjglGLAbstractionTest` 固定，后续 Paint、渐变和图片纹理可以直接复用。
 
 ### 待办：Tessellator 孔洞桥接改用 Eberly 射线法
 

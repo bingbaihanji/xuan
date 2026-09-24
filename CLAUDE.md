@@ -12,18 +12,22 @@ JFGL 是一个基于 **JavaFX + OpenGL** 的 2D 绘图框架。OpenGL 上下文�
 但**内部按最优方案实现**的 2D 绘图 API。注意"像 canvas"指的是 API 手感，不是实现——
 不要以"JavaFX 是这么做的"作为设计理由，除非行为差异会让用户困惑。
 
-语言分工：**Java 写几何与渲染热路径（`geom/`、`renderer/` 的顶点侧），Kotlin 写上层门面与
+语言分工：**Java 写几何与渲染热路径（`geom/`、`renderer/` 的顶点侧），Kotlin 写渲染门面与
 JavaFX 胶水层**（`Gc`、`ViewTransform`、`FXGLTransfer`、DSL、示例）。代码注释和 Javadoc
 一律使用中文。
+
+模块依赖只允许向上：`jfgl-core`（纯计算）→ `jfgl-render-gl`（OpenGL 后端）→
+`jfgl-javafx`（场景图桥接与示例）。禁止将 JavaFX、LWJGL 或 OpenGL 依赖带回 `jfgl-core`。
 
 ## 常用命令
 
 ```bash
-mvn compile                      # 编译（Java 21 + Kotlin 17 混合编译）
+mvn compile                      # 编译全部三个模块（Java 21 + Kotlin 21）
+mvn -pl jfgl-javafx -am compile  # 编译 JavaFX 模块及其依赖
 mvn -o compile                   # 离线编译（依赖已缓存时可用）
 mvn test                         # 运行测试
 mvn -o clean test                # 干净重建 + 全量测试
-mvn package                      # 打包，并额外把 jar + 依赖复制到 bin/ 和 bin/libs/
+mvn package                      # 构建全部模块
 ```
 
 ### ⚠️ 运行应用：必须用 `exec:exec`，不能用 `exec:java`
@@ -34,6 +38,8 @@ mvn package                      # 打包，并额外把 jar + 依赖复制到 b
 
 ```bash
 # 运行示例（打开窗口，需手动关闭）
+# 先从仓库根执行：mvn -o install -DskipTests
+# 然后进入 jfgl-javafx 目录执行：
 mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
     -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.MainKt"
 
@@ -61,30 +67,33 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
 ### 测试
 
 ```
-src/test/java/com/bingbaihanji/jfgl/geom/       PathTest、FlattenerTest、TessellatorTest、
+jfgl-core/src/test/.../geom/       PathTest、FlattenerTest、TessellatorTest、
                                                 TessellatorHoleTest、TessellatorRegressionTest、
                                                 StrokeGeneratorTest、StrokeDashTest、
                                                 GeomPackageIsolationTest
-src/test/java/com/bingbaihanji/jfgl/renderer/   VertexFormatTest、VertexWriterTest、ViewTransformTest、
-                                                PickRegistryTest、PickBufferTest
-src/test/java/com/bingbaihanji/jfgl/gl/         FramebufferTest、LwjglGLAbstractionTest、
-                                                FakeGLAbstractionGuardTest
-src/test/java/com/bingbaihanji/jfgl/text/       SdfGeneratorTest、GlyphAtlasTest、FontFileTest、
-                                                GlyphRasterizerTest、TextLayoutTest
-src/test/java/com/bingbaihanji/jfgl/chart/      TickGeneratorTest、AxisTest、ArrayChartDataTest、
+jfgl-core/src/test/.../chart/      TickGeneratorTest、AxisTest、ArrayChartDataTest、
                                                 RingChartDataTest、ChartDataConcurrencyTest、
                                                 ColorMappingTest、ChartTest、
                                                 ChartPackageIsolationTest
-src/test/java/com/bingbaihanji/jfgl/chartrender/ ChartRenderLayoutTest、SeriesBufferTest、
+jfgl-render-gl/src/test/.../renderer/   VertexFormatTest、VertexWriterTest、ViewTransformTest、
+                                                PickRegistryTest、PickBufferTest
+jfgl-render-gl/src/test/.../gl/         FramebufferTest、LwjglGLAbstractionTest、
+                                                FakeGLAbstractionGuardTest
+jfgl-render-gl/src/test/.../text/       SdfGeneratorTest、GlyphAtlasTest、FontFileTest、
+                                                GlyphRasterizerTest、TextLayoutTest
+jfgl-render-gl/src/test/.../chartrender/ ChartRenderLayoutTest、SeriesBufferTest、
                                                 SeriesUploadPlanTest、WindowRangeTest
                                                 （夹具类 ChartDataFixtures 本身没有测试）
-src/test/java/com/bingbaihanji/jfgl/gpu/        FftWindowTest、FftKernelTest
+jfgl-render-gl/src/test/.../gpu/        FftWindowTest、FftKernelTest
 ```
 
-当前 **323 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
-`@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`。
-分布：`geom/` 69、`renderer/` 97、`gl/` 10、`text/` 32、`chart/` 57、`chartrender/` 44、
-`gpu/` 14。
+（`...` 是 `java/com/bingbaihanji/jfgl`。`jfgl-javafx` 没有 surefire 测试——它的
+`example/` 里那五个校验器是**手动跑的 main**，不是单测。）
+
+当前 **329 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+`@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`（跨模块加 `-pl 模块名`）。
+分布：`geom/` 69、`renderer/` 99、`gl/` 12、`text/` 32、`chart/` 59、`chartrender/` 44、
+`gpu/` 14（合计 329）。
 
 `geom/`、`math/`、`util/`、`ViewTransform`、`text/{SdfGenerator, TextLayout}`、`chart/`、
 `gpu/FftWindow`（窗系数与相干增益补偿，纯算术）都是纯计算、不依赖 GL 上下文，最适合写单测。
@@ -209,7 +218,8 @@ Main.kt                     设置 prism.* 系统属性
 - **裁剪生效**：被 `clipRect` 裁掉的部分不可拾取，与画面一致。
 - **只返回最上层**：重叠时后画的赢。要"全部重叠对象"需要逐对象多趟渲染，不在范围内。
 - **组件在 JavaFX 线程响应鼠标事件时用 `FXGLTransfer.pickAsync`**，不要直接调 `Gc.pick`
-  ——那是跨线程 GL 调用，崩得毫无规律。
+  ——那是跨线程 GL 调用，崩得毫无规律。该入口使用双 PBO + fence，通常下一帧回调；
+  fence 未完成时不等待，连续请求仍以最新坐标为准。
 - 注册发生在**数据变化时而非每帧**；不再用的对象要 `unregister`，否则一直被强引用着。
 
 ### 文本
@@ -424,6 +434,24 @@ gc.endFrame()
 
    拾取尤其危险：**错误的拾取不会让任何画面变坏**，只会让点击落在错误的对象上。
 
+   **异步拾取（PBO）那一节（`-- 异步拾取（PBO 读回） --`）**守的是 `pickAsync` 这条
+   新路径。`PickBufferTest` 那两条用的是**假 GL**，它把"PBO 读发生在 ID pass 之后"
+   当**前提**直接抄像素；而真实 GL 里那是**命令流顺序**。只有真上下文能证的三件事
+   ——fence 会不会真的 signal、从 PBO 读回的是不是那个 ID、回调落在哪个线程
+   ——都在这里。实测已杀掉的四个变异（每条只让**定向的**几条断言倒，不误伤全篇）：
+
+   | 变异 | 被杀的断言 |
+   |---|---|
+   | `PickBuffer.enqueueAsyncPixel` 去掉 y 翻转 | 10 条（非零期望全读到 0；期望 0 的照过） |
+   | `pickAsync` 的 `set` 改成 `compareAndSet(null,…)`（第一条赢） | 「被覆盖的请求不交付」+「seq7 未交付」 |
+   | `resolvePendingPick` 回调不走 `Platform.runLater` | 「全部异步回调都在 JavaFX 线程上」 |
+   | `RenderBatch.enqueueAsyncPickPixel` 去掉 `pickBufferValid` 守卫 | 「seq10」读到上一帧残留的 ID |
+
+   ⚠️ **帧计划里所有期望值都按「提交帧 + 1」的场景算**（提交发生在 `resolvePendingPick`
+   之后，下一帧才入队），而且**结算要等最后一次提交发生之后**——第一版少了后者，
+   报告写着「全部通过」而 `seq10` 那条**根本没提交**。这类"被静默跳过的断言"
+   比失败的断言更坏。
+
    改**文本**路径后跑 `TextVerifier`（退出码 0/1）。它的核心断言是：
    同一个字以 24px 与 192px 绘制时，**边缘过渡带宽度大致恒定**——
    位图被放大时过渡带会随缩放线性变宽，**这是唯一能把"SDF 生效"与
@@ -478,7 +506,13 @@ gc.endFrame()
    **像素那一半不在它这里**——频谱画出来的位置由 `ChartVerifier` 钉（见上）。
 2. **改了断言或修了 bug，做变异验证**：把 bug 重新注入，确认校验器真的失败。
    （校验器里那条"反证"断言就是这么来的——避免覆盖性检查恒真、变成橡皮图章。）
-3. 校验器依赖"用户坐标 1:1 映射到设备像素"这一前提。若将来引入真正的 DPI 缩放，
+3. **⚠️ 变异注入在 `jfgl-render-gl` 上时，还原之后必须 `mvn -o install -DskipTests -pl jfgl-render-gl`。**
+   校验器是用 `-f jfgl-javafx/pom.xml` 跑的，`jfgl-render-gl` 从**本地仓库**解析；
+   注入时 install 过，**还原时不 install 就还在跑变异版本**。实测踩过：还原源码后连跑
+   三次全红、且三次输出**逐字符相同**，看起来像校验器"飘"，其实是本地仓库里的
+   残留变异。判据：输出完全一致地失败 ⇒ 先怀疑产物，不是怀疑随机性。
+   （`jfgl-javafx` 自己的改动不必 install——那是当场编译的。）
+4. 校验器依赖"用户坐标 1:1 映射到设备像素"这一前提。若将来引入真正的 DPI 缩放，
    它的期望值需要乘以缩放系数——那时它会失败，正是它该提醒的。
 
 ## 已实现 vs 未实现
@@ -533,7 +567,8 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
 - **误差棒、等高线、眼图**：`ChartType` 目前没有覆盖，属于 ③ 或更后面的事。
 - **Paint / 渐变**：所有绘制只接受纯色整数。设计意图是**所有 Paint 归一化为纹理**
   （纯色 = 超白色纹理 + 顶点颜色，渐变 = 1×256 LUT）。
-- **`createTexture` 缺少 ARGB→RGBA 通道转换**——**实现 Paint/渐变之前必须先修**。
+- **`createTexture` 已在 LWJGL 入口完成 ARGB→RGBA 通道转换**；新增纹理类型时继续沿用
+  `0xAARRGGBB` 公共 API 契约，并为新上传路径补充字节序测试。
 - `Gc.strokePath()` 的闭合子路径在收尾顶点处不生成接头（线段本身不缺）。
   修法需要去看 `Path` 的命令表判断末条命令是否为 `CLOSE`，见该方法的 Javadoc。
 - `Gc.strokePath()` 会把所有子路径当成**一条**折线描边，多条子路径之间会多出一段连线。
@@ -545,9 +580,9 @@ app 的窗口完全由 JavaFX 管理，GLFW 不参与。
 
 ## 构建配置须知
 
-- **Java 版本自相矛盾**：`<java.version>17</java.version>` 属性实际未被编译插件使用；
-  `maven-compiler-plugin` 硬编码 `source/target = 21`；Kotlin `jvmTarget = 17`。
-  改动编译配置时注意这几处。
+- **Java/Kotlin 编译目标统一为 Java 21**：`pom.xml` 通过
+  `maven.compiler.release=${java.version}` 和 `kotlin.compiler.jvmTarget=${java.version}`
+  共享同一属性。代码使用 record pattern 等 Java 21 语法，发布包不能再宣称 Java 17 兼容。
 - **Java/Kotlin 混合编译**：`default-compile` 和 `default-testCompile` 执行被显式禁用
   （`<phase>none</phase>`）并重新绑定，同时 `kotlin-maven-plugin` 的 `sourceDirs` 把
   `src/main/java` 也包含进来——这样 Kotlin 才能编译 Java 源码、Java 也能引用 Kotlin 类。

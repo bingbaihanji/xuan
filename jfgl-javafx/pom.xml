@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent><groupId>com.bingbaihanji</groupId><artifactId>jfgl-parent</artifactId><version>1.0-SNAPSHOT</version></parent>
+    <artifactId>jfgl-javafx</artifactId>
+    <name>JFGL JavaFX Integration</name>
+    <dependencies>
+        <dependency><groupId>com.bingbaihanji</groupId><artifactId>jfgl-render-gl</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-stdlib</artifactId></dependency>
+        <dependency><groupId>org.openjfx</groupId><artifactId>javafx-controls</artifactId><version>${javafx.version}</version></dependency>
+        <dependency><groupId>org.openjfx</groupId><artifactId>javafx-controls</artifactId><version>${javafx.version}</version><classifier>win</classifier><scope>runtime</scope></dependency>
+        <dependency>
+            <groupId>com.huskerdev</groupId><artifactId>openglfx-lwjgl</artifactId><version>4.2.3</version>
+            <exclusions><exclusion><groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-stdlib-jdk8</artifactId></exclusion></exclusions>
+        </dependency>
+    </dependencies>
+    <build><plugins>
+        <plugin>
+            <groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-maven-plugin</artifactId><extensions>true</extensions>
+            <configuration><sourceDirs><sourceDir>${project.basedir}/src/main/kotlin</sourceDir></sourceDirs></configuration>
+        </plugin>
+        <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId></plugin>
+        <plugin>
+            <groupId>org.apache.maven.plugins</groupId><artifactId>maven-jar-plugin</artifactId><version>3.4.2</version>
+            <configuration><archive><manifest><mainClass>com.bingbaihanji.jfgl.MainKt</mainClass></manifest></archive></configuration>
+        </plugin>
+    </plugins></build>
+</project>

@@ -56,8 +56,15 @@ fun main() {
 ## 运行
 
 ```bash
-# 编译
+# 编译全部模块
 mvn compile
+
+# 只编译 JavaFX 集成层及其依赖
+mvn -pl jfgl-javafx -am compile
+
+# 以下运行命令在 jfgl-javafx 模块目录执行；先从根目录构建并安装一次三个模块
+mvn -o install -DskipTests
+cd jfgl-javafx
 
 # 运行示例窗口
 mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
@@ -86,7 +93,10 @@ mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime
 ```
 
 **改哪条路径就跑哪个校验器**：动了顶点/几何/描边跑 `PipelineVerifier`，
-动了拾取（`pickId`、ID pass、`PickBuffer`）跑 `PickVerifier`，
+动了拾取（`pickId`、ID pass、`PickBuffer`）、**尤其是动了 `pickAsync` / PBO 那条异步路径**
+（`FXGLTransfer.resolvePendingPick`、`LwjglGLAbstraction` 的 PBO 与 fence 方法）就**必须**跑
+`PickVerifier`——它那一节是唯一在真 GL 上验证"fence 真的 signal、PBO 里读回的是那个 ID、
+回调落在 JavaFX 线程"的地方，`PickBufferTest` 用的是假 GL、碰不到这三件事，
 动了文本（`text/`、`fontSize`、`drawText`）跑 `TextVerifier`，
 动了图表绘制（`chartrender/`、`Gc.charts`、`Gc.flush`）跑 `ChartVerifier`，
 动了 FFT 或频谱的数据来源（`gpu/FftKernel`、`FftWindow`、`SpectrumSeriesRenderer`）
@@ -186,6 +196,10 @@ bridge.pickAsync(mouseX, mouseY) { hit ->
 
 拾取是**像素级**的（判定用 GPU 实际光栅化的结果，与所见一致），且**只看几何**——
 全透明的图元照样能命中，图表的隐形热区正是靠这个行为。
+
+`Gc.pick()` / `pickRect()` 保留同步语义，适合 GL 线程内确实需要当前帧结果的少数场景。
+`FXGLTransfer.pickAsync()` 使用双 PBO 和 GPU fence：回调通常在下一帧到达，GPU 未完成时不阻塞
+渲染线程；连续 hover 请求仍只保留最新位置。
 
 ### 文本
 
@@ -350,23 +364,20 @@ gc.charts.draw(spectrum, Rect(100f, 100f, 600f, 400f), gc.width, gc.height)
 ## 项目结构
 
 ```
-src/main/java/com/bingbaihanji/jfgl/
-├── geom/        # 纯几何：Path、Flattener（曲线细分）、Tessellator（三角化）、StrokeGenerator
-├── gl/          # OpenGL 抽象：ShaderProgram、Texture、VertexBuffer
-├── gpu/         # GPU 计算：ComputeShader、FftKernel（FFT）、FftWindow（窗与增益补偿）
-├── math/        # Vec2、Mat3、Transform
-├── renderer/    # 顶点侧热路径：VertexFormat、VertexWriter、DrawCommand、RenderBatch
-├── chart/       # 图表框架（纯计算）：ChartData、Axis、TickGenerator、ColorMapping、Chart
-├── chartrender/ # 图表 GPU 绘制后端：ChartRenderer、Line/Scatter/SpectrumSeriesRenderer、SeriesBuffer
-├── text/        # SDF 文本：FontFile(stb)、GlyphRasterizer、SdfGenerator、GlyphAtlas、TextLayout
-└── util/        # Color、Rect、Disposable
+jfgl-core/                 # 零 GL / JavaFX 依赖的计算层
+├── chart/                 # ChartData、Axis、Tick、ColorMapping
+├── geom/                  # Path、Flattener、Tessellator、StrokeGenerator
+├── math/                  # Vec2、Mat3、Transform
+└── util/                  # Color、Rect、Disposable
 
-src/main/kotlin/com/bingbaihanji/jfgl/
-├── dsl/         # jfgl { } 应用入口
-├── example/     # 示例与像素校验器
-├── glview/      # FXGLTransfer：JavaFX 与 OpenGL 的桥接
-├── renderer/    # Gc 门面、ViewTransform
-└── view/        # JavaFX 视图组件
+jfgl-render-gl/            # OpenGL 资源、渲染管线与 GPU 后端
+├── gl/ renderer/ text/    # GL 抽象、批处理、GPU 拾取、SDF 文本
+├── chartrender/ gpu/      # 图表绘制后端、FFT
+└── renderer/              # Kotlin Gc、ViewTransform
+
+jfgl-javafx/               # JavaFX 场景图集成与应用层
+├── glview/ dsl/ view/     # FXGLTransfer、DSL、布局
+└── example/                # 示例和端到端像素校验器
 ```
 
 `geom/` 对 `gl/` **零依赖**（由 `GeomPackageIsolationTest` 强制），因为它是纯计算，
@@ -376,16 +387,17 @@ src/main/kotlin/com/bingbaihanji/jfgl/
 绘制后端单独一个包，也是同样的理由（`ChartPackageIsolationTest` 递归遍历 `chart/`
 整棵子树，按包名白名单守卫）。
 
-`src/main/resources/fonts/` 放着字体文件与它的授权/换字体说明（见该目录的 README）。
+`jfgl-render-gl/src/main/resources/fonts/` 放着字体文件与它的授权/换字体说明（见该目录的 README）。
 
 ## 测试
 
 ```bash
-mvn test                     # 全部测试
-mvn test -Dtest=PathTest     # 单个测试类
+mvn test                                # 全部模块测试
+mvn -pl jfgl-core -Dtest=PathTest test  # 单个 core 测试类
+mvn -pl jfgl-render-gl -Dtest=PickBufferTest test
 ```
 
-当前 **323 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+当前 **329 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
 `@Disabled` 的已知缺陷）。分布：`geom/` 69、`renderer/` 97、`gl/` 10、`text/` 32、
 `chart/` 57、`chartrender/` 44、`gpu/` 14。
 
