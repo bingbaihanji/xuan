@@ -303,7 +303,7 @@ class FXGLTransfer(
      * @param callback 结果回调，在 JavaFX 应用线程上被调用；未命中时参数为 null
      */
     fun pickAsyncAtNode(node: Node, x: Double, y: Double, callback: (PickHit?) -> Unit) {
-        val scale = nodeScale(node)
+        val scale = deviceScale(node)
         pickAsync((x * scale).toFloat(), (y * scale).toFloat(), callback)
     }
 
@@ -320,7 +320,7 @@ class FXGLTransfer(
      * @param callback 结果回调，在 JavaFX 应用线程上被调用；未命中时参数为 null
      */
     fun clickAsyncAtNode(node: Node, x: Double, y: Double, callback: (PickHit?) -> Unit) {
-        val scale = nodeScale(node)
+        val scale = deviceScale(node)
         clickAsync((x * scale).toFloat(), (y * scale).toFloat(), callback)
     }
 
@@ -461,8 +461,19 @@ class FXGLTransfer(
      *
      * <p>不用 `scaledWidth / node.width` 反推：那是同一个量的另一种算法，但
      * `scaledWidth` 是 `ceil(宽度 × 缩放)`，反推出来会带上最多 1 个像素的误差。
+     *
+     * <p><strong>为什么它是 public</strong>：[pickAsyncAtNode] / [clickAsyncAtNode] 用它把
+     * 鼠标事件的坐标换算成 [Gc] 要的设备像素。**任何自己接鼠标事件的应用也要做同一件事**
+     * （库只给了 `onClick` 这一个事件接线入口，没有 `onDrag` / `onHover` / `onScroll`）。
+     * 而漏乘这个系数的表现是"点 A 命中 B，画面完全正常"——在 100% 缩放的机器上还一切正常。
+     * 与其让每个应用各自重新推导一遍，不如把这一乘公开出来。
+     *
+     * <p>用法：`val s = bridge.deviceScale(canvas); val dx = (e.x * s).toFloat(); val dy = (e.y * s).toFloat()`
+     * （用 `e.x` / `e.y`（节点局部），**不是** `e.sceneX` / `e.sceneY`——后者是场景坐标，
+     * 与画布原点差一个布局偏移，乘出来是静默错位的。）
+     * （**两轴都用它**，理由见 [pickAsyncAtNode]）。
      */
-    private fun nodeScale(node: Node): Double = node.scene?.window?.outputScaleY ?: 1.0
+    fun deviceScale(node: Node): Double = node.scene?.window?.outputScaleY ?: 1.0
 
     /**
      * 非阻塞地消费 PBO 结果，再把下一条请求提交给空闲 PBO。
