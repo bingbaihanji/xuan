@@ -90,10 +90,10 @@ jfgl-render-gl/src/test/.../gpu/        FftWindowTest、FftKernelTest
 （`...` 是 `java/com/bingbaihanji/jfgl`。`jfgl-javafx` 没有 surefire 测试——它的
 `example/` 里那五个校验器是**手动跑的 main**，不是单测。）
 
-当前 **329 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+当前 **337 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
 `@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`（跨模块加 `-pl 模块名`）。
-分布：`geom/` 69、`renderer/` 99、`gl/` 12、`text/` 32、`chart/` 59、`chartrender/` 44、
-`gpu/` 14（合计 329）。
+分布：`geom/` 76、`renderer/` 100、`gl/` 12、`text/` 32、`chart/` 59、`chartrender/` 44、
+`gpu/` 14（合计 337）。
 
 `geom/`、`math/`、`util/`、`ViewTransform`、`text/{SdfGenerator, TextLayout}`、`chart/`、
 `gpu/FftWindow`（窗系数与相干增益补偿，纯算术）都是纯计算、不依赖 GL 上下文，最适合写单测。
