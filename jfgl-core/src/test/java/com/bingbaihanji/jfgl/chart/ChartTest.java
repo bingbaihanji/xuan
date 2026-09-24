@@ -85,6 +85,54 @@ class ChartTest {
     }
 
     @Test
+    void 柱状与面积与阶梯都在折线族里但各有各的渲染器() {
+        // "在折线族里"的含义是**顶点来自逐样本的点**，不是"折线渲染器画得出来"。
+        // 这三条钉住的是前者：它们的实例仍然是"每个样本一两个点"，
+        // 所以实例区间算术（WindowRange）、环绕切分、NaN 断开全部照用。
+        assertTrue(ChartType.STEP.polylineFamily());
+        assertTrue(ChartType.AREA.polylineFamily());
+        assertTrue(ChartType.BAR.polylineFamily());
+        assertFalse(ChartType.HEATMAP.polylineFamily());
+        assertFalse(ChartType.WATERFALL.polylineFamily());
+
+        // 而"顶点怎么画"各不相同：这三条一旦有一个为假，ChartRenderer 的查表与
+        // ChartType 的文档就有一处是错的（属性组合是那张表的输入）。
+        assertTrue(ChartType.STEP.stepped());
+        assertTrue(ChartType.AREA.fillsUnderCurve());
+        assertTrue(ChartType.BAR.drawsBars());
+        // 阶梯与面积都"连样本"，柱状不连——这正是它们不能被按属性推出来的原因：
+        // 只按 connectsSamples() 推的话，阶梯与面积会落进折线渲染器，
+        // 于是阶梯被拉成斜线、面积图的填充整个消失，而画面都"看起来正常"。
+        assertTrue(ChartType.STEP.connectsSamples());
+        assertTrue(ChartType.AREA.connectsSamples());
+        assertFalse(ChartType.BAR.connectsSamples());
+    }
+
+    @Test
+    void 面积与柱状的样式有确定默认值() {
+        // 默认值是**行为**的一部分：基线为 0 时柱状图与 JavaFX 的
+        // forceZeroInRange 一致；填充不透明度 0.5 时面积图的轮廓线才看得见
+        // （两者同色同不透明度的话，"轮廓画了"与"没画"逐像素相同）。
+        // 这里只钉住"改默认值要同时改测试"——像素口径那两条在 ChartVerifier 里。
+        Series s = series("s");
+        assertEquals(0f, s.baseline(), 0f, "默认基线是 0（值，不是绘图区下边缘）");
+        assertEquals(0.5f, s.fillAlpha(), 0f, "默认填充不透明度 0.5（与 JavaFX 的面积填充一致）");
+        assertEquals(0.2f, s.categoryGap(), 0f);
+        assertEquals(0.2f, s.barGap(), 0f);
+
+        // 链式 setter 返回自身（否则装配代码得写两遍变量名）。
+        Series t = new Series("t", data(), ChartType.BAR);
+        assertSame(t, t.baseline(0.5f));
+        assertSame(t, t.fillAlpha(1f));
+        assertSame(t, t.categoryGap(0.5f));
+        assertSame(t, t.barGap(0f));
+        assertEquals(0.5f, t.baseline(), 0f);
+        assertEquals(1f, t.fillAlpha(), 0f);
+        assertEquals(0.5f, t.categoryGap(), 0f);
+        assertEquals(0f, t.barGap(), 0f);
+    }
+
+    @Test
     void 非法装配会抛异常() {
         Chart chart = new Chart(new Axis(AxisType.LINEAR, AxisRange.of(0, 10)));
         assertThrows(IllegalArgumentException.class, () -> chart.addLayer(""));

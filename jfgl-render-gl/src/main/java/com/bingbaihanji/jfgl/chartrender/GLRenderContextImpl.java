@@ -38,6 +38,19 @@ final class GLRenderContextImpl implements GLRenderContext {
 
     private final ShaderProgram scatterPickShader;
 
+    /** 阶梯线、面积填充、柱状图的绘制与拾取程序（见 {@link GLRenderContext} 的说明）。 */
+    private final ShaderProgram stepShader;
+
+    private final ShaderProgram stepPickShader;
+
+    private final ShaderProgram areaShader;
+
+    private final ShaderProgram areaPickShader;
+
+    private final ShaderProgram barShader;
+
+    private final ShaderProgram barPickShader;
+
     /**
      * 拾取缓冲的借用入口，由 {@code ChartRenderer} 收进来的
      * {@code RenderBatch.withPickPass}。图表路径只转发，不自己绑 FBO 也不自己清缓冲。
@@ -59,8 +72,16 @@ final class GLRenderContextImpl implements GLRenderContext {
     /** 当前系列的拾取 ID；0 表示不参与拾取。由 {@code ChartRenderer} 每换一个系列注入一次。 */
     private int pickId;
 
+    /** 当前柱状系列在本层并排柱里的序号与总数。由 {@code ChartRenderer} 每换一个系列注入一次。 */
+    private int barSlot;
+
+    private int barCount = 1;
+
     GLRenderContextImpl(GLAbstraction gl, ShaderProgram lineShader, ShaderProgram pickShader,
                         ShaderProgram scatterShader, ShaderProgram scatterPickShader,
+                        ShaderProgram stepShader, ShaderProgram stepPickShader,
+                        ShaderProgram areaShader, ShaderProgram areaPickShader,
+                        ShaderProgram barShader, ShaderProgram barPickShader,
                         Consumer<Runnable> pickPass, ChartRenderLayout layout,
                         int viewportWidth, int viewportHeight) {
         this.gl = gl;
@@ -68,6 +89,12 @@ final class GLRenderContextImpl implements GLRenderContext {
         this.pickShader = pickShader;
         this.scatterShader = scatterShader;
         this.scatterPickShader = scatterPickShader;
+        this.stepShader = stepShader;
+        this.stepPickShader = stepPickShader;
+        this.areaShader = areaShader;
+        this.areaPickShader = areaPickShader;
+        this.barShader = barShader;
+        this.barPickShader = barPickShader;
         this.pickPass = pickPass;
         this.layout = layout;
         this.viewportWidth = viewportWidth;
@@ -87,6 +114,21 @@ final class GLRenderContextImpl implements GLRenderContext {
     /** 设置当前系列的拾取 ID。 */
     void setPickId(int pickId) {
         this.pickId = pickId;
+    }
+
+    /**
+     * 设置当前柱状系列在本层并排柱里的序号与总数。
+     *
+     * <p>{@code count} 必须 &ge; 1：它是柱宽公式的分母里那一项，0 会让柱子宽到铺满屏幕。
+     * 这道校验放在这里而不是等 {@code BarLayout} 抛，是因为"渲染器拿到 0 再算"与
+     * "装配方传了 0"是两件事，前者会把排查方向引到渲染器上。
+     */
+    void setBarSlot(int slot, int count) {
+        if (count < 1) {
+            throw new IllegalArgumentException("并排的柱状系列数必须至少为 1，实际 " + count);
+        }
+        this.barSlot = slot;
+        this.barCount = count;
     }
 
     @Override
@@ -112,6 +154,46 @@ final class GLRenderContextImpl implements GLRenderContext {
     @Override
     public ShaderProgram scatterPickShader() {
         return scatterPickShader;
+    }
+
+    @Override
+    public ShaderProgram stepShader() {
+        return stepShader;
+    }
+
+    @Override
+    public ShaderProgram stepPickShader() {
+        return stepPickShader;
+    }
+
+    @Override
+    public ShaderProgram areaShader() {
+        return areaShader;
+    }
+
+    @Override
+    public ShaderProgram areaPickShader() {
+        return areaPickShader;
+    }
+
+    @Override
+    public ShaderProgram barShader() {
+        return barShader;
+    }
+
+    @Override
+    public ShaderProgram barPickShader() {
+        return barPickShader;
+    }
+
+    @Override
+    public int barSlot() {
+        return barSlot;
+    }
+
+    @Override
+    public int barCount() {
+        return barCount;
     }
 
     @Override

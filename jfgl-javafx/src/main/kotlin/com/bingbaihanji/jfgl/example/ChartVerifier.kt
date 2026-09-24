@@ -706,6 +706,109 @@ private const val SPECTRUM_HEIGHT_DROP_MIN = 40.0
  */
 private val SPECTRUM_WINDOW = FftWindow.BLACKMAN_HARRIS
 
+// ---------------------------------------------------------------------------
+// 图型实验：柱状 / 面积 / 阶梯（ChartType.BAR / AREA / STEP）
+//
+// 四张小图挤在画面最左边那一条 96px 宽的空白里（x ∈ [0,96)，y ∈ [100,500)）。
+// 那一带是唯一一块**没有别的实验图**的空地：主绘图区从 x=100 起、流式图在 y ≤ 90、
+// 缺口图在 y ≥ 610、移动方块在 y ∈ [540,580]，都不与它相交（方块那一条决定了
+// 这四张图必须止步于 y = 500 以上，所以四张的高度和步长都是 96 而不是 100+）。
+//
+// 与其它实验图一样**只在观察期画**："画面恰好只有这 7 种颜色"那条断言是既有断言，
+// 在画面里常驻一种新颜色会让它失败；而这里要验的东西（几何、分组、基线、轮廓线）
+// 只需要"某一帧画过"。
+//
+// 尺寸刻意取小（96×96）：下面每一条期望值都是**手算出来的整数**，
+// 几何越小越容易一眼复核。四张图的共同前提是：
+//   局部 x = (数据下标 - 窗口左端) / 窗口跨度 × 96
+//   局部 y = (1 - (值 - y窗口左端) / y跨度) × 96        （值越大越靠上）
+// ---------------------------------------------------------------------------
+
+/** 四张图型实验图的公共尺寸与列偏移（都在 x ∈ [0,96) 那一条里）。 */
+private const val KIND_PLOT_X = 0f
+private const val KIND_PLOT_W = 96
+private const val KIND_PLOT_H = 96
+
+/** 柱状实验图的 y 起点。 */
+private const val BAR_PLOT_Y = 100
+
+/** 面积（斜填充，无线）实验图的 y 起点。 */
+private const val AREA_PLOT_Y = 200
+
+/** 面积（水平填充 + 轮廓线）实验图的 y 起点。 */
+private const val AREA_LINE_PLOT_Y = 300
+
+/** 阶梯实验图的 y 起点。 */
+private const val STEP_PLOT_Y = 400
+
+/**
+ * 柱状图的类别间距与柱间距（都是"比例"，见 `chart/Series`）。
+ *
+ * <p>取 1/6 与 0.5 是**为了手算**：格宽 96/4 = 24px，群宽 = 24 × (1 - 1/6) = 20px，
+ * 柱宽 = 20 / (2 + 1×0.5) = 8px，柱心偏移 = ∓6px——全是整数，
+ * 于是"哪一列属于哪根柱"可以逐列写出来，不必在断言里留任何余量。
+ */
+private const val BAR_CATEGORY_GAP = 1f / 6f
+private const val BAR_GAP = 0.5f
+
+/**
+ * 柱状实验的 y 窗口下界。
+ *
+ * <p><b>刻意取 -0.5 而不是 0</b>：柱子的下沿是 {@code Series.baseline()} 那个**数值**（默认 0），
+ * 而窗口下界是 -0.5。两者重合的话，"下沿取的是数值 0"与"下沿取的是绘图区下边缘"这两种实现
+ * <b>画出来逐像素相同</b>，那条断言就是橡皮图章。差开半格之后：
+ * 正确实现的下沿在局部 y = 64，用窗口下界的那种会一路铺到 y = 96。
+ */
+private const val KIND_Y_WINDOW_MIN = -0.5
+
+private const val KIND_Y_WINDOW_MAX = 1.0
+
+/** 柱状实验的 x 窗口：**左右各留半格**，于是四根柱都完整落在绘图区里。 */
+private const val BAR_WINDOW_MIN = -0.5
+private const val BAR_WINDOW_MAX = 3.5
+
+/**
+ * 柱状实验里第 1 个系列（并排的左槽位）的值。
+ *
+ * <p>四个值各不相同，于是四根柱的高度各不相同——"柱高跟着数值走"因此不是一句话，
+ * 而是四组可以逐条对上的像素。
+ */
+private val BAR_VALUES_A = doubleArrayOf(0.25, 0.5, 0.75, 1.0)
+
+/**
+ * 第 2 个系列（右槽位）的值：三个 1.0 + **一个 NaN**。
+ *
+ * <p>NaN 那一格是柱状图的"缺口"：它必须一根柱都不画。NaN 的取值放在中间（下标 2）
+ * 而不是末尾，是为了让"它左边和右边的柱照常画"这两条正反断言都能成立——
+ * 放在末尾的话，右侧没有邻居，那条断言就少了一半。
+ */
+private val BAR_VALUES_B = doubleArrayOf(1.0, 1.0, Double.NaN, 1.0)
+
+/** 柱状实验里 NaN 所在的数据下标。 */
+private const val BAR_NAN_INDEX = 2
+
+/** 面积（斜填充）实验里四个点的值：一条斜率恒定的斜坡。 */
+private val AREA_VALUES = doubleArrayOf(0.25, 0.5, 0.75, 1.0)
+
+/** 面积（水平）实验的填充值。水平是刻意的：没有斜率就没有"边界落在哪个像素"的争议。 */
+private const val AREA_LINE_VALUE = 0.5
+
+/** 面积（水平）实验的线宽。取 4 是为了让轮廓线占**整整 4 行**（见下）。 */
+private const val AREA_LINE_WIDTH = 4f
+
+/**
+ * 阶梯实验的四个值：低 → 高 → 低 → **NaN**。
+ *
+ * <p>前三个值在 y 窗口 [0,1] 上分别落在局部 y = 72 / 24 / 72（全是整数），
+ * 于是"踏步在哪一行、竖段在哪一列"都能手算。末尾那个 NaN 让最后一段
+ * （下标 2 → 3）整个消失——它是"NaN 必须断开"这条断言在阶梯图上的形态，
+ * 而它的判别式与缺口实验（折线）同源：<b>同一行上有墨迹的左半边、没有墨迹的右半边</b>。
+ */
+private val STEP_VALUES = doubleArrayOf(0.25, 0.75, 0.25, Double.NaN)
+
+/** 阶梯实验的线宽（半宽 2px）：踏步占 4 行、竖段占 4 列，都是整数。 */
+private const val STEP_LINE_WIDTH = 4f
+
 /**
  * 校验器的启动入口。
  *
@@ -821,9 +924,35 @@ class ChartVerifierApp : Application() {
     /** 频谱曲线的颜色。与上面所有颜色都不同（尤其不等于退化色 0xFF00FF）。 */
     private val spectrumRgb = 0x9F00FF
 
+    // ---- 图型实验（柱状 / 面积 / 阶梯）的颜色 ----
+    // 同上：只在观察期画，所以也不在画面的常驻颜色集合里。
+    // 五者两两不同、也与上面所有颜色不同——柱状图那两条断言是**按颜色分开数**的，
+    // 两个系列同色的话"并排分组"这条就退化成"数一数一共有多少像素"。
+
+    /** 柱状图并排的左槽位（系列 A）。 */
+    private val barSlotARgb = 0xE03060
+
+    /** 柱状图并排的右槽位（系列 B）。 */
+    private val barSlotBRgb = 0x30E0A0
+
+    /** 面积（斜填充、线宽 0）实验的颜色。它只以**半透明**出现（默认 fillAlpha = 0.5）。 */
+    private val areaSlopeRgb = 0x207080
+
+    /** 面积（水平填充 + 轮廓线）实验的颜色。 */
+    private val areaLineRgb = 0x6060FF
+
+    /** 阶梯实验的颜色。 */
+    private val stepRgb = 0xC0C0C0
+
     private val degenScatterArgb = degenScatterRgb or (0xFF shl 24)
 
     private val spectrumArgb = spectrumRgb or (0xFF shl 24)
+
+    private val barSlotAArgb = barSlotARgb or (0xFF shl 24)
+    private val barSlotBArgb = barSlotBRgb or (0xFF shl 24)
+    private val areaSlopeArgb = areaSlopeRgb or (0xFF shl 24)
+    private val areaLineArgb = areaLineRgb or (0xFF shl 24)
+    private val stepArgb = stepRgb or (0xFF shl 24)
 
     private val scatterArgb = scatterRgb or (0xFF shl 24)
     private val markerBigArgb = markerBigRgb or (0xFF shl 24)
@@ -1130,6 +1259,213 @@ class ChartVerifierApp : Application() {
     private var spectrumSnapshotB: Shot? = null
     private var spectrumSnapshotC: Shot? = null
     private var spectrumSnapshotD: Shot? = null
+
+    // -----------------------------------------------------------------------
+    // 图型实验的四张图（柱状 / 面积 ×2 / 阶梯）
+    // -----------------------------------------------------------------------
+
+    private val barRect = Rect(KIND_PLOT_X, BAR_PLOT_Y.toFloat(), KIND_PLOT_W.toFloat(),
+        KIND_PLOT_H.toFloat())
+
+    private val areaSlopeRect = Rect(KIND_PLOT_X, AREA_PLOT_Y.toFloat(), KIND_PLOT_W.toFloat(),
+        KIND_PLOT_H.toFloat())
+
+    private val areaLineRect = Rect(KIND_PLOT_X, AREA_LINE_PLOT_Y.toFloat(), KIND_PLOT_W.toFloat(),
+        KIND_PLOT_H.toFloat())
+
+    private val stepRect = Rect(KIND_PLOT_X, STEP_PLOT_Y.toFloat(), KIND_PLOT_W.toFloat(),
+        KIND_PLOT_H.toFloat())
+
+    /** 柱状实验：同一层里**两个**柱状系列，于是每格并排两根柱（分组的判别式所在）。 */
+    private val barDataA = ArrayChartData(
+        arrayOf(
+            AxisRange(BAR_WINDOW_MIN, BAR_WINDOW_MAX, "类别", ""),
+            AxisRange(KIND_Y_WINDOW_MIN, KIND_Y_WINDOW_MAX, "值", "")
+        ),
+        arrayOf(DoubleArray(BAR_VALUES_A.size) { it.toDouble() }, BAR_VALUES_A.copyOf())
+    )
+
+    private val barDataB = ArrayChartData(
+        arrayOf(
+            AxisRange(BAR_WINDOW_MIN, BAR_WINDOW_MAX, "类别", ""),
+            AxisRange(KIND_Y_WINDOW_MIN, KIND_Y_WINDOW_MAX, "值", "")
+        ),
+        arrayOf(DoubleArray(BAR_VALUES_B.size) { it.toDouble() }, BAR_VALUES_B.copyOf())
+    )
+
+    /**
+     * 两个柱状系列**共用一组间距**：不同的话 `ChartRenderer` 会抛异常
+     * （柱宽取决于系列数，各自一套的话同格里的柱子会宽窄不一）。
+     */
+    private val barSeriesA = Series("柱A", barDataA, ChartType.BAR)
+        .color(barSlotAArgb).categoryGap(BAR_CATEGORY_GAP).barGap(BAR_GAP)
+
+    private val barSeriesB = Series("柱B", barDataB, ChartType.BAR)
+        .color(barSlotBArgb).categoryGap(BAR_CATEGORY_GAP).barGap(BAR_GAP)
+
+    private val barChart: Chart = buildBarChart()
+
+    /** 面积（斜填充）实验：**线宽 0**，于是画面上只有填充这一件事好数。 */
+    private val areaSlopeData = ArrayChartData(
+        arrayOf(
+            AxisRange(0.0, (AREA_VALUES.size - 1).toDouble(), "样本", ""),
+            AxisRange(KIND_Y_WINDOW_MIN, KIND_Y_WINDOW_MAX, "值", "")
+        ),
+        arrayOf(DoubleArray(AREA_VALUES.size) { it.toDouble() }, AREA_VALUES.copyOf())
+    )
+
+    private val areaSlopeSeries = Series("面积斜率", areaSlopeData, ChartType.AREA)
+        .color(areaSlopeArgb).lineWidth(0f)
+
+    private val areaSlopeChart: Chart = buildAreaChart(
+        areaSlopeData, areaSlopeSeries, 0.0, (AREA_VALUES.size - 1).toDouble()
+    )
+
+    /**
+     * 面积（水平 + 轮廓线）实验：两个点、同一个值，于是曲线是一条**水平线**——
+     * 轮廓线正好占 4 行（线宽 4）而不是斜着切过像素格，期望值全是整数。
+     */
+    private val areaLineData = ArrayChartData(
+        arrayOf(
+            AxisRange(0.0, 1.0, "样本", ""),
+            AxisRange(0.0, 1.0, "值", "")
+        ),
+        arrayOf(doubleArrayOf(0.0, 1.0), doubleArrayOf(AREA_LINE_VALUE, AREA_LINE_VALUE))
+    )
+
+    private val areaLineSeries = Series("面积水平", areaLineData, ChartType.AREA)
+        .color(areaLineArgb).lineWidth(AREA_LINE_WIDTH)
+
+    private val areaLineChart: Chart = buildAreaChart(areaLineData, areaLineSeries, 0.0, 1.0)
+
+    /** 阶梯实验：四个值、末尾一个 NaN，见 [STEP_VALUES]。 */
+    private val stepData = ArrayChartData(
+        arrayOf(
+            AxisRange(0.0, (STEP_VALUES.size - 1).toDouble(), "样本", ""),
+            AxisRange(0.0, 1.0, "值", "")
+        ),
+        arrayOf(DoubleArray(STEP_VALUES.size) { it.toDouble() }, STEP_VALUES.copyOf())
+    )
+
+    private val stepSeries = Series("阶梯", stepData, ChartType.STEP)
+        .color(stepArgb).lineWidth(STEP_LINE_WIDTH)
+
+    private val stepChart: Chart = buildStepChart()
+
+    /** 四张图型实验图在观察期最后一帧的快照（校验期做全部断言）。 */
+    private var barSnapshot: Shot? = null
+    private var areaSlopeSnapshot: Shot? = null
+    private var areaLineSnapshot: Shot? = null
+    private var stepSnapshot: Shot? = null
+
+    /**
+     * 造柱状图：两个柱状系列在同一层，x 轴窗口左右各留半格。
+     *
+     * <p>半格余量是**必须**的：柱心落在样本的屏幕 x 上，所以窗口取 [0,3] 时
+     * 最左那根柱有一半在绘图区之外、被 scissor 裁掉——那条"每根柱 8×高 像素"
+     * 的断言会莫名其妙地少一半，而画面看起来只是"第一根柱贴着边"。
+     */
+    private fun buildBarChart(): Chart {
+        val xAxis = Axis(AxisType.LINEAR, barDataA.axisRange(0))
+            .setDisplayLength(KIND_PLOT_W.toDouble())
+            .setWindow(BAR_WINDOW_MIN, BAR_WINDOW_MAX)
+        val yAxis = Axis(AxisType.LINEAR, barDataA.axisRange(1))
+            .setDisplayLength(KIND_PLOT_H.toDouble())
+        val chart = Chart(xAxis, yAxis)
+        // 顺序即绘制顺序：B 画在 A 之上。两者**不重叠**（并排），所以顺序不影响像素。
+        chart.addLayer("柱状").add(barSeriesA).add(barSeriesB)
+        return chart
+    }
+
+    /** 造面积图：x 窗口就是数据范围（每样本 96/(N-1) px），y 窗口见 [KIND_Y_WINDOW_MIN]。 */
+    private fun buildAreaChart(data: ArrayChartData, series: Series,
+                               windowMin: Double, windowMax: Double): Chart {
+        val xAxis = Axis(AxisType.LINEAR, data.axisRange(0))
+            .setDisplayLength(KIND_PLOT_W.toDouble())
+            .setWindow(windowMin, windowMax)
+        val yAxis = Axis(AxisType.LINEAR, data.axisRange(1))
+            .setDisplayLength(KIND_PLOT_H.toDouble())
+        val chart = Chart(xAxis, yAxis)
+        chart.addLayer("面积").add(series)
+        return chart
+    }
+
+    /** 造阶梯图：x 窗口 [0, 3]（每样本 32px）、y 窗口 [0, 1]。 */
+    private fun buildStepChart(): Chart {
+        val xAxis = Axis(AxisType.LINEAR, stepData.axisRange(0))
+            .setDisplayLength(KIND_PLOT_W.toDouble())
+            .setWindow(0.0, (STEP_VALUES.size - 1).toDouble())
+        val yAxis = Axis(AxisType.LINEAR, stepData.axisRange(1))
+            .setDisplayLength(KIND_PLOT_H.toDouble())
+        val chart = Chart(xAxis, yAxis)
+        chart.addLayer("阶梯").add(stepSeries)
+        return chart
+    }
+
+    /** 图型实验（y 窗口 [-0.5, 1]）里数值 → 局部 y。 */
+    private fun kindY(value: Double): Double =
+        (1.0 - (value - KIND_Y_WINDOW_MIN) / (KIND_Y_WINDOW_MAX - KIND_Y_WINDOW_MIN)) * KIND_PLOT_H
+
+    /**
+     * 预乘混合（{@code GL_ONE} / {@code GL_ONE_MINUS_SRC_ALPHA}）之后某个通道的期望值。
+     *
+     * <p>片段着色器输出的是<b>预乘色</b> {@code (rgb×a, a)}，所以混合结果就是
+     * {@code src×a + dst×(1-a)}——这一条断言钉住的正是那个约定：写成非预乘的因子组合
+     * 时半透明填充会比预期暗一截，而"颜色深一点"在画面上没有参照物。
+     */
+    private fun blendChannel(dst: Int, src: Int, alpha: Double): Int =
+        (src * alpha + dst * (1.0 - alpha)).roundToInt()
+
+    /** 两个 RGB 的每个通道都相差不超过 {@code tol}。 */
+    private fun channelClose(a: Int, b: Int, tol: Int): Boolean =
+        abs((a shr 16 and 0xFF) - (b shr 16 and 0xFF)) <= tol &&
+                abs((a shr 8 and 0xFF) - (b shr 8 and 0xFF)) <= tol &&
+                abs((a and 0xFF) - (b and 0xFF)) <= tol
+
+    /**
+     * 面积（斜填充）实验的 CPU 参考：**按定义**逐列数一遍"曲线之下、基线之上的像素"。
+     *
+     * <h2>为什么这条参考必须存在</h2>
+     * <p>像素口径的形状断言有强弱之分。"该颜色有像素"对"填充画反了""填到窗口下沿去了"
+     * "只填了第一段"全都成立，是橡皮图章；"某些探针点是对的颜色"强一些，但它们只是有限的
+     * 几个点。<b>逐列数一遍</b>才能把整条边界钉住：任何一列上边界差一个像素都会让总数对上不了。
+     *
+     * <h2>它为什么是"显然对的"</h2>
+     * <p>它不从着色器的公式出发（{@code aCorner}、{@code uBaseline}、六个 uniform 一个都不用），
+     * 而是从**定义**出发：横轴是数据下标，值由相邻样本线性插值，
+     * 覆盖的像素就是"中心落在曲线与基线之间"的那些——一行代码一个概念。
+     * 与频谱的 `SpectrumReference` 同一个套路。
+     *
+     * <p>它假定了采样规则是"像素中心在不在多边形里"（GL 的默认规则）。几何是刻意挑的：
+     * 边界在每一列的中心处都不是整数（斜坡的斜率 0.5、起点 47.75），
+     * 所以不存在"正好落在边界上"的像素，参考与光栅化不会因为取舍规则不同而差一。
+     *
+     * @param matrix 每个数据点的值
+     * @param baseline 基线（数值）
+     * @return 逐列累加出来的填充像素数
+     */
+    private fun areaFillReference(matrix: DoubleArray, baseline: Double): Int {
+        val lastIndex = matrix.size - 1
+        var total = 0
+        for (col in 0 until KIND_PLOT_W) {
+            // 列中心对应的数据下标与值（相邻样本线性插值）
+            val index = (col + 0.5) / KIND_PLOT_W * lastIndex
+            val i = index.toInt().coerceIn(0, lastIndex - 1)
+            val frac = index - i
+            val value = matrix[i] + (matrix[i + 1] - matrix[i]) * frac
+            val top = kindY(value)
+            val bottom = kindY(baseline)
+            val yLo = minOf(top, bottom)
+            val yHi = maxOf(top, bottom)
+            // 中心落在 [yLo, yHi) 里的行
+            var row = kotlin.math.ceil(yLo - 0.5).toInt()
+            while (row + 0.5 < yHi) {
+                total++
+                row++
+            }
+        }
+        return total
+    }
 
     /** 散点图里数据下标 → 屏幕 x。**与折线的顶点取同一个映射**（不加半格）。 */
     private fun scatterX(index: Double): Double = SCATTER_PLOT_X +
@@ -1669,6 +2005,8 @@ class ChartVerifierApp : Application() {
             drawScatterCharts(gc)
             // Task 7 的频谱实验图，同样只在观察期画（同样的理由）。它一块绘图区演四幕。
             drawSpectrumChart(gc, n)
+            // 图型实验的四张图（柱状 / 面积 ×2 / 阶梯），同样只在观察期画（同样的理由）。
+            drawKindCharts(gc)
         }
 
         // 4) 标注：在图表**之后**画的普通图元。它必须盖在数据系列之上——
@@ -1794,6 +2132,25 @@ class ChartVerifierApp : Application() {
     }
 
     /**
+     * 图型实验的四张图：柱状（两个系列并排）、面积（斜填充，线宽 0）、
+     * 面积（水平填充 + 轮廓线）、阶梯（末尾一个 NaN）。
+     *
+     * <p>四张图**不画底色**：它们下面就是 `glClear` 的背景色 0x333333，
+     * 于是"面积填充的半透明混合"这条断言的底色是一个已知且唯一的量
+     * （画了底色的话，混合结果取决于底色与图元谁先谁后，而那个顺序在断言里看不见）。
+     *
+     * <p>它们**每帧都画**（与散点/退化散点那两张一样），只在观察期里：
+     * 观察期最后一帧抓快照，校验帧的画面上没有它们——"画面恰好只有这 7 种颜色"
+     * 那条既有断言因此一字未改。
+     */
+    private fun drawKindCharts(gc: Gc) {
+        gc.charts.draw(barChart, barRect, gc.width, gc.height)
+        gc.charts.draw(areaSlopeChart, areaSlopeRect, gc.width, gc.height)
+        gc.charts.draw(areaLineChart, areaLineRect, gc.width, gc.height)
+        gc.charts.draw(stepChart, stepRect, gc.width, gc.height)
+    }
+
+    /**
      * 移动方块的左上角 x：每帧在两个位置之间来回。
      *
      * <p>方块必须动：静止的场景里，"上一帧的像素留在了画面上"这类缺陷会被本帧原样
@@ -1837,6 +2194,11 @@ class ChartVerifierApp : Application() {
             scatterSnapshot = grab(h, scatterRect)
             markerSnapshot = grab(h, markerRect)
             captureScatterPicks(bridge)
+            // 图型实验的四张图也在这一帧上取样（同样只在观察期画）。
+            barSnapshot = grab(h, barRect)
+            areaSlopeSnapshot = grab(h, areaSlopeRect)
+            areaLineSnapshot = grab(h, areaLineRect)
+            stepSnapshot = grab(h, stepRect)
         }
         // 移除之前的那一帧（`frame` 是"已完成帧数"，所以它等于下标 + 1）。
         if (frame == CROSS_REMOVE_FRAME) {
@@ -2833,6 +3195,198 @@ class ChartVerifierApp : Application() {
                 "不是背景色的像素 ${specD.countNonBackgroundInRows(0, specD.h - 1, background)} px，" +
                         "期望 0——这一块地方除了这张频谱图没有别的东西画过"
             )
+        }
+
+        // ---- 21. ★ 图型：柱状 / 面积 / 阶梯 ----
+        //
+        // 四张图各自守着一件"像素看不出来"的事：
+        //   · 柱状：**并排分组**（同层多个柱状系列各占一格的一段）与**下沿是数值 0**
+        //     ——不分组的话两组柱子完全重叠，画面上只剩最后画的那一个，看起来就是
+        //     一张正常的单系列柱状图；
+        //   · 面积（斜填充）：填充的**逐列**像素数与按定义算出来的参考逐列相符
+        //     ——"该颜色有像素"对填反了、填到窗口下沿去了、只填了第一段全都成立；
+        //   · 面积（水平 + 轮廓线）：轮廓线是**4 行整**的纯色，填充是半透明的一整片
+        //     ——两者同色时"轮廓画了"与"没画"逐像素相同，所以填充必须能分辨出来；
+        //   · 阶梯：踏步在正确的行、竖段在正确的列，**拐角的外角是补满的**
+        //     ——两段四边形各自收尾会在外角缺一个半宽见方的角，那看起来像抗锯齿。
+        println("\n-- ★ 图型：柱状 / 面积 / 阶梯 --")
+        val bar = barSnapshot
+        val areaSlope = areaSlopeSnapshot
+        val areaLine = areaLineSnapshot
+        val step = stepSnapshot
+        if (bar == null || areaSlope == null || areaLine == null || step == null) {
+            report("图型实验的四张快照都取到了（否则下面整节都是橡皮图章）", false,
+                "bar=$bar areaSlope=$areaSlope areaLine=$areaLine step=$step")
+        } else {
+            // ---- 21a. 柱状：并排分组 + 下沿是数值 ----
+            //
+            // 几何全部手算：格宽 96/4 = 24，群宽 = 24×(1-1/6) = 20，柱宽 = 20/(2+1×0.5) = 8，
+            // 柱心偏移 ∓6 → 左槽位（A）占局部列 [2,10) [26,34) [50,58) [74,82)，
+            // 右槽位（B）占 [12,20) [36,44) [60,68) [84,92)。
+            // y 窗口 [-0.5, 1] → 局部 y：值 0 → 64（下沿）、0.25 → 48、0.5 → 32、0.75 → 16、1.0 → 0。
+            // 于是 A 的四根柱高 = 16/32/48/64、B 的三根（下标 2 是 NaN）= 64/64/_/64。
+            val barHeightA = BAR_VALUES_A.sumOf { kindY(0.0) - kindY(it) }.toInt()
+            // 每根柱 8 列宽（见上面的手算），高度之和 × 8 就是 A 的全部像素。
+            val barPixelsA = 8 * BAR_VALUES_A.sumOf { (kindY(0.0) - kindY(it)).toInt() }
+            val bottom = kindY(0.0).toInt()
+            report("柱状：左槽位（系列 A）的像素数 = 8 列 × 四根柱高之和",
+                bar.count(barSlotARgb) == barPixelsA,
+                "实际 ${bar.count(barSlotARgb)} px，期望 $barPixelsA" +
+                        "（柱高 ${BAR_VALUES_A.joinToString { (bottom - kindY(it)).toInt().toString() }}，" +
+                        "下沿在局部行 $bottom）——数目对不上说明柱宽、分组、下沿或高度之一定错了")
+            val barPixelsB = 3 * 8 * (bottom - 0)
+            report("柱状：右槽位（系列 B）的像素数 = 8 列 × 三根满高柱（下标 2 是 NaN）",
+                bar.count(barSlotBRgb) == barPixelsB,
+                "实际 ${bar.count(barSlotBRgb)} px，期望 $barPixelsB")
+
+            // ★ 分组的判别式：同一格（样本 0，局部列 2..21）里，左半是 A、右半是 B。
+            // 不分组（两个系列都当第 0 根、总数 1）时两组柱完全重叠，B 后画、
+            // 整格都是 B 的颜色——而画面看起来就是一张正常的单系列柱状图。
+            report("★ 并排分组：同一格里左半是 A 的颜色", bar.at(5, 56) == barSlotARgb,
+                "局部 (5,56) = #%06X，期望 #%06X".format(bar.at(5, 56), barSlotARgb) +
+                        "——不是 A 说明两个柱状系列画在了同一个位置上（后画的盖住了先画的）")
+            report("★ 并排分组：同一格里右半是 B 的颜色", bar.at(15, 56) == barSlotBRgb,
+                "局部 (15,56) = #%06X，期望 #%06X".format(bar.at(15, 56), barSlotBRgb))
+            // 与上面两条成对：柱高必须跟着数值走，而不是四根一样高。
+            report("柱状：A 的第一根柱之上（值 0.25 的柱顶以上）没有墨迹",
+                bar.at(5, 40) == background,
+                "局部 (5,40) = #%06X，期望背景 #%06X".format(bar.at(5, 40), background) +
+                        "——非背景说明柱高没跟着数值走（或下沿取的是窗口下界）")
+            // 下沿以下整条带子：正确实现是 0（下沿在局部行 64），
+            // 取窗口下界（-0.5 → 行 96）或取绘图区底边的话这里会有几千像素。
+            val belowBaseline = bar.countIn(0, bottom + 1, KIND_PLOT_W - 1, KIND_PLOT_H - 1,
+                barSlotARgb) + bar.countIn(0, bottom + 1, KIND_PLOT_W - 1, KIND_PLOT_H - 1,
+                barSlotBRgb)
+            report("柱状：下沿（局部行 $bottom）以下一个柱像素都没有——下沿是**数值 0**，" +
+                    "不是窗口下界也不是绘图区底边",
+                belowBaseline == 0,
+                "行 ${bottom + 1}..${KIND_PLOT_H - 1} 里 $belowBaseline px，期望 0" +
+                        "——非 0 说明 uBaseline 被当成「画到绘图区下边缘」了")
+            // NaN 那一格：既不画柱，也不该退化成一根从下沿到 0 的柱。
+            report("柱状：NaN 那一格（下标 $BAR_NAN_INDEX）没有柱（反证：它的邻居有）",
+                bar.at(64, 30) == background && bar.at(40, 30) == barSlotBRgb,
+                "NaN 那一格 (64,30) = #%06X（期望背景 #%06X）；邻居 (40,30) = #%06X（期望 #%06X）"
+                    .format(bar.at(64, 30), background, bar.at(40, 30), barSlotBRgb) +
+                        "——NaN 那一格要是有一根柱，那是凭空多出来的一根不存在的柱子")
+
+            // ---- 21b. 面积（斜填充，线宽 0）：逐列对上参考 ----
+            //
+            // x 窗口 [0,3] → 每样本 32px；y 窗口 [-0.5,1] → 值 0 落在局部行 64（下沿）、
+            // 值 1.0 落在行 0。四个值 0.25/0.5/0.75/1.0 于是对应行 48/32/16/0。
+            val areaRef = areaFillReference(AREA_VALUES, 0.0)
+            report("面积：填充的逐列像素数与按定义算出的参考完全一致（一共 $areaRef 列像素）",
+                areaRef > 1000 && areaSlope.countNonBackgroundInRows(
+                    0, KIND_PLOT_H - 1, background) == areaRef,
+                "实际 ${areaSlope.countNonBackgroundInRows(0, KIND_PLOT_H - 1, background)} px，" +
+                        "期望 $areaRef——逐列对不上说明边界（值→y 的映射、斜率、基线）有一处错了")
+            report("面积：基线以下（局部行 ${bottom + 1}..）一个像素都没有——基线是**数值 0**",
+                areaSlope.countNonBackgroundInRows(bottom + 1, KIND_PLOT_H - 1, background) == 0,
+                "实际 ${areaSlope.countNonBackgroundInRows(bottom + 1, KIND_PLOT_H - 1, background)} px，" +
+                        "期望 0——非 0 说明下沿取的是窗口下界或绘图区底边（两者都会把行 64 以下也填满）")
+            report("面积：线宽 0 → 该颜色的**纯色**一个像素都没有（填充是半透明的）",
+                areaSlope.count(areaSlopeRgb) == 0,
+                "纯色 ${areaSlope.count(areaSlopeRgb)} px，期望 0——非 0 说明轮廓线没按线宽退化")
+            // 默认 fillAlpha = 0.5：填充色必须是"主色与背景各一半"，而不是主色本身。
+            // 这一条同时钉住了预乘混合（片段着色器输出 rgb×a，混合因子 GL_ONE/GL_ONE_MINUS_SRC_ALPHA）。
+            val fillAt = areaSlope.at(95, 40)
+            val wantFillR = blendChannel(background shr 16 and 0xFF, areaSlopeRgb shr 16 and 0xFF, 0.5)
+            val wantFillG = blendChannel(background shr 8 and 0xFF, areaSlopeRgb shr 8 and 0xFF, 0.5)
+            val wantFillB = blendChannel(background and 0xFF, areaSlopeRgb and 0xFF, 0.5)
+            val wantFill = (wantFillR shl 16) or (wantFillG shl 8) or wantFillB
+            report("面积：填充是**半透明**的（默认 fillAlpha = 0.5，与 JavaFX 的面积填充一致）",
+                channelClose(fillAt, wantFill, 1),
+                "局部 (95,40) = #%06X，期望 ≈ #%06X（主色 #%06X 与背景 #%06X 各一半）"
+                    .format(fillAt, wantFill, areaSlopeRgb, background) +
+                        "——等于主色说明 fillAlpha 被当成 1 了（那样轮廓线在画面上看不出存在过）")
+            report("面积：填充不与主色、背景混淆（上一条的成对反证）",
+                fillAt != areaSlopeRgb && fillAt != background,
+                "局部 (95,40) = #%06X".format(fillAt))
+
+            // ---- 21c. 面积（水平 + 轮廓线）：4 行纯色 + 46 行半透明 ----
+            //
+            // x 窗口 [0,1] → 两个点落在局部列 0 与 96；y 窗口 [0,1] → 值 0.5 落在局部行 48，
+            // 下沿（数值 0）落在行 96 —— 正是绘图区底边，于是填充占行 48..95。
+            // 线宽 4 → 轮廓线（折线路径画的）正好占行 46..49（中心 46.5..49.5）。
+            val lineRows = AREA_LINE_WIDTH.toInt()
+            report("面积轮廓线：纯色像素 = 线宽 × 宽度（一根 4 行高的水平线）",
+                areaLine.count(areaLineRgb) == lineRows * KIND_PLOT_W,
+                "实际 ${areaLine.count(areaLineRgb)} px，期望 ${lineRows * KIND_PLOT_W}" +
+                        "——少了说明轮廓线没画（填充与它同色时画面上看不出来），" +
+                        "多了说明线宽或位置不对")
+            report("面积轮廓线：纯色只出现在**曲线那一行**的上下各 2px 里（局部行 46..49）",
+                areaLine.countIn(0, 46, KIND_PLOT_W - 1, 49, areaLineRgb) ==
+                        lineRows * KIND_PLOT_W &&
+                        areaLine.countIn(0, 0, KIND_PLOT_W - 1, 45, areaLineRgb) == 0 &&
+                        areaLine.countIn(0, 50, KIND_PLOT_W - 1, KIND_PLOT_H - 1,
+                            areaLineRgb) == 0,
+                "行 46..49 里 ${areaLine.countIn(0, 46, KIND_PLOT_W - 1, 49, areaLineRgb)} px、" +
+                        "行 0..45 里 ${areaLine.countIn(0, 0, KIND_PLOT_W - 1, 45, areaLineRgb)} px、" +
+                        "行 50.. 里 ${areaLine.countIn(0, 50, KIND_PLOT_W - 1, KIND_PLOT_H - 1, areaLineRgb)} px")
+            report("面积填充：曲线之下（行 50..95）是**半透明**的填充（46 行 × 96 列）",
+                areaLine.countNonBackgroundInRows(50, KIND_PLOT_H - 1, background) ==
+                        46 * KIND_PLOT_W,
+                "实际 ${areaLine.countNonBackgroundInRows(50, KIND_PLOT_H - 1, background)} px，" +
+                        "期望 ${46 * KIND_PLOT_W}")
+            report("面积填充：曲线之上（行 0..45）一个像素都没有",
+                areaLine.countNonBackgroundInRows(0, 45, background) == 0,
+                "实际 ${areaLine.countNonBackgroundInRows(0, 45, background)} px，期望 0" +
+                        "——非 0 说明填充画到了曲线**上方**（基线当成绘图区顶边了）")
+
+            // ---- 21d. 阶梯：踏步、竖段、拐角、NaN ----
+            //
+            // x 窗口 [0,3] → 每样本 32px；y 窗口 [0,1] → 值 0.25/0.75 落在局部行 72/24；
+            // 线宽 4（半宽 2）→ 踏步占 4 行（70..73 / 22..25）、竖段占 4 列（30..33 / 62..65）。
+            // 四个值 0.25 / 0.75 / 0.25 / NaN → 最后一段（下标 2→3）整段消失。
+            report("阶梯：第一段先横（局部行 72 有踏步）", step.at(16, 72) == stepRgb,
+                "局部 (16,72) = #%06X，期望 #%06X".format(step.at(16, 72), stepRgb))
+            report("★ 阶梯：那不是一条斜线（斜线会从这里穿过）", step.at(16, 48) == background,
+                "局部 (16,48) = #%06X，期望背景 #%06X".format(step.at(16, 48), background) +
+                        "——非背景说明阶梯被按普通折线画了：形状是错的、画面却完全正常")
+            report("阶梯：再竖（局部列 32 的竖段从行 24 到行 72）",
+                step.at(32, 40) == stepRgb && step.at(32, 80) == background,
+                "局部 (32,40) = #%06X（期望 #%06X）、(32,80) = #%06X（期望背景 #%06X）"
+                    .format(step.at(32, 40), stepRgb, step.at(32, 80), background) +
+                        "——上面那个点没有墨迹说明走的是「先竖后横」，下面那个点有墨迹说明竖段越过了拐角")
+            report("阶梯：第二段的踏步在值 0.75 那一行（局部行 24），不是斜线",
+                step.at(48, 24) == stepRgb && step.at(48, 48) == background,
+                "局部 (48,24) = #%06X（期望 #%06X）、(48,48) = #%06X（期望背景 #%06X）"
+                    .format(step.at(48, 24), stepRgb, step.at(48, 48), background))
+            // ★ 拐角是**斜接**的：右-上转角的外角顶点落在 (30,70)，
+            // 而"两段四边形各自收尾"的实现那里缺一个半宽见方的角（外观像抗锯齿）。
+            report("★ 阶梯：拐角的外角是补满的（斜接），不是一个豁口",
+                step.at(33, 72) == stepRgb,
+                "局部 (33,72) = #%06X，期望 #%06X".format(step.at(33, 72), stepRgb) +
+                        "——不是该颜色说明两段四边形各画各的、拐角缺了一块")
+            report("阶梯：拐角之外（外角顶点再往外）没有墨迹（上一条的成对反证）",
+                step.at(35, 69) == background,
+                "局部 (35,69) = #%06X，期望背景 #%06X".format(step.at(35, 69), background) +
+                        "——非背景说明拐角被撑大了（斜接的长度算错）")
+            // NaN 的判别式与缺口实验同源：**同一行上，左半边有墨迹、右半边没有**。
+            // 只断言"那段没有像素"会被"整张图都没画"骗过去。
+            report("阶梯：末尾是 NaN → 最后一段整段消失（同一行上左半边有、右半边没有）",
+                step.at(80, 72) == background && step.at(16, 72) == stepRgb,
+                "局部 (80,72) = #%06X（期望背景 #%06X）、(16,72) = #%06X（期望 #%06X）"
+                    .format(step.at(80, 72), background, step.at(16, 72), stepRgb) +
+                        "——非背景说明 NaN 那段被连过去了（那条线是假的，比不画更糟）")
+            report("阶梯：顶部（局部行 0..21）一个像素都没有（值→y 的映射没有翻转/偏移）",
+                step.countNonBackgroundInRows(0, 21, background) == 0,
+                "实际 ${step.countNonBackgroundInRows(0, 21, background)} px，期望 0")
+
+            // ---- 21e. 跨帧：这四张图在校验帧上必须已经不在画面里 ----
+            //
+            // 它们只在观察期画。校验帧上那一带必须是干净的背景——
+            // 否则"画面恰好只有这 7 种颜色"那条既有断言会失败，而那条断言
+            // 是 Task 10/11 留下的、不许改弱的。这一条把"它们没漏进校验帧"
+            // 从"那条颜色断言间接证明了"变成"直接量了一遍"。
+            var kindResidue = 0
+            for (yy in BAR_PLOT_Y until STEP_PLOT_Y + KIND_PLOT_H) {
+                for (xx in KIND_PLOT_X.toInt() until KIND_PLOT_W) {
+                    if (pixelAt(xx, yy) != background) kindResidue++
+                }
+            }
+            report("图型实验的四张图在校验帧上已经不在画面里（观察期专属，无残留）",
+                kindResidue == 0,
+                "左边那一条 96×${STEP_PLOT_Y + KIND_PLOT_H - BAR_PLOT_Y} 里有 $kindResidue px 不是背景")
         }
 
         println("\n画面出现的颜色：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")

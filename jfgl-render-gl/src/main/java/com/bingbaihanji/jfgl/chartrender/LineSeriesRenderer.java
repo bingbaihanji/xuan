@@ -138,9 +138,27 @@ final class LineSeriesRenderer implements SeriesRenderer {
 
     @Override
     public void render(RenderContext ctx, ChartData data, Series series, Axis[] axes) {
+        // 守卫留在入口：**哪些图型归哪个渲染器**只有这一处判断（外加 ChartRenderer 的查表，
+        // 那边决定"谁来画"，这里决定"画不画得了"）。
+        requireSupported(series.type());
+        renderPolyline(ctx, data, series, axes);
+    }
+
+    /**
+     * 把数据画成一条有粗细的折线，<b>不做图型守卫</b>。
+     *
+     * <p>它是"折线"这个几何本身：{@link #render} = 守卫 + 它，
+     * 而面积图渲染器用它来画面积图的轮廓线（那条线确实是一条普通折线，
+     * 值得一份代码画两遍）。面积图<b>不能</b>改调 {@link #render}：那个方法会
+     * 正确地拒绝 {@code AREA}（拒绝的理由见 {@link #requireSupported}），
+     * 而那条守卫不该为了复用而拆掉——拆掉之后"面积图交给折线渲染器"就会静默地
+     * 少画一整块填充。
+     *
+     * <p>调用方必须保证"这个图型用折线几何画是对的"（目前只有
+     * {@code LINE} / {@code LINE_AND_MARKERS} / {@code AREA} 的轮廓线三种情况）。
+     */
+    void renderPolyline(RenderContext ctx, ChartData data, Series series, Axis[] axes) {
         GLRenderContext c = (GLRenderContext) ctx;
-        ChartType type = series.type();
-        requireSupported(type);
 
         // 缓冲归 ChartRenderer 管，渲染器自己不持有状态
         // （SeriesRenderer 的类文档要求它是纯函数）。

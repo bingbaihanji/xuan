@@ -55,6 +55,66 @@ public interface GLRenderContext extends RenderContext {
      */
     ShaderProgram scatterPickShader();
 
+    /**
+     * 阶梯线绘制用的着色器程序（{@code STEP_VERTEX} + {@code LINE_FRAGMENT}）。
+     *
+     * <p>阶梯图的实例几何与折线<b>不</b>相同：一个实例是一条水平段加一个拐角
+     * 再加一条竖直段（六个角）。所以它不能借用 {@link #lineShader()}——
+     * 拿折线的顶点程序画阶梯会把它画成一条斜线，而画面完全正常。
+     */
+    ShaderProgram stepShader();
+
+    /**
+     * 阶梯线拾取用的着色器程序：{@code STEP_VERTEX} + {@code PICK_FRAGMENT}。
+     *
+     * <p>与 {@link #stepShader()} 共用同一份顶点源码（只差容差那一个 uniform），
+     * 因此热区与画面逐顶点一致。理由见 {@link #pickShader()}。
+     */
+    ShaderProgram stepPickShader();
+
+    /**
+     * 面积图绘制用的着色器程序（{@code AREA_VERTEX} + {@code LINE_FRAGMENT}）。
+     *
+     * <p>面积图的轮廓线<b>不走这里</b>：那条线是普通折线，走
+     * {@link #lineShader()}（由 {@code AreaSeriesRenderer} 显式委托折线路径画，
+     * 理由见那个类）。本程序只画填充。
+     */
+    ShaderProgram areaShader();
+
+    /** 面积图拾取用的着色器程序（{@code AREA_VERTEX} + {@code PICK_FRAGMENT}）。 */
+    ShaderProgram areaPickShader();
+
+    /** 柱状图绘制用的着色器程序（{@code BAR_VERTEX} + {@code LINE_FRAGMENT}）。 */
+    ShaderProgram barShader();
+
+    /**
+     * 柱状图拾取用的着色器程序（{@code BAR_VERTEX} + {@code PICK_FRAGMENT}）。
+     *
+     * <p>细柱（缩得很小时不到一像素宽）同样要求用户点得中，所以 ID pass 用
+     * {@code uPickTolerance} 把柱撑宽——与折线/散点同一条约定。
+     */
+    ShaderProgram barPickShader();
+
+    /**
+     * 当前柱状系列在<b>本层并排柱</b>里的序号。只对 {@link com.bingbaihanji.jfgl.chart.ChartType#BAR}
+     * 有意义，其余图型为 0。
+     *
+     * <p>它由 {@code ChartRenderer} 按层算好（一层里的柱状系列并排成一组），
+     * 渲染器自己<b>看不到兄弟系列</b>——{@code SeriesRenderer.render} 的签名里只有
+     * 自己那一个系列。把"我是第几根"放在这里而不是让渲染器去猜，是因为猜出来的
+     * 结果（全都当成第 0 根）会让同层多个柱状系列<b>完全重叠</b>：画面上只有最后
+     * 画的那一个可见，而它看起来就是一张正常的单系列柱状图。
+     */
+    int barSlot();
+
+    /**
+     * 本层里并排的柱状系列总数（&ge; 1）。与 {@link #barSlot()} 成对使用。
+     *
+     * <p>它决定柱宽的分母：{@code n = 1} 时柱子占满整格，{@code n = 2} 时每根占一半。
+     * 拿错的表现是<b>柱子宽度不对</b>——而宽度不对在单张图上没有任何参照物。
+     */
+    int barCount();
+
     /** 绘图区与映射。 */
     ChartRenderLayout layout();
 
