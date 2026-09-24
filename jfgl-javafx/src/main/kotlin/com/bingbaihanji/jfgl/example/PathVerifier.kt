@@ -78,10 +78,11 @@ private const val FIRST_ASSERT_FRAME = 6
 /**
  * 断言的帧数：一个变体一帧，见 [PathVerifierApp.drawnVariant]。
  *
- * <p>六个变体依次是：①两条横线 / ②一条横线 / ③闭合的直角方框 / ④同一份几何的**开放对照**
- * / ⑤**开放**的直角折线（走 [Gc.strokePath]）/ ⑥带孔填充（[Gc.fillPath]）。
+ * <p>七个变体依次是：①两条横线 / ②一条横线 / ③闭合的直角方框 / ④同一份几何的**开放对照**
+ * / ⑤**开放**的直角折线（走 [Gc.strokePath]）/ ⑥带孔填充（[Gc.fillPath]）
+ * / ⑦**半透明**描边的退化接头（见 [PathVerifierApp.drawTranslucentJointCase]）。
  */
-private const val ASSERT_FRAME_COUNT = 6
+private const val ASSERT_FRAME_COUNT = 7
 
 /** 最后一次断言的帧号。 */
 private const val LAST_ASSERT_FRAME = FIRST_ASSERT_FRAME + ASSERT_FRAME_COUNT - 1
@@ -182,6 +183,57 @@ private const val SQ_SIDE = 120f
  */
 private const val HOLE_FILL_RGB = 0x8000FF
 
+// ---------------------------------------------------------------------------
+// 半透明描边：退化接头处不能被画两遍
+// ---------------------------------------------------------------------------
+
+/** 折线尖转角的顶点。它必须是**尖角**：见 [JOINT_LINE_WIDTH]。 */
+private const val JOINT_PX = 200f
+private const val JOINT_PY = 500f
+
+/**
+ * 尖折线的线宽。
+ *
+ * <p>取 80（半线宽 40）有两个理由：
+ *
+ * <ul>
+ *   <li>**必须触发退化分支**：`Gc` 里 MITER 的限值写死为 4（相对于半线宽），所以只有
+ *       **内角小于约 29°** 才可能退化。这里用 160° 的转向（内角 20°）：
+ *       miter 长度 = 半线宽 / sin(10°) ≈ 230 > 4×40 = 160 ⇒ 走退化分支。</li>
+ *   <li>**退化接头要够厚**：退化时接头只剩下"顶点与接头底边之间"那个三角形，
+ *       它的厚度 = 2×半线宽×sin(内角/2) 的量级 —— 半线宽 40、内角 20° 时约 7 px，
+ *       足够放下一个 3x3 的取样框且离三条边都有 2.5 px 以上的余量。</li>
+ * </ul>
+ */
+private const val JOINT_LINE_WIDTH = 80f
+
+/** 单层参考块：同色、同 alpha 的**一次**填充（用来读出"只画一层"是什么颜色）。 */
+private const val REF_X = 400f
+private const val REF_Y = 460f
+
+/** 半透明描边的颜色与不透明度。 */
+private const val TRANSLUCENT_RGB = 0xFFFF00
+private const val TRANSLUCENT_ALPHA = 0.5f
+
+/**
+ * 退化接头内部的取样框左上角（取 3x3）。
+ *
+ * <p>这个框整个落在"顶点与接头底边之间"那个三角形内部，离三条边都有 2.5 px 以上余量
+ * —— 不是擦边，所以不依赖光栅化的 tie 规则。尖角顶点在 (200,500)，
+ * 接头底边从 (200,460) 到 (213.68,537.59)。
+ */
+private const val JOINT_PROBE_X = 202
+private const val JOINT_PROBE_Y = 498
+
+/**
+ * 两段描边带**自相交**处的取样点（必然是**两层**）。
+ *
+ * <p>尖折线的两段带在尖角内侧互相覆盖（半线宽 40，该点到两段的距离分别约 19.5 与 12，
+ * 都远小于 40），所以它比单层更深——它在同一帧里充当"两层确实看得见"的对照。
+ */
+private const val DOUBLE_PROBE_X = 180
+private const val DOUBLE_PROBE_Y = 520
+
 /**
  * 校验器的启动入口。
  *
@@ -253,7 +305,8 @@ class PathVerifierApp : Application() {
                 2 -> drawClosedJoinCase(gc, closed = true)
                 3 -> drawClosedJoinCase(gc, closed = false)
                 4 -> drawOpenPolylineCase(gc)
-                else -> drawHoleFillCase(gc)
+                5 -> drawHoleFillCase(gc)
+                else -> drawTranslucentJointCase(gc)
             }
         } catch (t: Throwable) {
             println("\n=== 绘制过程抛出异常，判为失败 ===")
@@ -418,6 +471,49 @@ class PathVerifierApp : Application() {
         gc.lineTo(x + side, y + side)
         gc.lineTo(x, y + side)
         gc.closePath()
+    }
+
+    /**
+     * **半透明**描边的退化接头：把"接头有没有被画两遍"从纯几何的**个数/层数**判据
+     * 补成**像素**判据。
+     *
+     * <p>为什么非要有像素这一条：重复覆盖在**不透明**描边下完全没有症状（同一颜色画两遍
+     * 还是那个颜色），唯一的后果是**半透明**时叠加两次更深。所以"个数""层数"都只是代理，
+     * 真正要看见的是颜色。
+     *
+     * <p>场景里同时有**单层**与**两层**两个已知点，于是这条断言不需要靠变异才有说服力：
+     *
+     * <ul>
+     *   <li>单层：[REF_X]/[REF_Y] 处一次同色同 alpha 的填充，读出"只画一层"的颜色；</li>
+     *   <li>两层：折线在尖角内侧**两段描边带自相交**（[DOUBLE_PROBE_X] 附近），
+     *       那里必然被两层覆盖 —— 它证明"两层 ≠ 一层"在这个场景里真的看得见；</li>
+     *   <li>判别式：退化接头**内部**那一小块只可能被接头自己覆盖（两个描边四边形都以
+     *       "过顶点的横断面"收边，够不到那里），所以它必须是**单层色**。</li>
+     * </ul>
+     *
+     * <p>⚠️ `Gc` 没有接头开关，走它只能靠"内角够尖"把 MITER 打进退化分支
+     * （见 [JOINT_LINE_WIDTH]），所以这里的折线是一个很尖的拐角。
+     *
+     * @param gc 当前帧的绘制上下文
+     */
+    private fun drawTranslucentJointCase(gc: Gc) {
+        // globalAlpha 属于绘制状态：用 save/restore 保证它不泄漏到下一个变体
+        // （泄漏会让后面那些不透明变体的颜色全变，而那是另一条断言在管的事）
+        gc.save()
+        gc.globalAlpha = TRANSLUCENT_ALPHA
+        val argb = TRANSLUCENT_RGB or (0xFF shl 24)
+        gc.stroke = argb
+        gc.fill = argb
+        gc.lineWidth = JOINT_LINE_WIDTH
+        // 160° 转向（内角 20°）：miter 长度 ≈ 230 > 4×半线宽 = 160 ⇒ 退化分支
+        gc.beginPath()
+        gc.moveTo(JOINT_PX - 100f, JOINT_PY)
+        gc.lineTo(JOINT_PX, JOINT_PY)
+        gc.lineTo(JOINT_PX - 46.98463f, JOINT_PY + 17.10101f)
+        gc.strokePath()
+        // 单层参考：同一块背景上的一次填充，颜色与描边完全相同
+        gc.fillRect(REF_X, REF_Y, 24f, 24f)
+        gc.restore()
     }
 
     /**
@@ -646,7 +742,7 @@ class PathVerifierApp : Application() {
             // 那是数量级的差异，不需要靠容差去分辨。
             approx("开放折线像素总数 = 两条腿 - 拐角重叠 + 接头", counts[SUB_PATH_RGB] ?: 0,
                 1200.0, 0.02)
-        } else {
+        } else if (drawnVariant < 6) {
             println("\n-- 带孔填充：外轮廓按包含关系分类 --")
             val rcx = RING_CX.toInt(); val rcy = RING_CY.toInt()
             val rOut = RING_R_OUTER.toInt(); val rIn = RING_R_INNER.toInt()
@@ -688,9 +784,45 @@ class PathVerifierApp : Application() {
             approx("填充色像素总数 = 两个正方形 + 环带", counts[HOLE_FILL_RGB] ?: 0,
                 2.0 * side * side + Math.PI * (RING_R_OUTER.toDouble() * RING_R_OUTER
                         - RING_R_INNER.toDouble() * RING_R_INNER), 0.02)
+        } else {
+            println("\n-- 半透明描边：退化接头处不该被画两遍 --")
+            val opaque = TRANSLUCENT_RGB or (0xFF shl 24)
+            val refColor = pixelAt(REF_X.toInt() + 5, REF_Y.toInt() + 5)
+
+            // 前提 1：这个场景必须真的"混"过。不透明时两层与一层颜色完全相同，
+            // 这条断言就会退化成恒真——所以先钉住"参考色既不是不透明色也不是背景"。
+            report("参考色确实被 alpha 混合过（既不是不透明色、也不是背景）",
+                refColor != opaque && refColor != BACKGROUND,
+                "#%06X（不透明色 #%06X、背景 #%06X）".format(refColor, opaque, BACKGROUND))
+
+            // 前提 2（同帧内的灵敏度对照）：两段带自相交处是**两层**，必须比单层更深。
+            // 它在同一帧里证明了"两层 ≠ 一层"看得见，于是下面那条不是恒真。
+            val doubleColor = pixelAt(DOUBLE_PROBE_X, DOUBLE_PROBE_Y)
+            report("对照：两段带自相交处是两层，颜色比单层更深",
+                doubleColor != refColor && doubleColor != BACKGROUND,
+                "($DOUBLE_PROBE_X,$DOUBLE_PROBE_Y) = #%06X，单层 #%06X".format(doubleColor, refColor))
+
+            // 判别式：退化接头内部只可能被接头自己覆盖（两个描边四边形都以"过顶点的
+            // 横断面"收边），所以必须是**单层色**。接头被发两遍时它会变成双层色。
+            val probe = countIn(JOINT_PROBE_X, JOINT_PROBE_Y,
+                JOINT_PROBE_X + 2, JOINT_PROBE_Y + 2, refColor)
+            report("退化接头内部 9 px 全是**单层**色（画两遍会更深）", probe == 9,
+                "实际 $probe / 9 px 是单层色，接头框内像素："
+                        + (0..2).joinToString(" ") { dy ->
+                    (0..2).joinToString(",") { dx ->
+                        "#%06X".format(pixelAt(JOINT_PROBE_X + dx, JOINT_PROBE_Y + dy))
+                    }
+                })
+
+            println("\n-- 无杂散像素（覆盖整幅画面）--")
+            // 本变体应当恰好 3 种颜色：背景、单层、以及两段带自相交处的双层 —— 由文件
+            // 末尾那条统一的"画面只有 N 种颜色"断言按变体取 N 来钉（这里不重复断言）。
         }
 
-        report("画面只有 $EXPECTED_COLORS 种颜色（无杂散像素）", counts.size == EXPECTED_COLORS,
+        // 半透明变体（最后一个）是唯一的例外：它必然多出一种"两层"颜色
+        // （两段描边带在尖角内侧自相交，那是本类已声明的限制，不是缺陷）。
+        val expectedColors = if (drawnVariant == 6) 3 else EXPECTED_COLORS
+        report("画面只有 $expectedColors 种颜色（无杂散像素）", counts.size == expectedColors,
             "实际 ${counts.size} 种：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")
         report("背景色为 clear 色", (counts[BACKGROUND] ?: 0) > 0, "背景像素 ${counts[BACKGROUND] ?: 0}")
 

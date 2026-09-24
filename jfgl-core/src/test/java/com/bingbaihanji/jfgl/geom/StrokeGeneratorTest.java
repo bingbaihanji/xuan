@@ -62,6 +62,29 @@ class StrokeGeneratorTest {
     }
 
     /**
+     * 点 (px,py) 被**多少个**已发出的三角形覆盖（含边界，与 {@link #covers} 同口径）。
+     *
+     * <p>`covers` 只回答"有没有"，回答不了"几层"。而"同一个地方被画了两遍"这件事
+     * **恰恰是层数问题**：不透明时毫无症状，半透明时会叠加两次颜色。所以判"重复覆盖"
+     * 必须数层数，不能只数有无。
+     */
+    private static int coverageCount(float[] tris, float px, float py) {
+        int n = 0;
+        for (int i = 0; i + 5 < tris.length; i += 6) {
+            float ax = tris[i], ay = tris[i + 1];
+            float bx = tris[i + 2], by = tris[i + 3];
+            float cx = tris[i + 4], cy = tris[i + 5];
+            float d1 = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+            float d2 = (cx - bx) * (py - by) - (cy - by) * (px - bx);
+            float d3 = (ax - cx) * (py - cy) - (ay - cy) * (px - cx);
+            boolean neg = d1 < -1e-6f || d2 < -1e-6f || d3 < -1e-6f;
+            boolean pos = d1 > 1e-6f || d2 > 1e-6f || d3 > 1e-6f;
+            if (!(neg && pos)) n++;
+        }
+        return n;
+    }
+
+    /**
      * 断言所有顶点坐标都是有限值。
      *
      * <p>NaN/Infinity 会一路带进 VBO 并污染整个批次，而且它在面积断言里往往表现为
@@ -314,6 +337,37 @@ class StrokeGeneratorTest {
         assertEquals(bevel.triangleCount(), miter.triangleCount(),
                 "回退为斜接后应与 BEVEL 逐项相同（多一个就说明底边三角形画了两遍）");
         assertEquals(area(bevel.triangles()), area(miter.triangles()), 1e-3f);
+    }
+
+    /**
+     * 上一条数的是三角形**个数**（多一个就说明画了两遍）；这一条数**覆盖层数**
+     * ——它才是"重复覆盖"的本体，也是半透明描边唯一看得见的后果。
+     *
+     * <p>直角处底边三角形 `(0,0)-(0,-5)-(5,0)` 的内部只可能被接头自己覆盖：
+     * 两个描边四边形都以"过 (0,0) 的横断面"收边，够不到这个三角形里面。
+     * 所以逐点扫过去，覆盖层数必须**恒为 1**。
+     */
+    @Test
+    void miter超限回退斜接时底边三角形的内部只被覆盖一次() {
+        float[] pts = {-10f, 0f, 0f, 0f, 0f, 10f};
+        StrokeGenerator g = new StrokeGenerator();
+        g.stroke(pts, 3, false, 10f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 1f);
+        float[] tris = g.triangles();
+
+        // 采点与三条边都留 0.25 的余量，避开展开边界（边界上的点算不算覆盖取决于口径）
+        int probed = 0;
+        for (float px = 0.25f; px <= 4.5f; px += 0.25f) {
+            for (float py = -4.5f; py <= -0.25f; py += 0.25f) {
+                if (px - py > 4.5f) {
+                    continue; // 底边之外：退化成斜接后那里不该有任何三角形
+                }
+                probed++;
+                assertEquals(1, coverageCount(tris, px, py),
+                        "(" + px + "," + py + ") 的覆盖层数必须是 1（2 就是画了两遍）");
+            }
+        }
+        assertTrue(probed > 100, "采样点太少，这条断言会失去判别力：" + probed);
     }
 
     @Test
