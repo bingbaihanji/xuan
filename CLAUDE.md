@@ -225,9 +225,15 @@ Main.kt                     设置 prism.* 系统属性
   不要"顺手修好"它**——有测试钉着。
 - **裁剪生效**：被 `clipRect` 裁掉的部分不可拾取，与画面一致。
 - **只返回最上层**：重叠时后画的赢。要"全部重叠对象"需要逐对象多趟渲染，不在范围内。
-- **组件在 JavaFX 线程响应鼠标事件时用 `FXGLTransfer.pickAsync`**，不要直接调 `Gc.pick`
-  ——那是跨线程 GL 调用，崩得毫无规律。该入口使用双 PBO + fence，通常下一帧回调；
-  fence 未完成时不等待，连续请求仍以最新坐标为准。
+- **组件在 JavaFX 线程响应鼠标事件时用 `FXGLTransfer` 的那几个入口**，不要直接调 `Gc.pick`
+  ——那是跨线程 GL 调用，崩得毫无规律。它们都使用双 PBO + fence，通常下一帧回调，
+  fence 未完成时不等待。**分两条语义，别接错**：
+  - `pickAsync`（`pickAsyncAtNode`）：**最新覆盖旧的**，给 hover / 拖拽这类连续量；
+  - `clickAsync`（`clickAsyncAtNode` / `onClick`）：**有界 FIFO、按序交付**，给**点击**。
+    把点击接在 `pickAsync` 上会**静默丢点击**（实测「点一下、几微秒后移动鼠标」时
+    8 次真实点击 0 次交付——见「怎么验证改动」一节）。
+  - 坐标换算（局部 → 设备像素）由 `*AtNode` 与 `onClick` 替你做完；**自己调 `pickAsync`
+    就必须自己乘窗口缩放**，漏乘的表现是"点 A 命中 B"而画面完全正常。
 - 注册发生在**数据变化时而非每帧**；不再用的对象要 `unregister`，否则一直被强引用着。
 
 ### 文本
@@ -495,6 +501,45 @@ gc.endFrame()
    报告写着「全部通过」而 `seq10` 那条**根本没提交**。这类"被静默跳过的断言"
    比失败的断言更坏。
 
+   改**鼠标点击闭环**（坐标换算 / 事件接线 / 回调更新界面 / 点击队列）后跑 `ClickVerifier`
+   （合成 `MouseEvent` 走 `Node.fireEvent` 的真实事件路径，外加一次 `Robot` 真实点击，
+   退出码 0/1）：
+
+   ```bash
+   mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
+       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.ClickVerifierKt"
+   ```
+
+   它守的核心是**坐标换算**：`MouseEvent.getX()/getY()` 给的是画布节点的**逻辑**局部坐标，
+   而 `Gc` 要的是**设备像素**，两者差一个**窗口输出缩放系数**
+   （`scene.window.outputScaleY`，即 `GLCanvas.dpi`；本机 125%）。**少乘它，点击会落在
+   另一个对象上而画面完全正常**——它的 ★ 一对探针就是为这条设的：同一个局部坐标，
+   换算后点中 P、不换算点中 Q，而 P/Q 是两个不同的对象。它另外钉住「纯描边内部不命中」
+   「圆的外接框角上不命中」「后画的赢」「消失的对象不再命中」「命中对象带回来的样式
+   （是否填充/填充色/边框色/字号）」「回调在 JavaFX 线程且真的更新了界面」、
+   **点击队列**（一帧 8 下连点全部交付、按序、每条都对上自己的对象；队列满时丢最旧
+   且计入计数器），以及**真实鼠标事件能到达画布**（`Robot` 那一条；合成事件绕过
+   JavaFX 的拾取，单靠它证明不了这一点）。变异实测：把换算里的 ×缩放 去掉 ⇒ 41 条倒下；
+   把重叠的一对换个绘制顺序 ⇒ 只倒 2 条；改成从 GL 线程发事件 ⇒ 只倒 1 条；
+   **把点击退回「最新覆盖旧的」⇒ 恰好倒 7 条**（全是点击队列那两节，18 条探针与
+   `Robot` 那条照常通过——说明新断言对这条改动是**定向**敏感的）。
+   `NO_FREE_SLOT`（两个 PBO 都忙）在 20 连发下**实测会走到**，且一条点击都不丢：
+   取队列用的是 `peek`，只有提交成功才 `poll`。
+
+   ⚠️ **两条交付语义不能混**：`pickAsync` 是「最新覆盖旧的」，给 **hover / 拖拽**这类
+   **连续量**用；**离散的点击必须走 `clickAsync` / `clickAsyncAtNode` / `onClick`**，
+   它们是有界 FIFO、按序交付。曾经把点击也接在 `pickAsync` 上，实测「点一下、几微秒后
+   移动鼠标」（真实用户点完往往就会动一下）时 `点击回调被交付 0/8 次`——**8 次真实点击
+   全部静默消失**（回调不执行、界面毫无反应、没有任何错误）。队列容量 16，**满时丢最旧
+   并计入 `droppedClicks()`**：丢最旧是因为积压 16 帧的那一下早就是过期意图，
+   而"点得比帧率快"是正常压力不是程序错误，所以不抛异常——但绝不静默。
+
+   `ClickExample.kt`（`FXGLTransfer` 版，JavaFX Label 反馈）与 `ClickDslExample.kt`
+   （`jfgl { onClick { } }` 版，反馈画在画布上、并把每次命中 `println` 出来好让自动化
+   能核对）是两个可跑的示例。后者的存在是为了证明**从 DSL 那个入口也能接上点击**：
+   它只有 `onInit` / `onRender` / `onClick` 三块，没有一处手工搭 `Scene`/`Stage`，
+   也没有一处手写坐标换算。
+
    改**文本**路径后跑 `TextVerifier`（退出码 0/1）。它的核心断言是：
    同一个字以 24px 与 192px 绘制时，**边缘过渡带宽度大致恒定**——
    位图被放大时过渡带会随缩放线性变宽，**这是唯一能把"SDF 生效"与
@@ -584,7 +629,9 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
 半谱）、
 `renderer/PickRegistry`（ID 分配与 `id→对象` 映射，纯内存可单测）、
 `renderer/PickBuffer`、`PickHit`、`Gc` 的 `pickId` / `pickable` / `pick` / `pickRect`、
-`FXGLTransfer.pickAsync`、`renderer/Material`（材质选择位）、
+`FXGLTransfer` 的 `pickAsync` / `pickAsyncAtNode`（hover，最新覆盖旧的）与
+`clickAsync` / `clickAsyncAtNode` / `onClick`（点击，有界 FIFO + 丢弃计数），
+`renderer/Material`（材质选择位）、
 `text/FontFile`（stb 的字体与度量封装）、`text/GlyphRasterizer`、`text/GlyphAtlas`（R8 图集）、
 `Gc` 的 `fontSize` / `drawText` / `measureText`、
 `chartrender/` 全部（`ChartRenderer`——入口是 `Gc.charts`、`LineSeriesRenderer`、

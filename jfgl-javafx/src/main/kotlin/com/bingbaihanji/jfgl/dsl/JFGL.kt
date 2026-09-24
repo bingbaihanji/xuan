@@ -2,13 +2,14 @@ package com.bingbaihanji.jfgl.dsl
 
 import com.bingbaihanji.jfgl.glview.FXGLTransfer
 import com.bingbaihanji.jfgl.renderer.Gc
+import com.bingbaihanji.jfgl.renderer.PickHit
 import com.bingbaihanji.jfgl.view.MainView
 import javafx.application.Application
 import javafx.scene.Scene
 import javafx.stage.Stage
 
 /**
- * JFGL 应用配置与入口，承载窗口参数与两个生命周期回调。
+ * JFGL 应用配置与入口，承载窗口参数、两个生命周期回调与点击回调。
  *
  * <p>典型用法：
  * ```kotlin
@@ -22,6 +23,9 @@ import javafx.stage.Stage
  *     }
  * }
  * ```
+ *
+ * <p>要接鼠标点击就再加一个 [onClick]：`onRender` 里用 `gc.pickable(id) { }` 打标，
+ * `onClick` 里就能从 `hit.payload()` 拿回那个对象（细节见 [onClick] 的说明）。
  *
  * <p>坐标系：回调拿到的是 [Gc]（批处理的 2D 绘制上下文），坐标是**像素、原点左上、y 向下**。
  *
@@ -49,6 +53,55 @@ class JFGL {
 
     /** 每帧绘制回调，接收者为 [Gc]。 */
     private var onRenderCallback: (Gc.() -> Unit)? = null
+
+    /** 点击回调。为空表示不接鼠标事件（那就不做任何拾取，白付代价）。 */
+    private var onClickCallback: ((PickHit?) -> Unit)? = null
+
+    /**
+     * 设置**点击**回调：在画布上点一下，回调拿到命中的对象。
+     *
+     * <p>这是 `jfgl { }` 里接鼠标的唯一入口。它替调用方做了三件容易做错的事：
+     *
+     * 1. 注册 `MOUSE_CLICKED`（并**做坐标换算**——鼠标事件给的是节点的**逻辑**局部
+     *    坐标，而拾取要的是**设备像素**，两者差一个窗口缩放系数；少了它的表现是
+     *    "点 A 命中 B"，画面完全正常，在 100% 缩放的机器上还一切正常）；
+     * 2. 走**点击队列**而不是"最新覆盖旧的"——离散的点击被后一次请求覆盖掉会
+     *    **静默消失**（见 `FXGLTransfer.clickAsync`）；
+     * 3. 把回调送回 **JavaFX 应用线程**，因此可以安全地改界面。
+     *
+     * <p>典型用法：
+     * ```kotlin
+     * jfgl {
+     *     onInit { gc -> id = gc.pickRegistry.register(myObject) }   // 注册载荷
+     *     onRender { gc -> gc.pickable(id) { gc.fillRect(...) } }    // 打标
+     *     onClick { hit -> label.text = hit?.payload().toString() }  // 点中谁就是谁
+     * }
+     * ```
+     *
+     * <p>回调里**不要**直接调 [Gc]：它的任何方法都必须在 GL 线程上运行。
+     * 需要"点中之后改画面"，把结果存进一个 `@Volatile` 字段，在 [onRender] 里读。
+     *
+     * @param block 点击回调；未命中时参数为 null
+     */
+    fun onClick(block: (PickHit?) -> Unit) {
+        onClickCallback = block
+    }
+
+    /**
+     * 是否接了点击回调。由 [JFGLApplication] 判断要不要装事件处理器。
+     *
+     * @return 已设置 [onClick] 时为 true
+     */
+    internal fun wantsClicks(): Boolean = onClickCallback != null
+
+    /**
+     * 转发点击回调。由 [JFGLApplication] 在 JavaFX 线程上调用。
+     *
+     * @param hit 命中结果；未命中时为 null
+     */
+    internal fun invokeClick(hit: PickHit?) {
+        onClickCallback?.invoke(hit)
+    }
 
     /**
      * 设置初始化回调：GL 上下文就绪后调用一次，参数是可用于**一次性**准备工作的 [Gc]
@@ -144,8 +197,15 @@ internal class JFGLApplication : Application() {
         bridge.onFrame { gc -> config.invokeRender(gc) }
         transfer = bridge
 
+        val view = bridge.createGlFXView()
+        // 只有真的注册了点击回调才装事件处理器：没接鼠标的应用不该为每次点击
+        // 白付一次 GPU 拾取的开销。
+        if (config.wantsClicks()) {
+            bridge.onClick(view) { hit -> config.invokeClick(hit) }
+        }
+
         val mainView = MainView().apply {
-            center = bridge.createGlFXView()
+            center = view
         }
         stage.title = config.title
         stage.scene = Scene(mainView.createMainView(), config.width, config.height)

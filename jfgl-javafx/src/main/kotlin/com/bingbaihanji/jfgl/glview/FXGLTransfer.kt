@@ -12,9 +12,12 @@ import com.huskerdev.openglfx.canvas.events.GLRenderEvent
 import com.huskerdev.openglfx.internal.GLInteropType
 import com.huskerdev.openglfx.lwjgl.LWJGLExecutor.Companion.LWJGL_MODULE
 import java.util.HashMap
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import javafx.application.Platform
 import javafx.scene.Node
+import javafx.scene.input.MouseEvent
 import org.lwjgl.opengl.GL11.*
 
 /**
@@ -82,6 +85,27 @@ class FXGLTransfer(
      * 否则在「读到旧值」与「置空」之间到达的新请求会被丢掉。
      */
     private val pendingPick = AtomicReference<PickRequest?>()
+
+    /**
+     * 待提交的**点击**请求队列。[pickAsync] 的「最新覆盖旧的」对**离散的点击**是错的：
+     * 一次点击的回调被后一次请求覆盖掉，这次点击就**什么都不会发生、且没有任何错误**。
+     * 点击因此走这条有界 FIFO，逐帧按序交付。
+     *
+     * <p>**容量写死在 [CLICK_QUEUE_CAPACITY]**：它必须是有界的，否则"点得比帧率快"
+     * （脚本连发、或渲染卡住时用户狂点）会让队列无限增长。满了的语义见 [clickAsync]。
+     *
+     * <p>用 [ArrayBlockingQueue] 而不是自己拿 [AtomicReference] 拼一个：容量由数据结构
+     * 本身保证，`size()` 是 O(1) 且线程安全（写者在 JavaFX 线程、消费者在 GL 线程）。
+     */
+    private val clickQueue = ArrayBlockingQueue<PickRequest>(CLICK_QUEUE_CAPACITY)
+
+    /**
+     * 因队列满而被丢弃的点击请求数（累计，**从不复位**）。
+     *
+     * <p>丢弃既然是必然可达的一条路径（见 [clickAsync]），就不能是静默的：
+     * 这个计数器是它唯一的出口，调试时先看它是不是 0。
+     */
+    private val droppedClicks = AtomicInteger()
 
     /** 已提交给 PBO、等待 GPU 完成的请求；只在 GL 线程访问。 */
     private val inFlightPicks = HashMap<Long, PickRequest>()
@@ -245,6 +269,10 @@ class FXGLTransfer(
      *
      * <p>同一时刻只保留最新的一次请求；连续调用会覆盖前一次的回调。
      *
+     * <p><strong>它是给「连续量」用的（hover、拖拽）。</strong>连续量每一帧重算一次，
+     * 旧的答案本来就过时了，所以覆盖是对的。**离散的点击请用 [clickAsync] 或
+     * [onClick]**：点击被覆盖掉的表现是"点了没反应，且没有任何错误"。
+     *
      * @param x        查询点 x（用户坐标，y 向下）
      * @param y        查询点 y（用户坐标，y 向下）
      * @param callback 结果回调，在 JavaFX 应用线程上被调用；未命中时参数为 null
@@ -252,6 +280,147 @@ class FXGLTransfer(
     fun pickAsync(x: Float, y: Float, callback: (PickHit?) -> Unit) {
         pendingPick.set(PickRequest(x, y, callback))
     }
+
+    /**
+     * 请求在**节点局部坐标** [x]/[y] 处做一次异步拾取。
+     *
+     * <p>这是给 JavaFX 鼠标事件用的入口：[MouseEvent.getX]/`getY` 给的是**画布节点的
+     * 局部坐标**（逻辑像素），而 [pickAsync] 要的是**设备像素**，两者差一个窗口输出
+     * 缩放系数。少了这一次换算，点击会落在**另一个对象**上，而画面完全正常——
+     * 在 100% 缩放的机器上还一切正常（那时系数是 1），是典型的"在我机器上没问题"。
+     *
+     * <p><strong>两轴都用 `outputScaleY`，这是刻意的，不是笔误</strong>：
+     * 帧缓冲的宽高都由它算出（`GLCanvas.scaledWidth/Height = ceil(节点尺寸 × dpi)`，
+     * 而 `dpi = GLFXUtils.getDPI(node)` 只取 `window.outputScaleY`），所以
+     * "1 个局部单位 = 多少个帧缓冲像素"在 x/y 上是**同一个数**。反过来用
+     * `outputScaleX` 换算 x，在非等比缩放下反而是错的。
+     * ⚠️ 本机（Windows 125%）`outputScaleX == outputScaleY == 1.25`，
+     * **非等比缩放造不出来，因此这一条没有实测**——上面是选 Y 的理由，不是实测结论。
+     *
+     * @param node     画布节点（`createGlFXView()` 的返回值），坐标以它的左上角为原点
+     * @param x        节点局部坐标 x
+     * @param y        节点局部坐标 y
+     * @param callback 结果回调，在 JavaFX 应用线程上被调用；未命中时参数为 null
+     */
+    fun pickAsyncAtNode(node: Node, x: Double, y: Double, callback: (PickHit?) -> Unit) {
+        val scale = nodeScale(node)
+        pickAsync((x * scale).toFloat(), (y * scale).toFloat(), callback)
+    }
+
+    /**
+     * 请求在**节点局部坐标** [x]/[y] 处做一次异步拾取，语义是**离散的点击**。
+     *
+     * <p>与 [pickAsyncAtNode] 的区别只有交付语义：这条走**有界 FIFO**，
+     * 一次点击一条、按序交付、**不会因为后面来了别的请求就被覆盖掉**。
+     * 鼠标点击请用这条（或直接用 [onClick]）。
+     *
+     * @param node     画布节点，坐标以它的左上角为原点
+     * @param x        节点局部坐标 x
+     * @param y        节点局部坐标 y
+     * @param callback 结果回调，在 JavaFX 应用线程上被调用；未命中时参数为 null
+     */
+    fun clickAsyncAtNode(node: Node, x: Double, y: Double, callback: (PickHit?) -> Unit) {
+        val scale = nodeScale(node)
+        clickAsync((x * scale).toFloat(), (y * scale).toFloat(), callback)
+    }
+
+    /**
+     * 在节点上接一个**点击**回调：内部注册 `MOUSE_CLICKED` 并按 [clickAsyncAtNode]
+     * 的语义交付。
+     *
+     * <p>这是把"点击闭环"接起来的最短路径——调用方不必自己记住"局部坐标要乘窗口缩放"，
+     * 也不必自己处理事件注册/注销。`jfgl { }` 的 `onClick { }` 就是转接到这里。
+     *
+     * <p>回调在 **JavaFX 应用线程**上执行，可以安全地改界面。同一个节点可以接多个
+     * 回调（JavaFX 的处理器表天然支持），它们都会收到同一次点击。
+     *
+     * @param node     画布节点（`createGlFXView()` 的返回值）
+     * @param callback 结果回调；未命中时参数为 null
+     */
+    fun onClick(node: Node, callback: (PickHit?) -> Unit) {
+        node.addEventHandler(MouseEvent.MOUSE_CLICKED) { event ->
+            clickAsyncAtNode(node, event.x, event.y, callback)
+        }
+    }
+
+    /**
+     * 请求在**设备像素**坐标 [x]/[y] 处做一次异步拾取，语义是**离散的点击**。
+     *
+     * <h2>为什么不能复用 [pickAsync]</h2>
+     *
+     * <p>`pickAsync` 只保留最新一次请求。对 hover 那是对的（连续量、每帧重算），
+     * 但**点击是离散事件**：一次点击的回调被后一次请求覆盖掉，这次点击就
+     * **什么都不会发生、且没有任何错误**。只要应用同时用 `pickAsync` 做 hover
+     * （文档推荐的用法），鼠标点完往往还会动一下，两者相隔几微秒、落在同一帧窗口内，
+     * 于是**点击几乎必丢**。
+     *
+     * <h2>交付语义</h2>
+     *
+     * <ul>
+     *   <li><strong>按序（FIFO）</strong>：先点的先交付，一帧交付一条（与 PBO 的
+     *       回收节奏一致），因此不会乱序；</li>
+     *   <li><strong>不覆盖</strong>：后到的请求不影响已入队的；</li>
+     *   <li><strong>有界，容量 [CLICK_QUEUE_CAPACITY]</strong>：约 0.27 秒的积压
+     *       （60fps 每帧交付一条）。</li>
+     * </ul>
+     *
+     * <h2>队列满时：丢弃**最旧**的一条</h2>
+     *
+     * <p>这是刻意的选择，不是"没想清楚"：
+     *
+     * <ul>
+     *   <li><strong>丢最旧而不是丢最新</strong>：用户刚点的那一下才是他的意图；
+     *       而积压了 16 帧（约 0.27 秒）的那一下早就是过期意图了——那一帧的场景
+     *       可能都已经变了（列表滚动过、弹窗关掉了），交付它比不交付更糟。</li>
+     *   <li><strong>不抛异常</strong>：这个方法在 JavaFX 事件处理器里被调用，
+     *       抛出去会打断事件分发；而"用户点得比帧率快"不是程序错误，
+     *       是必然出现的正常压力。</li>
+     *   <li><strong>但绝不静默</strong>：每一次丢弃都计入 [droppedClicks]，
+     *       该计数器累计且从不复位。丢弃这条路是可观测的。</li>
+     * </ul>
+     *
+     * <p>队列满只可能发生在"积压"时，而点击的积压说明这一帧的拾取已经连续
+     * [CLICK_QUEUE_CAPACITY] 帧没能交付——真到那一步，该调的是帧率或拾取成本，
+     * 而不是把队列开大。
+     *
+     * @param x        查询点 x（设备像素；来自鼠标事件时请用 [clickAsyncAtNode]）
+     * @param y        查询点 y（设备像素）
+     * @param callback 结果回调，在 JavaFX 应用线程上被调用；未命中时参数为 null
+     */
+    fun clickAsync(x: Float, y: Float, callback: (PickHit?) -> Unit) {
+        val request = PickRequest(x, y, callback)
+        if (clickQueue.offer(request)) {
+            return
+        }
+        // 满：腾一格给这一条（丢最旧的）。每一次丢弃都要计数，包括下面那次兜底，
+        // 否则"并发下这条也没进去"就成了唯一一条静默路径。
+        val dropped = clickQueue.poll()
+        if (dropped != null) {
+            droppedClicks.incrementAndGet()
+        }
+        if (!clickQueue.offer(request)) {
+            droppedClicks.incrementAndGet()
+        }
+    }
+
+    /**
+     * 当前**待提交**的点击请求数。
+     *
+     * <p>不含已经提交给 PBO、正在等 GPU 的那些（那些在 [inFlightPicks] 里）。
+     * 供诊断与断言用：持续不为 0 说明交付跟不上点击。
+     *
+     * @return 队列深度（0 表示没有积压）
+     */
+    fun clickQueueDepth(): Int = clickQueue.size
+
+    /**
+     * 返回累计因队列满而被丢弃的点击请求数（**从不复位**）。
+     *
+     * <p>没有它，"丢弃"就是一条静默路径；有了它，调用方可以断言它一直是 0。
+     *
+     * @return 累计丢弃数
+     */
+    fun droppedClicks(): Int = droppedClicks.get()
 
     /**
      * 一次待处理的拾取请求。
@@ -267,10 +436,26 @@ class FXGLTransfer(
     )
 
     /**
-     * 非阻塞地消费 PBO 结果，再把最新请求提交给空闲 PBO。
+     * 节点局部坐标 → 设备像素的换算系数。
+     *
+     * <p>取的是**窗口输出缩放**，与 `GLCanvas.dpi` 同一个量。节点还没上场景/窗口时
+     * （理论上鼠标事件不可能发生）按 1 处理，而不是崩。
+     *
+     * <p>不用 `scaledWidth / node.width` 反推：那是同一个量的另一种算法，但
+     * `scaledWidth` 是 `ceil(宽度 × 缩放)`，反推出来会带上最多 1 个像素的误差。
+     */
+    private fun nodeScale(node: Node): Double = node.scene?.window?.outputScaleY ?: 1.0
+
+    /**
+     * 非阻塞地消费 PBO 结果，再把下一条请求提交给空闲 PBO。
      *
      * <p>PBO 读回至少跨一帧：提交后只在 fence 已完成时映射，GPU 未完成时直接返回，
-     * 不会让 JavaFX hover 在 `glReadPixels` 上等待。双缓冲都忙时，当前最新请求保留到下一帧。
+     * 不会让 JavaFX hover 在 `glReadPixels` 上等待。双缓冲都忙时，请求保留到下一帧。
+     *
+     * <p><strong>每帧只提交一条</strong>，优先取积压的**点击**（FIFO，见 [clickAsync]），
+     * 队列空了才取 hover 的最新一条（[pickAsync] 的「最新覆盖旧的」语义原样不动）。
+     * 点击优先是有意的：点击是离散意图，hover 每帧重算、晚一两帧没有代价
+     * （它本来就会被后续移动覆盖）。
      *
      * @param context 当前帧的绘制上下文
      */
@@ -285,18 +470,34 @@ class FXGLTransfer(
             Platform.runLater { request.callback(hit) }
         }
 
-        val request = pendingPick.getAndSet(null) ?: return
+        // 点击队列优先。**peek 而不是 poll**：只有真正提交成功（或明确判定为
+        // 不需要 GPU 就能回答）才把它取走。PBO 两个槽都忙时留在队里，下一帧再试——
+        // 这样"有界队列"在任何情况下都不会丢一条本可以交付的点击。
+        val queued = clickQueue.peek()
+        val fromClickQueue = queued != null
+        val request = queued ?: pendingPick.getAndSet(null) ?: return
         val token = nextPickToken++
         when (context.enqueueAsyncPick(request.x.toInt(), request.y.toInt(), token)) {
             com.bingbaihanji.jfgl.renderer.PickBuffer.AsyncReadStatus.QUEUED -> {
                 inFlightPicks[token] = request
+                if (fromClickQueue) {
+                    clickQueue.poll()
+                }
             }
             com.bingbaihanji.jfgl.renderer.PickBuffer.AsyncReadStatus.NO_FREE_SLOT -> {
-                // 新请求已经抵达时保留它；否则把本次最新请求留到下一帧。
-                pendingPick.compareAndSet(null, request)
+                // 点击：留在队里下帧再试（上面的 peek 已经保证了这一点）。
+                // hover：新请求已经抵达时保留它；否则把本次最新请求留到下一帧。
+                if (!fromClickQueue) {
+                    pendingPick.compareAndSet(null, request)
+                }
             }
             com.bingbaihanji.jfgl.renderer.PickBuffer.AsyncReadStatus.OUT_OF_BOUNDS,
             com.bingbaihanji.jfgl.renderer.PickBuffer.AsyncReadStatus.NO_PICK_CONTENT -> {
+                // 不需要 GPU 就能回答（越界 / 本帧没有 ID pass）：直接交付"未命中"，
+                // 而不是让它留在队里等到天荒地老。
+                if (fromClickQueue) {
+                    clickQueue.poll()
+                }
                 Platform.runLater { request.callback(null) }
             }
         }
@@ -310,5 +511,14 @@ class FXGLTransfer(
          * 超出后会触发帧中途 flush，不会失败。
          */
         private const val INITIAL_VERTEX_CAPACITY = 65536
+
+        /**
+         * 点击队列的容量。
+         *
+         * <p>一帧交付一条，所以 16 条约等于 **0.27 秒**的积压。取值理由：人手点击最快
+         * 每秒十几次，而拾取滞后的容忍上限是"用户还没觉得卡"的那个量级；
+         * 更大只会让"过期意图"交付得更晚（见 [clickAsync] 的满时语义）。
+         */
+        private const val CLICK_QUEUE_CAPACITY = 16
     }
 }

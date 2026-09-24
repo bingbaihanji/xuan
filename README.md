@@ -53,6 +53,45 @@ fun main() {
 
 `onRender` 的接收者是 `Gc`，所以块内可以直接写 `fill = ...`、`fillRect(...)`。
 
+## 点击事件
+
+给图形接点击只要加两处：`onRender` 里用 `pickable(id) { }` 打标，`onClick` 里拿回对象。
+
+```kotlin
+jfgl {
+    title = "点一下"
+    width = 800.0
+    height = 600.0
+
+    var rectId = 0
+
+    onInit { gc ->
+        // 注册载荷：命中时回调里拿到的就是这个对象本身（注册发生在数据变化时，不是每帧）
+        rectId = gc.pickRegistry.register("红色矩形")
+    }
+    onRender {
+        fill = 0xFFFF0000.toInt()
+        pickable(rectId) { fillRect(50f, 50f, 200f, 120f) }
+    }
+    onClick { hit ->
+        // 在 JavaFX 应用线程上回调；未命中时 hit 为 null
+        println(if (hit == null) "点空了" else "点中了 ${hit.payload()}")
+    }
+}
+```
+
+- **`(x, y)` 的坐标系由库负责换算**：鼠标事件给的是节点的逻辑坐标，而拾取要的是设备像素，
+  两者差一个窗口缩放系数。`onClick` / `clickAsyncAtNode` 内部替你乘好了，**不要自己调
+  `FXGLTransfer.pickAsync` 再手工换算**——漏乘的表现是"点 A 命中 B"，而画面完全正常
+  （在 100% 缩放的机器上还一切正常）。
+- **点击走的是有界队列**（按序交付，队列满时丢最旧并计入 `droppedClicks()`）。
+  hover / 拖拽那类连续量请用 `FXGLTransfer.pickAsync`——它是"最新覆盖旧的"，
+  把点击接在它上面会**静默丢点击**。
+- 回调里不要碰 `Gc`（它只能在 GL 线程用）。要"点中之后改画面"，把结果存进字段，
+  在 `onRender` 里读。
+- 完整可跑的例子见 `example/ClickDslExample.kt`（DSL 版）与 `example/ClickExample.kt`
+  （`FXGLTransfer` 版，带 JavaFX 控件反馈）。
+
 ## 运行
 
 ```bash
@@ -90,6 +129,10 @@ mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime
 # FFT / 频谱（不画任何东西，只测数值）
 mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
     "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.FftVerifierKt"
+
+# 点击闭环（合成鼠标事件走真实事件路径 + 一次 Robot 真实点击）
+mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
+    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.ClickVerifierKt"
 ```
 
 **改哪条路径就跑哪个校验器**：动了顶点/几何/描边跑 `PipelineVerifier`，
@@ -100,8 +143,10 @@ mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime
 动了文本（`text/`、`fontSize`、`drawText`）跑 `TextVerifier`，
 动了图表绘制（`chartrender/`、`Gc.charts`、`Gc.flush`）跑 `ChartVerifier`，
 动了 FFT 或频谱的数据来源（`gpu/FftKernel`、`FftWindow`、`SpectrumSeriesRenderer`）
-跑 `FftVerifier`（数值）**和** `ChartVerifier`（频谱画出来的位置）。
-五个都过不代表没漏——它们只证明自己断言过的那些点，见文末「测试」一节。
+跑 `FftVerifier`（数值）**和** `ChartVerifier`（频谱画出来的位置），
+动了鼠标点击那条闭环（`FXGLTransfer` 的 `pickAsync` / `clickAsync` / `onClick`、
+`resolvePendingPick` 的点击队列、坐标换算）跑 `ClickVerifier`。
+六个都过不代表没漏——它们只证明自己断言过的那些点，见文末「测试」一节。
 
 > **Windows 下要带 `-Dstdout.encoding=UTF-8`**（放在 `-cp` 之前）：JVM 的
 > `stdout.encoding` 默认取系统编码（实测本机是 GBK），而 `exec:exec` 不会替你设置它，
