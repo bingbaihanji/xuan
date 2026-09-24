@@ -219,8 +219,7 @@ class StrokeGeneratorTest {
     }
 
     @Test
-    void miter超限回退斜接且阈值内保留尖角() {
-        // 转向约 170 度，miter 长度比 1/sin(5°) ≈ 11.5
+    void miter超限回退斜接且阈值内保留尖角() {        // 转向约 170 度，miter 长度比 1/sin(5°) ≈ 11.5
         double a = Math.toRadians(170);
         float ux = (float) Math.cos(a), uy = (float) Math.sin(a);
         float[] turn = {0f, 0f, 10f, 0f, 10f + 10f * ux, 10f * uy};
@@ -238,6 +237,83 @@ class StrokeGeneratorTest {
         // 阈值 20 下保留尖角：尖端在 x ≈ 32.9
         assertTrue(maxX(miter.triangles()) > 20f,
                 "阈值内应保留 miter 尖端，实际 maxX=" + maxX(miter.triangles()));
+    }
+
+    /**
+     * MITER 接头必须把"顶点与接头底边之间"那一片也覆盖上——它由**两个**三角形拼成：
+     * 底边之外的尖角三角形，以及顶点到底边之间的那个三角形（后者正是 BEVEL 发的那个）。
+     *
+     * <p>曾经只发前者：直角处顶点内侧缺一块三角形（面积 = 半线宽²/2），线宽越大越明显
+     * （线宽 20 的直角方块，四角各缺 50 px²，总面积实测 15800 而理想是 16000）。
+     * 细线宽下几乎看不出来，所以这个缺陷活了很久——面积断言也拦不住它吗？
+     * 拦得住，但容差把它盖过去了（差 1.25%）。
+     *
+     * <p>折线 `(-10,0) → (0,0) → (0,10)`、线宽 10（半线宽 5）：接头处理想描边是一个
+     * 风筝形四边形 `(0,0)-(0,-5)-(5,-5)-(5,0)`。
+     */
+    @Test
+    void 直角接头覆盖顶点与接头底边之间那一片() {
+        float[] pts = {-10f, 0f, 0f, 0f, 0f, 10f};
+        StrokeGenerator g = new StrokeGenerator();
+        g.stroke(pts, 3, false, 10f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 4f);
+        float[] tris = g.triangles();
+
+        // 顶点到底边之间那一块：到顶点 (0,0) 的距离分别是 √2、√8、√0.5，都小于半线宽 5，
+        // 因此**理想描边必然覆盖**它们，与接头怎么实现无关。
+        assertTrue(covers(tris, 1f, -1f), "顶点与接头底边之间 (1,-1) 必须被覆盖");
+        assertTrue(covers(tris, 2f, -2f), "顶点与接头底边之间 (2,-2) 必须被覆盖");
+        assertTrue(covers(tris, 0.5f, -0.5f), "顶点附近 (0.5,-0.5) 必须被覆盖");
+
+        // 反证：越出接头尖角 (5,-5) 的点不该被覆盖，带外的点也不该——否则上面几条是恒真的。
+        assertFalse(covers(tris, 6f, -6f), "接头尖角之外的 (6,-6) 不该被覆盖");
+        assertFalse(covers(tris, -6f, 6f), "远离折线的 (-6,6) 不该被覆盖");
+
+        // 与 BEVEL 的覆盖做对照：MITER 的覆盖必须**包含** BEVEL 的覆盖（还多出尖角）。
+        // 这条不变量是"接头补全了"的完整表述，不依赖选点；逐点扫过接头附近即可。
+        // 两种接头用的是同一条折线与同样的线宽，除了接头本身，其余几何逐位相同。
+        StrokeGenerator bevel = new StrokeGenerator();
+        bevel.stroke(pts, 3, false, 10f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.BEVEL, 4f);
+        float[] bevelTris = bevel.triangles();
+        for (float px = -6f; px <= 6f; px += 0.25f) {
+            for (float py = -6f; py <= 6f; py += 0.25f) {
+                if (covers(bevelTris, px, py)) {
+                    assertTrue(covers(tris, px, py),
+                            "BEVEL 覆盖的点 MITER 必须也覆盖：" + px + "," + py);
+                }
+            }
+        }
+        // 反证（另一半）：尖角是 MITER 独有的，BEVEL 不该有——否则上面那圈包含关系
+        // 对"两个都退化成了同一个东西"同样成立。
+        assertTrue(covers(tris, 4f, -4f), "MITER 的尖角 (4,-4) 应被覆盖");
+        assertFalse(covers(bevelTris, 4f, -4f), "BEVEL 不该有尖角 (4,-4)");
+    }
+
+    /**
+     * MITER 超过限值回退为 BEVEL 时，**不能把底边那个三角形画两遍**。
+     *
+     * <p>这条是给"补发"式修法上的保险：修法是在 MITER 分支里补发底边三角形，
+     * 而退化分支**已经**发过它了。重复的三角形面积不变、画面（不透明时）也不变，
+     * 只有**半透明描边**会在那里叠加两次颜色——所以判据取三角形**个数**，
+     * 而不是面积。
+     *
+     * <p>阈值取 1（小于直角的 miter 长度比 √2）即可稳定落到退化分支。
+     */
+    @Test
+    void miter超限回退斜接时不会把底边三角形画两遍() {
+        float[] pts = {-10f, 0f, 0f, 0f, 0f, 10f};
+        StrokeGenerator miter = new StrokeGenerator();
+        miter.stroke(pts, 3, false, 10f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 1f);
+
+        StrokeGenerator bevel = new StrokeGenerator();
+        bevel.stroke(pts, 3, false, 10f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.BEVEL, 4f);
+
+        assertEquals(bevel.triangleCount(), miter.triangleCount(),
+                "回退为斜接后应与 BEVEL 逐项相同（多一个就说明底边三角形画了两遍）");
+        assertEquals(area(bevel.triangles()), area(miter.triangles()), 1e-3f);
     }
 
     @Test

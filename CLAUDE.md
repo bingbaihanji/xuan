@@ -90,10 +90,10 @@ jfgl-render-gl/src/test/.../gpu/        FftWindowTest、FftKernelTest
 （`...` 是 `java/com/bingbaihanji/jfgl`。`jfgl-javafx` 没有 surefire 测试——它的
 `example/` 里那五个校验器是**手动跑的 main**，不是单测。）
 
-当前 **337 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+当前 **339 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
 `@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`（跨模块加 `-pl 模块名`）。
-分布：`geom/` 76、`renderer/` 100、`gl/` 12、`text/` 32、`chart/` 59、`chartrender/` 44、
-`gpu/` 14（合计 337）。
+分布：`geom/` 78、`renderer/` 100、`gl/` 12、`text/` 32、`chart/` 59、`chartrender/` 44、
+`gpu/` 14（合计 339）。
 
 `geom/`、`math/`、`util/`、`ViewTransform`、`text/{SdfGenerator, TextLayout}`、`chart/`、
 `gpu/FftWindow`（窗系数与相干增益补偿，纯算术）都是纯计算、不依赖 GL 上下文，最适合写单测。
@@ -644,6 +644,24 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
   `closed` 改成恒 `true` ⇒ 5 条倒下，假收尾斜线被量到 84 px。
   `StrokeGeneratorTest`（"末点重复起点时闭合描边与去重后等价"）只钉住生成器那一侧，
   `Gc.strokePath` 这层的接线由 `PathVerifier` 的变体 ③④⑤ 钉。
+- ✅ **已修**：`StrokeGenerator` 的 **MITER 接头曾只发"接头底边之外"那半个三角形**，
+  漏掉"顶点与接头底边之间"那半个（= BEVEL 发的那个），于是每个尖角内侧缺一块，
+  面积 = 半线宽²/2（直角处）。线宽 20 时每角 50 px²；线宽 1 时只有 0.125 px²，
+  所以细线几乎看不出来，缺陷活了很久。**面积断言也拦不住它**：闭合直角方框四角合计
+  200 px² 相对 16000 只有 1.25%，落在 `PipelineVerifier` 那条 5% 容差里。
+  现在补全成**风筝形四边形**（顶点→偏移点→尖角→偏移点，两个三角形）。
+  两条分支（正常 miter 与超限回退 bevel）各自只发一次、共享的只有底边那条线，
+  **不会重复覆盖**；`miter超限回退斜接时不会把底边三角形画两遍` 钉着这一点
+  （判据取三角形**个数**——重复的三角形面积不变，只有半透明描边会叠加两次颜色）。
+  变异实测：①删掉补发那一行 ⇒ 单测 1 条 + `PathVerifier` 3 条倒下（方框总面积
+  15800→16000、跨变体差值 45→100；`PipelineVerifier` 的蓝描边 3068→3084，
+  解析期望 3090，即向解析值收敛）；②把补发提到限值判断**之前**（模拟"无条件补发"
+  的错误修法）⇒ 恰好 1 条倒下（`miter超限回退斜接时不会把底边三角形画两遍`，
+  5 vs 6 个三角形）。
+  **顺带一条容易算错的公式**：miter 长度是 `half / sin(内角/2)`，其中的角是
+  **两段之间的内角**（不是转向角）——按转向角算会把浅转角误判成远超限值。
+  实测：圆角矩形描边（线宽 4）的 28 个接头内角 165°（转向仅 15°），
+  miter 长度只有 2.02 ≪ 阈值 8，所以它们**全部走 MITER**。
 - ✅ **已修**：`Gc.fillPath()` 现在把**每个子路径当成一条独立轮廓**，谁是外轮廓、谁是洞
   由 `Tessellator.tessellateContours` 按**包含关系**判定（嵌套深度为偶数的是外轮廓、
   奇数的是洞，洞归给"深度正好比它小 1"的那个外轮廓）。

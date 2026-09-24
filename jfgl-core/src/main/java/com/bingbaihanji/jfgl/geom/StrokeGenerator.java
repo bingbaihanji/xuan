@@ -16,6 +16,11 @@ import java.util.Arrays;
  * <p><strong>已知限制</strong>：凹角处相邻段的偏移轮廓会自相交，产生重叠三角形。
  * 配合预乘 alpha，不透明描边无可见影响；半透明描边会出现颜色叠加。
  *
+ * <p><strong>MITER 接头补的是完整那一块</strong>：顶点、两个偏移点、尖角围成的风筝形四边形
+ * （两个三角形）。因此 90° 直角处填满的恰好是半线宽见方的角块，浅转角处几乎没有缝隙
+ * ——miter 长度按 {@code half / sin(内角/2)} 增长，**内角越小（转角越尖）越长**，
+ * 超过 miter limit 才退化成 {@link Join#BEVEL}。
+ *
  * <p><strong>180° 折回</strong>（折线原路折返、反向共线）处两段轮廓完全重合，覆盖面积本就不缺。
  * 此处 {@link Join#MITER} 与 {@link Join#BEVEL} 不生成接头（三角形退化为零面积），
  * {@link Join#ROUND} 则在尖端补出一个半径等于半线宽的半圆——这才是圆角接头应有的外形，
@@ -416,6 +421,15 @@ public final class StrokeGenerator {
             emitTriangle(px, py, px + o1x, py + o1y, px + o2x, py + o2y);
             return;
         }
+        // 完整的 miter 接头是"风筝形"四边形 (p, p+o1, m, p+o2)，**两个**三角形：
+        // 底边之外那个尖角三角形，加上顶点与底边之间那个（与上面退化分支发的**同一个**——
+        // 两条分支各自只发一次，互不重叠，共享的只有底边那条线）。
+        //
+        // 曾经只发前者：顶点内侧缺一块（面积 = 半线宽²/2，90° 直角处；线宽 20 时每角 50 px²，
+        // 线宽 1 时只有 0.125 px²，所以细线几乎看不出来，缺陷因此活了很久）。
+        // 90° 直角处风筝恰好是 2·半线宽 见方的角块，因此"补全"这一件事在像素上可读：
+        // 闭合直角方框的总面积从 15800 变成理想值 16000（见 PathVerifier）。
+        emitTriangle(px, py, px + o1x, py + o1y, px + o2x, py + o2y);
         emitTriangle(px + o1x, py + o1y, mx, my, px + o2x, py + o2y);
     }
 
