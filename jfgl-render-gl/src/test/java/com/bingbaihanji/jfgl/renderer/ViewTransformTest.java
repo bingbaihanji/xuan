@@ -214,6 +214,45 @@ class ViewTransformTest {
         assertEquals(300f + half, t.getClipBottom(), 1e-3f);
     }
 
+    /**
+     * 上一条钉住的是"旋转裁剪退化成轴对齐包围盒"的**数值**；这一条钉住它的**方向**。
+     *
+     * <p>降级本身是刻意的（底层只有 `glScissor`，它按定义只能是轴对齐矩形；旋转裁剪要
+     * 模板缓冲或着色器遮罩，本项目都没有），但"刻意"只解释了为什么允许它存在，
+     * 不解释它**可不可接受**。可接受的理由是方向单向：包围盒恒**包含**旋转后的矩形，
+     * 于是这个降级只会让裁剪区变大——**裁少，不会裁多**，永远不会吞掉本该显示的内容。
+     *
+     * <p>这条断言就是这个不变量的形式化：把裁剪矩形的四个角点经当前变换打到设备像素上，
+     * 每一个都必须落在裁剪区之内。任何"只取两个角点求包围盒""把矩形当成平行四边形继续
+     * 旋转"之类的改法都会让它失败。角度取到 350°，覆盖四个象限与负角度。
+     */
+    @Test
+    void 旋转裁剪的包围盒只多不少() {
+        for (float angle = -110f; angle < 360f; angle += 23.5f) {
+            ViewTransform t = frame();
+            t.translate(400f, 300f);
+            t.rotate(angle);
+            // 刻意用一个长宽不等、且不与屏幕对齐的矩形：轴对齐时包围盒与矩形重合，
+            // 分开长宽才能暴露"只算两个角点"这类错误。
+            t.clipRect(-30f, -12f, 62f, 26f);
+
+            // 与 clipRect 内部同一套换算：四个角点 → NDC → 设备像素
+            float[][] corners = {
+                    {-30f, -12f}, {32f, -12f}, {32f, 14f}, {-30f, 14f}
+            };
+            for (float[] c : corners) {
+                float deviceX = t.deviceX(t.transformX(c[0], c[1]));
+                float deviceY = t.deviceY(t.transformY(c[0], c[1]));
+                assertTrue(deviceX >= t.getClipLeft() - 1e-3f && deviceX <= t.getClipRight() + 1e-3f,
+                        "角度 " + angle + "：角点 x=" + deviceX + " 落在裁剪区 ["
+                                + t.getClipLeft() + ", " + t.getClipRight() + "] 之外");
+                assertTrue(deviceY >= t.getClipTop() - 1e-3f && deviceY <= t.getClipBottom() + 1e-3f,
+                        "角度 " + angle + "：角点 y=" + deviceY + " 落在裁剪区 ["
+                                + t.getClipTop() + ", " + t.getClipBottom() + "] 之外");
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // 变换与栈
     // ------------------------------------------------------------------
