@@ -1,5 +1,7 @@
 package com.bingbaihanji.jfgl.renderer
 
+import com.bingbaihanji.jfgl.chart.ChartLayout
+import com.bingbaihanji.jfgl.chartrender.ChartPainter
 import com.bingbaihanji.jfgl.chartrender.ChartRenderer
 import com.bingbaihanji.jfgl.geom.Flattener
 import com.bingbaihanji.jfgl.geom.Path
@@ -135,11 +137,68 @@ class Gc constructor(private val batch: RenderBatch) {
      * ```
      */
     private val chartsLazy = lazy {
-        ChartRenderer(batch.glAbstraction(), pickRegistry, batch::withPickPass)
+        ChartRenderer(batch.glAbstraction(), pickRegistry, batch::withPickPass, chartPainter)
     }
 
     /** 图表绘制入口。见 [chartsLazy]。 */
     val charts: ChartRenderer by chartsLazy
+
+    /**
+     * 图表装饰（标题、图例）的那支笔：把 [ChartPainter] 转发到本类的方法上。
+     *
+     * <p>四个方法没有一个有自己的算术——宽度问 [measureText]、文字问 [drawText]、
+     * 色块问 [fillRect]、状态交给 [save] / [restore]。**这样安排的目的是让
+     * "装饰画在哪"完全由 `ChartLayout`（纯计算）决定**，这里只剩转发；
+     * 一旦这里也开始算坐标，那份算术就没有单测能覆盖了。
+     *
+     * <p>三条实现细节：
+     * - [ChartPainter.begin] 里除了 [save] 还把 [pickId] 置 0：图例是装饰不是数据，
+     *   点在色块上不该命中一个系列（`save/restore` 会把调用方原来的 ID 还回去）。
+     * - [ChartPainter.lineHeight] 返回 `字号 × ChartLayout.LINE_HEIGHT_FACTOR`，
+     *   **不是**字体的真实行高——布局要可被精确预测，理由见 `ChartTextMetrics`。
+     * - [ChartPainter.begin] 之后变换仍是调用方当前的那个。布局算的是设备像素，
+     *   所以调用 `drawChart` 时不该带着变换（这一点写在 `ChartPainter` 的类文档里）。
+     */
+    private val chartPainter = object : ChartPainter {
+        override fun begin() {
+            this@Gc.save()
+            pickId = 0
+        }
+
+        override fun end() {
+            this@Gc.restore()
+        }
+
+        override fun width(text: String, fontSize: Float): Float {
+            // measureText 用的是**当前字号**，所以临时改一下再量；调用方保证已经
+            // 在 begin/end 之间，这里不必自己压栈（量的过程不发顶点、不改画面）。
+            val saved = this@Gc.fontSize
+            this@Gc.fontSize = fontSize
+            val w = this@Gc.measureText(text)
+            this@Gc.fontSize = saved
+            return w
+        }
+
+        override fun lineHeight(fontSize: Float): Float =
+            fontSize * ChartLayout.LINE_HEIGHT_FACTOR
+
+        override fun drawText(text: String, x: Float, y: Float, fontSize: Float, argb: Int) {
+            val savedColor = this@Gc.fill
+            val savedSize = this@Gc.fontSize
+            this@Gc.fontSize = fontSize
+            this@Gc.fill = argb
+            this@Gc.drawText(text, x, y)
+            this@Gc.fontSize = savedSize
+            this@Gc.fill = savedColor
+        }
+
+        override fun fillRect(x: Float, y: Float, width: Float, height: Float, argb: Int) {
+            val saved = this@Gc.fill
+            this@Gc.fill = argb
+            this@Gc.fillRect(x, y, width, height)
+            this@Gc.fill = saved
+        }
+    }
 
     /**
      * 释放图表后端持有的 GL 资源；从未用过图表时什么都不做。

@@ -5,6 +5,9 @@ import com.bingbaihanji.jfgl.chart.Axis
 import com.bingbaihanji.jfgl.chart.AxisRange
 import com.bingbaihanji.jfgl.chart.AxisType
 import com.bingbaihanji.jfgl.chart.Chart
+import com.bingbaihanji.jfgl.chart.ChartInsets
+import com.bingbaihanji.jfgl.chart.ChartLayout
+import com.bingbaihanji.jfgl.chart.ChartSide
 import com.bingbaihanji.jfgl.chart.ChartType
 import com.bingbaihanji.jfgl.chart.RingChartData
 import com.bingbaihanji.jfgl.chart.Series
@@ -809,6 +812,57 @@ private val STEP_VALUES = doubleArrayOf(0.25, 0.75, 0.25, Double.NaN)
 /** 阶梯实验的线宽（半宽 2px）：踏步占 4 行、竖段占 4 列，都是整数。 */
 private const val STEP_LINE_WIDTH = 4f
 
+// ---------------------------------------------------------------------------
+// 装配实验：标题 / 图例 / 外边距（Chart.title / legend / padding）
+//
+// 它挤在画面最左边那一条的**下半段**（x ∈ [0,20)、y ∈ [502,602)）——
+// 那是唯一一块还没被别的实验图占掉的空地：x ≥ 20 那一带是移动方块（y ∈ [540,580)）
+// 的地盘，而方块正是"跨帧残留"的探针，不能挪它。
+//
+// 20px 宽是很窄，但这一节要验的是**带子的位置**（标题在上、绘图区被挤到中间、
+// 图例在下、外边距四边各收掉一点），而不是字好不好看。窄反而让"挤没挤"更明显：
+// 绘图区只有 16×67.6，一行数据的位置差几个像素就能一眼对上。
+//
+// 字号取 8：小到足以让标题带（11.2）、图例带（11.2）与绘图区（67.6）挤进 96 的内框里。
+// 期望值全部由"字号 × ChartLayout.LINE_HEIGHT_FACTOR"手算出来，见下面各条断言。
+// ---------------------------------------------------------------------------
+
+/** 装配实验图的外框（x ∈ [0,20) 那一条的下半段）。 */
+private const val DECOR_PLOT_X = 0
+private const val DECOR_PLOT_Y = 502
+private const val DECOR_PLOT_W = 20
+private const val DECOR_PLOT_H = 100
+
+/** 四边各 2px 的外边距：内框变成 x ∈ [2,18)、y ∈ [504,600)。 */
+private const val DECOR_PADDING = 2f
+
+private const val DECOR_TITLE_FONT = 8f
+private const val DECOR_LEGEND_FONT = 8f
+private const val DECOR_SWATCH = 6f
+private const val DECOR_TITLE_GAP = 3f
+private const val DECOR_LEGEND_GAP = 3f
+
+/** 数据值：0.25 → 线落在绘图区偏下的位置（**不是正中**，见下）。 */
+private const val DECOR_VALUE = 0.25
+
+/** 线宽：半宽 1px，于是墨迹恰好占两行。 */
+private const val DECOR_LINE_WIDTH = 2f
+
+/**
+ * 走 {@code drawChart}（而不是 {@code draw}）的那一帧。
+ *
+ * <p>这一帧画出来的柱状图与相邻帧"逐像素相同"是那条身份断言的判别式：
+ * 同一张图、同一块矩形，一条路径经过 {@code ChartLayout}、另一条不经过，
+ * 而这张图上没有标题、没有图例、外边距为 0——于是布局算出来的绘图区
+ * <b>就是</b>那块矩形，两条路径必须给出同一张图。
+ * 取 98 是为了让快照落在观察期最后一帧之前（101 帧的观察期：0..99）。
+ */
+private const val DECOR_IDENTITY_FRAME = 98
+
+/** 装配实验的标题文字与系列名（都用拉丁字母：8px 下中文会顶出 20px 宽的带子）。 */
+private const val DECOR_TITLE_TEXT = "T"
+private const val DECOR_SERIES_NAME = "A"
+
 /**
  * 校验器的启动入口。
  *
@@ -944,6 +998,11 @@ class ChartVerifierApp : Application() {
     /** 阶梯实验的颜色。 */
     private val stepRgb = 0xC0C0C0
 
+    // ---- 装配实验（标题 / 图例 / 外边距）的颜色 ----
+
+    /** 装配实验的系列色（同时也是图例色块的颜色）。 */
+    private val decorSeriesRgb = 0x2050C0
+
     private val degenScatterArgb = degenScatterRgb or (0xFF shl 24)
 
     private val spectrumArgb = spectrumRgb or (0xFF shl 24)
@@ -953,6 +1012,7 @@ class ChartVerifierApp : Application() {
     private val areaSlopeArgb = areaSlopeRgb or (0xFF shl 24)
     private val areaLineArgb = areaLineRgb or (0xFF shl 24)
     private val stepArgb = stepRgb or (0xFF shl 24)
+    private val decorSeriesArgb = decorSeriesRgb or (0xFF shl 24)
 
     private val scatterArgb = scatterRgb or (0xFF shl 24)
     private val markerBigArgb = markerBigRgb or (0xFF shl 24)
@@ -1352,6 +1412,117 @@ class ChartVerifierApp : Application() {
 
     private val stepChart: Chart = buildStepChart()
 
+    // -----------------------------------------------------------------------
+    // 装配实验：标题 / 图例 / 外边距
+    // -----------------------------------------------------------------------
+
+    private val decorRect = Rect(DECOR_PLOT_X.toFloat(), DECOR_PLOT_Y.toFloat(),
+        DECOR_PLOT_W.toFloat(), DECOR_PLOT_H.toFloat())
+
+    /** 装配实验的数据：两个点、同一个值 0.25，画出来是一条水平线。 */
+    private val decorData = ArrayChartData(
+        arrayOf(
+            AxisRange(0.0, 1.0, "样本", ""),
+            AxisRange(0.0, 1.0, "值", "")
+        ),
+        arrayOf(doubleArrayOf(0.0, 1.0), doubleArrayOf(DECOR_VALUE, DECOR_VALUE))
+    )
+
+    private val decorSeries = Series(DECOR_SERIES_NAME, decorData, ChartType.LINE)
+        .color(decorSeriesArgb).lineWidth(DECOR_LINE_WIDTH)
+
+    /**
+     * 装配实验图：**只有一张图带标题与图例**，于是"带子挤掉的那块地方"可以写出来。
+     *
+     * <p>数据刻意取 0.25（不是 0.5）：0.5 会让线落在绘图区正中间，而"标题带 + 图例带"
+     * 恰好是对称的（两张 11.2 高的带子），于是**挤与不挤画出来的线在同一行上**——
+     * 那条断言就成了橡皮图章。0.25 让线在偏下 3/4 处，两种情形差 7 行。
+     */
+    // 下面这一组期望值必须声明在 decorChart **之前**：Kotlin 按声明顺序初始化属性，
+    // 而 buildDecorChart() 要用 decorPlotBottom - decorPlotTop 当 y 轴的长度
+    // （契约要求轴长度 = 绘图区高）。放到后面会读到还没初始化的 0.0，
+    // 表现是 Axis.setDisplayLength 抛"必须为正的有限数"——一个与顺序有关、
+    // 与几何无关的异常。这行注释是实测换来的。
+    // -----------------------------------------------------------------------
+    // 装配实验（标题 / 图例 / 外边距）：期望值全部按 ChartLayout 的尺寸规则手算
+    //
+    // 规则只有两条（见 ChartLayout 的类文档，**与字体无关**）：
+    //   带子高 = 字号 × ChartLayout.LINE_HEIGHT_FACTOR
+    //   基线   = 带子顶部 + 字号 × ChartLayout.BASELINE_FACTOR
+    // 这里把每一条带子的位置照样写一遍——**故意的**：它是"布局算出来的东西"
+    // 与"画面上真的那么画"之间的独立一算。写成引用 layout.plotRect() 的话，
+    // 布局错了这里跟着错，断言就成了橡皮图章。
+    // -----------------------------------------------------------------------
+
+    // 下面这些 y 全是**局部坐标**（相对外框左上角），因为断言读的是那块区域的快照，
+    // 快照的行号就是从外框上边缘算起的。外框的 x 从 0 开始，所以 x 不必换算。
+
+    /** 装配实验的内框上边缘（外框 + 上边距）。 */
+    private val decorInnerTop = DECOR_PADDING
+
+    /** 装配实验的内框下边缘。 */
+    private val decorInnerBottom = DECOR_PLOT_H - DECOR_PADDING
+
+    /** 标题带的高度（字号 × 行高系数）。 */
+    private val decorTitleBandH = DECOR_TITLE_FONT * ChartLayout.LINE_HEIGHT_FACTOR
+
+    /** 图例带的高度。 */
+    private val decorLegendBandH = DECOR_LEGEND_FONT * ChartLayout.LINE_HEIGHT_FACTOR
+
+    /** 绘图区的上边缘 = 内框上边 + 标题带 + 标题间隙。 */
+    private val decorPlotTop = decorInnerTop + decorTitleBandH + DECOR_TITLE_GAP
+
+    /** 绘图区的下边缘 = 内框下边 - 图例带 - 图例间隙。 */
+    private val decorPlotBottom = decorInnerBottom - decorLegendBandH - DECOR_LEGEND_GAP
+
+    /** 图例带的 y（贴内框下边）。 */
+    private val decorLegendBandY = decorInnerBottom - decorLegendBandH
+
+    /** 数据线所在的局部 y（值 0.25 → 绘图区高度的 75% 处）。 */
+    private val decorLineY =
+        decorPlotTop + (1.0 - DECOR_VALUE) * (decorPlotBottom - decorPlotTop)
+
+    /**
+     * 数据线的墨迹覆盖的局部行范围：线宽 2（半宽 1）→ 四边形的 y 跨度是 `[sy-1, sy+1]`，
+     * 覆盖的行是"中心落在其中"的那些。
+     */
+    private val decorInkRows = kotlin.math.ceil(decorLineY - 1.0 - 0.5).toInt()..
+            kotlin.math.floor(decorLineY + 1.0 - 0.5).toInt()
+
+    private val decorChart: Chart = buildDecorChart()
+
+    private fun buildDecorChart(): Chart {
+        // 轴的 displayLength 是**绘图区**的宽高（不是外框的）：契约要求它与
+        // ChartRenderLayout 收到的矩形一致，否则刻度位置会与数据点错开。
+        // 本图不画刻度，所以这条在这里不影响任何像素——但它是那条契约的前提，
+        // 写错了会让后面照着抄的人以为 96 是对的。
+        val xAxis = Axis(AxisType.LINEAR, decorData.axisRange(0))
+            .setDisplayLength((DECOR_PLOT_W - 2 * DECOR_PADDING).toDouble())
+            .setWindow(0.0, 1.0)
+        val yAxis = Axis(AxisType.LINEAR, decorData.axisRange(1))
+            .setDisplayLength((decorPlotBottom - decorPlotTop).toDouble())
+        val chart = Chart(xAxis, yAxis)
+        chart.addLayer("装配").add(decorSeries)
+        chart.title(DECOR_TITLE_TEXT).titleFontSize(DECOR_TITLE_FONT).titleGap(DECOR_TITLE_GAP)
+        chart.legendSide(ChartSide.BOTTOM).legendFontSize(DECOR_LEGEND_FONT)
+            .legendSwatchSize(DECOR_SWATCH).legendGap(DECOR_LEGEND_GAP)
+        chart.padding(ChartInsets.uniform(DECOR_PADDING))
+        return chart
+    }
+
+    /** 装配实验图在观察期最后一帧的快照。 */
+    private var decorSnapshot: Shot? = null
+
+    /**
+     * 走 {@code drawChart} 的那一帧里柱状图的快照（与 [barSnapshot] 逐像素比对）。
+     *
+     * <p>两条路径画的**是同一张图、同一块矩形**，唯一的差别是中间过没过
+     * {@code ChartLayout}——而这张图上没有标题、没有图例、外边距为 0，
+     * 于是布局算出来的绘图区就是那块矩形本身。它按像素证明了
+     * "给标题留位置这件事，在没有标题时一点都没有改变画面"。
+     */
+    private var barViaLayoutSnapshot: Shot? = null
+
     /** 四张图型实验图在观察期最后一帧的快照（校验期做全部断言）。 */
     private var barSnapshot: Shot? = null
     private var areaSlopeSnapshot: Shot? = null
@@ -1388,6 +1559,10 @@ class ChartVerifierApp : Application() {
         val chart = Chart(xAxis, yAxis)
         // 顺序即绘制顺序：B 画在 A 之上。两者**不重叠**（并排），所以顺序不影响像素。
         chart.addLayer("柱状").add(barSeriesA).add(barSeriesB)
+        // 关掉图例是**刻意的**：这张图要用两条路径（draw 与 drawChart）各画一帧再逐像素比对，
+        // 而 drawChart 会照着配置排布装饰——留着一个默认可见的图例，两条路径就不该相同了
+        // （那时差异来自布局本身，而不是缺陷）。"不设标题/图例时逐像素不变"正是要验的那条。
+        chart.legendVisible(false)
         return chart
     }
 
@@ -2021,6 +2196,8 @@ class ChartVerifierApp : Application() {
             drawSpectrumChart(gc, n)
             // 图型实验的四张图（柱状 / 面积 ×2 / 阶梯），同样只在观察期画（同样的理由）。
             drawKindCharts(gc)
+            // 装配实验图（标题 / 图例 / 外边距），同样只在观察期画。
+            drawDecorChart(gc)
         }
 
         // 4) 标注：在图表**之后**画的普通图元。它必须盖在数据系列之上——
@@ -2158,10 +2335,27 @@ class ChartVerifierApp : Application() {
      * 那条既有断言因此一字未改。
      */
     private fun drawKindCharts(gc: Gc) {
-        gc.charts.draw(barChart, barRect, gc.width, gc.height)
+        // 第 [DECOR_IDENTITY_FRAME] 帧换一条路径画**同一张柱状图**：走 drawChart
+        // （过 ChartLayout），而这张图上没有标题、图例与内边距。两条路径逐像素相同
+        // 是那条身份断言的判别式，见 [barViaLayoutSnapshot]。
+        if (frame == DECOR_IDENTITY_FRAME) {
+            gc.charts.drawChart(barChart, barRect, gc.width, gc.height)
+        } else {
+            gc.charts.draw(barChart, barRect, gc.width, gc.height)
+        }
         gc.charts.draw(areaSlopeChart, areaSlopeRect, gc.width, gc.height)
         gc.charts.draw(areaLineChart, areaLineRect, gc.width, gc.height)
         gc.charts.draw(stepChart, stepRect, gc.width, gc.height)
+    }
+
+    /**
+     * 装配实验图：**只有它是走 `drawChart` 的常客**（其余都走低层的 `draw`）。
+     *
+     * <p>它每帧都画，参数一字不改——这里要验的是布局算出来的带子与画面是否一致，
+     * 逐帧变化只会让快照多几种解释（跨帧那件事由别的实验图负责）。
+     */
+    private fun drawDecorChart(gc: Gc) {
+        gc.charts.drawChart(decorChart, decorRect, gc.width, gc.height)
     }
 
     /**
@@ -2214,6 +2408,13 @@ class ChartVerifierApp : Application() {
             areaLineSnapshot = grab(h, areaLineRect)
             stepSnapshot = grab(h, stepRect)
             captureKindPicks(bridge)
+            // 装配实验图也在这一帧上取样。
+            decorSnapshot = grab(h, decorRect)
+        }
+        // 身份断言的两张快照：第 [DECOR_IDENTITY_FRAME] 帧走 drawChart、
+        // 下一帧走 draw（后者就是上面 STREAM_FRAMES 那一帧抓的 barSnapshot）。
+        if (frame == DECOR_IDENTITY_FRAME + 1) {
+            barViaLayoutSnapshot = grab(h, barRect)
         }
         // 移除之前的那一帧（`frame` 是"已完成帧数"，所以它等于下标 + 1）。
         if (frame == CROSS_REMOVE_FRAME) {
@@ -3445,9 +3646,132 @@ class ChartVerifierApp : Application() {
                     if (pixelAt(xx, yy) != background) kindResidue++
                 }
             }
-            report("图型实验的四张图在校验帧上已经不在画面里（观察期专属，无残留）",
-                kindResidue == 0,
-                "左边那一条 96×${STEP_PLOT_Y + KIND_PLOT_H - BAR_PLOT_Y} 里有 $kindResidue px 不是背景")
+            // 装配实验图那一块（x ∈ [0,20)、y ∈ [502,602)）同样要干净。
+            var decorResidue = 0
+            for (yy in DECOR_PLOT_Y until DECOR_PLOT_Y + DECOR_PLOT_H) {
+                for (xx in DECOR_PLOT_X until DECOR_PLOT_W) {
+                    if (pixelAt(xx, yy) != background) decorResidue++
+                }
+            }
+            report("图型与装配实验图在校验帧上都已经不在画面里（观察期专属，无残留）",
+                kindResidue == 0 && decorResidue == 0,
+                "左边那一条 96×${STEP_PLOT_Y + KIND_PLOT_H - BAR_PLOT_Y} 里有 $kindResidue px 不是背景；" +
+                        "装配那一块 ${DECOR_PLOT_W}×$DECOR_PLOT_H 里有 $decorResidue px 不是背景")
+        }
+
+        // ---- 22. ★ 装配：标题 / 图例 / 外边距 ----
+        //
+        // 这一节的期望值全部按 ChartLayout 的**两条尺寸规则**手算（见那些常量的说明），
+        // 而不是去读 layout.plotRect()——后者会让"布局算错了"与"画面按错的布局画"
+        // 同时成立，断言就成了橡皮图章。唯一的例外是那条身份断言：它比的正是
+        // "过布局"与"不过布局"这两条路径的最终像素。
+        //
+        // 判别式选的是**数据线的行号**而不是"标题带里有没有字"：标题带 + 图例带
+        // 恰好是对称的两条（同字号 → 同高），所以线取 0.5 时挤与不挤落在同一行上。
+        // 取 0.25 之后两者差 7 行，"布局真的把绘图区挤了"才有像素证据。
+        println("\n-- ★ 装配：标题 / 图例 / 外边距 --")
+        val decor = decorSnapshot
+        if (decor == null) {
+            report("装配实验图的快照取到了（否则下面整节都是橡皮图章）", false, "decor=null")
+        } else {
+            // "文字墨迹" = 既不是背景、也不是系列色。不去比对字体的那个灰色：
+            // SDF 文字是抗锯齿的，8px 下没有哪一个像素的覆盖度能到 1.0，
+            // 于是**没有任何一个像素**等于那个纯色——比对一个具体值只会天天红。
+            //
+            // 注意像素口径是 **RGB**（快照回读时已经丢掉 alpha），所以这里一律用
+            // `decorSeriesRgb`（0x2050C0）而不是 `decorSeriesArgb`（0xFF2050C0）。
+            // 这个坑真的踩过一次：五条断言同时红，而画面完全正确——表现与"实现没接线"
+            // 一模一样（绘图区里 32 px、图例带 0 px、文字跑到色块左边）。区分办法只有一个：
+            // 把那一块的像素逐行打出来看（当时打出来的是"线在第 66..67 行、色块 6×6"，
+            // 与设计**逐像素相符**，于是问题只能出在断言的比较值上）。
+            fun textInk(x0: Int, y0: Int, x1: Int, y1: Int): Int {
+                var n = 0
+                for (yy in y0..y1) {
+                    for (xx in x0..x1) {
+                        val c = decor.at(xx, yy)
+                        if (c != background && c != decorSeriesRgb) n++
+                    }
+                }
+                return n
+            }
+
+            val titleRows = decorInnerTop.toInt()..(decorInnerTop + decorTitleBandH).toInt() - 1
+            val legendRows = decorLegendBandY.toInt()..
+                    (decorLegendBandY + decorLegendBandH).toInt() - 1
+            val plotRows = decorPlotTop.toInt()..decorPlotBottom.toInt()
+
+            // 标题：**画在标题带里**。没有这一条，"标题没画"会从下面每一条底下溜过去。
+            report("标题画在标题带里（局部行 $titleRows）",
+                textInk(0, titleRows.first, DECOR_PLOT_W - 1, titleRows.last) > 0,
+                "标题带里的文字墨迹 ${textInk(0, titleRows.first, DECOR_PLOT_W - 1, titleRows.last)} px，" +
+                        "期望 > 0")
+            // 与上一条成对：标题的墨迹不许越过带子进到绘图区里
+            // （漏掉"给标题留位置"时，标题会直接压在绘图区最上面几行上）。
+            report("绘图区里没有标题的墨迹（标题带真的把它挡在外面了）",
+                textInk(0, plotRows.first, DECOR_PLOT_W - 1, plotRows.last) == 0,
+                "绘图区里的文字墨迹 ${textInk(0, plotRows.first, DECOR_PLOT_W - 1, plotRows.last)} px，期望 0")
+
+            // ★ 绘图区被挤过：数据线的行号 == 按布局规则算出来的那两行。
+            // 不挤的话线会落在局部第 ${...} 行（比这里高 7 行）——而画面看起来完全正常。
+            val inkCol = DECOR_PLOT_W / 2
+            val inkRange = decor.inkRange(inkCol, decorSeriesRgb)
+            report("★ 绘图区的下边缘到局部行 ${"%.1f".format(decorPlotBottom)}：" +
+                    "数据线落在第 $decorInkRows 行（标题与图例真的把绘图区挤了）",
+                inkRange != null && inkRange.first == decorInkRows.first &&
+                        inkRange.last == decorInkRows.last,
+                "第 $inkCol 列上的墨迹行范围 $inkRange，期望 $decorInkRows" +
+                        "（不挤的话线会落在更高的几行上，因为这个值是按「内框 + 标题带 + 间隙」" +
+                        "算出来的——标题带与图例带同高，所以数据取 0.5 时分不出挤没挤，" +
+                        "取 0.25 才分得出）")
+
+            // padding：绘图区的内容没有越过内框（左右各 2px）。16 列 × 2 行 = 32 px。
+            val inPlot = decor.countIn(DECOR_PADDING.toInt(), decorInkRows.first,
+                (DECOR_PLOT_W - DECOR_PADDING).toInt() - 1, decorInkRows.last, decorSeriesRgb)
+            val inLeftPad = decor.countIn(0, decorInkRows.first,
+                DECOR_PADDING.toInt() - 1, decorInkRows.last, decorSeriesRgb)
+            val inRightPad = decor.countIn((DECOR_PLOT_W - DECOR_PADDING).toInt(),
+                decorInkRows.first, DECOR_PLOT_W - 1, decorInkRows.last, decorSeriesRgb)
+            report("外边距 ${DECOR_PADDING.toInt()}px 生效：数据线恰好占内框那 16 列 × 2 行",
+                inPlot == 32 && inLeftPad == 0 && inRightPad == 0,
+                "内框里 $inPlot px（期望 32）、左边距里 $inLeftPad px、右边距里 $inRightPad px（都期望 0）")
+
+            // ★ 图例色块：6×6 = 36 px，而且是图例带里**唯一**的系列色。
+            val swatchPixels = decor.countIn(0, legendRows.first, DECOR_PLOT_W - 1,
+                legendRows.last, decorSeriesRgb)
+            report("★ 图例色块 = ${DECOR_SWATCH.toInt()}×${DECOR_SWATCH.toInt()} = 36 px，" +
+                    "且它是图例带里唯一的系列色",
+                swatchPixels == 36,
+                "图例带（局部行 $legendRows）里的系列色 $swatchPixels px，期望 36" +
+                        "——多了说明色块比 legendSwatchSize 大（或位置偏了），" +
+                        "少了说明被别的绘制盖住或者压根没画")
+            // 图例文字：在色块**右边**（不许压在色块上，也不许跑到带子外面）
+            val legendTextX = (0 until DECOR_PLOT_W).filter { xx ->
+                legendRows.any { yy ->
+                    decor.at(xx, yy) != background && decor.at(xx, yy) != decorSeriesRgb
+                }
+            }
+            val swatchRight = DECOR_PADDING.toInt() + DECOR_SWATCH.toInt()
+            report("图例文字在色块右边（最左一列 $legendTextX 的墨迹在色块右边缘之后）",
+                legendTextX.isNotEmpty() && legendTextX.first() > swatchRight,
+                "文字墨迹的列 $legendTextX，色块右边缘在第 $swatchRight 列" +
+                        "——文字压在色块上或跑到左边，图例就读不出来了")
+
+            // 身份断言：同一张图、同一块矩形，过 ChartLayout 与不过它逐像素相同。
+            val viaLayout = barViaLayoutSnapshot
+            val plain = barSnapshot
+            report("★ 同一张图（无标题/无图例/无内边距）：drawChart 与 draw 逐像素相同",
+                viaLayout != null && plain != null && viaLayout.sameAs(plain),
+                if (viaLayout == null || plain == null) "有一张快照没抓到"
+                else if (!viaLayout.sameAs(plain)) {
+                    var diff = 0
+                    for (yy in 0 until plain.h) {
+                        for (xx in 0 until plain.w) {
+                            if (viaLayout.at(xx, yy) != plain.at(xx, yy)) diff++
+                        }
+                    }
+                    "$diff px 不同——说明 ChartLayout 在没有装饰时也动了绘图区，" +
+                            "而那是**无声地改动了已验证的行为**"
+                } else "两张快照逐像素相同（${plain.w}×${plain.h}）")
         }
 
         println("\n画面出现的颜色：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")

@@ -2,6 +2,7 @@ package com.bingbaihanji.jfgl.chartrender;
 
 import com.bingbaihanji.jfgl.chart.Axis;
 import com.bingbaihanji.jfgl.chart.Chart;
+import com.bingbaihanji.jfgl.chart.ChartLayout;
 import com.bingbaihanji.jfgl.chart.ChartType;
 import com.bingbaihanji.jfgl.chart.Layer;
 import com.bingbaihanji.jfgl.chart.Series;
@@ -156,10 +157,29 @@ public final class ChartRenderer implements Disposable {
      */
     private final Consumer<Runnable> pickPass;
 
+    /**
+     * 画标题与图例的那支笔；可以为 null（表示"不需要装饰"）。
+     *
+     * <p>只有 {@link #drawChart} 用它。<b>为 null 时 {@code drawChart} 抛异常</b>而不是
+     * 静默地不画装饰——静默不画正是本项目最典型的错误输出：一张图少了标题，
+     * 与"标题本来就是空的"在画面上完全一样。
+     */
+    private final ChartPainter painter;
+
     private boolean disposed = false;
 
     /**
-     * 创建图表渲染器：编译两个着色器程序。
+     * 创建一个<b>画不了装饰</b>的图表渲染器（不注入绘制入口）。
+     *
+     * <p>{@link #drawChart} 在这种实例上会抛异常，见 {@link #painter}。
+     */
+    public ChartRenderer(GLAbstraction gl, PickRegistry pickRegistry,
+                         Consumer<Runnable> pickPass) {
+        this(gl, pickRegistry, pickPass, null);
+    }
+
+    /**
+     * 创建图表渲染器：编译着色器程序。
      *
      * <p>必须在 GL 线程（且 GL 上下文已 current）上调用。
      *
@@ -167,12 +187,15 @@ public final class ChartRenderer implements Disposable {
      * @param pickRegistry 拾取 ID 注册表，应当是 {@code Gc.pickRegistry}（理由见字段说明）
      * @param pickPass     拾取缓冲的借用入口，应当是 {@code RenderBatch::withPickPass}
      *                     （理由见字段说明）
+     * @param painter      标题与图例的绘制入口；{@code Gc} 传它自己的那个，
+     *                     传 null 表示这个实例不支持 {@link #drawChart}
      */
     public ChartRenderer(GLAbstraction gl, PickRegistry pickRegistry,
-                         Consumer<Runnable> pickPass) {
+                         Consumer<Runnable> pickPass, ChartPainter painter) {
         this.gl = gl;
         this.pickRegistry = pickRegistry;
         this.pickPass = pickPass;
+        this.painter = painter;
         this.lineShader = gl.createShader(SeriesShaders.LINE_VERTEX, SeriesShaders.LINE_FRAGMENT);
         this.pickShader = gl.createShader(SeriesShaders.LINE_VERTEX, SeriesShaders.PICK_FRAGMENT);
         this.scatterShader =
@@ -198,7 +221,54 @@ public final class ChartRenderer implements Disposable {
     }
 
     /**
-     * 画一张图。
+     * 画一张图的<b>全部</b>：先按 {@code chart} 的装配配置（标题、图例、外边距）
+     * 把 {@code frame} 切成几块，再在算出来的绘图区里画数据系列。
+     *
+     * <h2>与 {@link #draw} 的分工</h2>
+     * <p>{@link #draw} 要的是<b>已经算好的绘图区</b>——它是"我不管你外面有什么"的低层入口，
+     * 刻度、网格、坐标轴都由调用方自己安排（见 README 的图表一节）。
+     * 本方法要的是<b>整块外框</b>，装饰的排布由 {@link ChartLayout} 负责。
+     * 两条路径画数据系列的代码是同一段（本方法最后调的就是 {@link #draw}），
+     * 所以<b>不设标题、不设图例、外边距为 0 时，两条路径逐像素相同</b>——
+     * 这一条被 {@code ChartVerifier} 直接按像素钉着（同一张图两条路径各画一帧再比）。
+     *
+     * <h2>z 序</h2>
+     * <p>装饰（标题、图例）在数据系列<b>之前</b>画，但它们占的是绘图区之外的带子，
+     * 两者在几何上不重叠（{@link ChartLayout} 保证这一点）。与 {@link #draw} 一样，
+     * 调用方应当先画网格再调它。
+     *
+     * @param chart          图表
+     * @param frame          整块外框（设备像素）
+     * @param viewportWidth  帧缓冲宽度（设备像素）
+     * @param viewportHeight 帧缓冲高度（设备像素）
+     * @throws IllegalStateException 已释放后调用
+     * @throws NullPointerException  没有注入 {@link ChartPainter} 时（构造时传了 null）
+     */
+    public void drawChart(Chart chart, Rect frame, int viewportWidth, int viewportHeight) {
+        if (disposed) {
+            throw new IllegalStateException("ChartRenderer 已释放");
+        }
+        if (painter == null) {
+            throw new NullPointerException(
+                    "没有注入 ChartPainter：标题与图例无笔画。"
+                            + "要么给 ChartRenderer 传一个绘制入口（Gc 会传它自己的），"
+                            + "要么改用 draw(chart, plotRect, w, h) 自己排布绘图区。");
+        }
+        ChartLayout layout = ChartLayout.compute(chart, frame, painter);
+        // 装饰借调用方的状态来画，begin/end 成对（见 ChartPainter 的文档）。
+        painter.begin();
+        try {
+            ChartDecorations.paint(painter, chart, layout);
+        } finally {
+            // finally 不能省：装饰画到一半抛异常时，状态栈会少弹一层，
+            // 之后画的每一个图元都带着"标题那次压栈"的状态。
+            painter.end();
+        }
+        draw(chart, layout.plotRect(), viewportWidth, viewportHeight);
+    }
+
+    /**
+     * 在给定的绘图区里画数据系列（不管外面的标题与图例）。
      *
      * <p>调用方应当先用 {@code Gc} 画好网格、调用 {@code gc.flush()}，再调本方法，
      * 最后画刻度文字——这样 z 序是"网格 → 数据 → 标注"（见类文档）。
