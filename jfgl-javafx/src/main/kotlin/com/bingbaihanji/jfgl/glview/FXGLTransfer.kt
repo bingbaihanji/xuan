@@ -423,6 +423,24 @@ class FXGLTransfer(
     fun droppedClicks(): Int = droppedClicks.get()
 
     /**
+     * 把**已经提交成功**（或已判定无需 GPU）的那条请求从点击队列头部取下来。
+     *
+     * <p><strong>必须是 `remove(request)` 而不是 `poll()`</strong>：`peek` 与本次提交之间，
+     * JavaFX 线程可能又入队了一条，而队列**满**时 [clickAsync] 会丢掉**最旧**的一条——
+     * 那条恰好可能就是我刚才 peek 到的这个。此时 `poll()` 会把**下一条**（还没提交过）
+     * 取下来扔掉，而它的回调永远没人调：又是一条静默丢失，正是这个队列存在的理由的反面。
+     *
+     * <p>`remove(Object)` 按**身份**删（[PickRequest] 没有重写 `equals`，每次入队都是新对象），
+     * `n ≤ 容量` 所以线性查找的代价可以忽略。返回 false 也没关系：说明它已经被 [clickAsync]
+     * 当作"最旧的一条"丢掉了，而它此刻已经被提交，回调照样会交付一次（不多不少）。
+     *
+     * @param request 刚刚提交的那条请求
+     */
+    private fun takeFromClickQueue(request: PickRequest) {
+        clickQueue.remove(request)
+    }
+
+    /**
      * 一次待处理的拾取请求。
      *
      * @param x        查询点 x
@@ -481,7 +499,7 @@ class FXGLTransfer(
             com.bingbaihanji.jfgl.renderer.PickBuffer.AsyncReadStatus.QUEUED -> {
                 inFlightPicks[token] = request
                 if (fromClickQueue) {
-                    clickQueue.poll()
+                    takeFromClickQueue(request)
                 }
             }
             com.bingbaihanji.jfgl.renderer.PickBuffer.AsyncReadStatus.NO_FREE_SLOT -> {
@@ -496,7 +514,7 @@ class FXGLTransfer(
                 // 不需要 GPU 就能回答（越界 / 本帧没有 ID pass）：直接交付"未命中"，
                 // 而不是让它留在队里等到天荒地老。
                 if (fromClickQueue) {
-                    clickQueue.poll()
+                    takeFromClickQueue(request)
                 }
                 Platform.runLater { request.callback(null) }
             }
