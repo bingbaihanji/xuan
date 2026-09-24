@@ -23,7 +23,9 @@ import static org.lwjgl.opengl.GL20.glEnableVertexAttribArray;
 import static org.lwjgl.opengl.GL20.glVertexAttribPointer;
 
 /**
- * 散点渲染器：{@link ChartType#SCATTER}。
+ * 散点渲染器：{@link ChartType#SCATTER}，以及 {@link ChartType#LINE_AND_MARKERS}
+ * 的<b>标记点那一半</b>（那半由 {@link LineSeriesRenderer} 经 {@link #renderMarkers} 调进来，
+ * 因为它画完折线还要接着画点，见那边的类文档）。
  *
  * <p>结构与 {@link LineSeriesRenderer} 一致（构造时建 VAO + 单位四边形 VBO、
  * 每帧当场发 instanced draw call、颜色与 ID 两个 pass），
@@ -177,8 +179,26 @@ final class ScatterSeriesRenderer implements SeriesRenderer {
 
     @Override
     public void render(RenderContext ctx, ChartData data, Series series, Axis[] axes) {
-        GLRenderContext c = (GLRenderContext) ctx;
         requireSupported(series.type());
+        renderMarkers(ctx, data, series, axes);
+    }
+
+    /**
+     * 把数据画成一串标记点，<b>不做图型守卫</b>。
+     *
+     * <p>它是"标记点"这个几何本身：{@link #render} = 守卫 + 它，而
+     * {@link LineSeriesRenderer} 用它来画 {@link ChartType#LINE_AND_MARKERS} 的那一半标记
+     * （那份代码确实就是"一串标记点"，值得一份代码画两遍）。
+     *
+     * <p><b>{@code LINE_AND_MARKERS} 不能改调 {@link #render}</b>：那个方法会正确地拒绝它
+     * （拒绝的理由见 {@link #requireSupported}），而那条守卫不该为了复用而拆掉——
+     * 拆掉之后"line-and-markers 交给散点渲染器"就会静默地丢掉整条折线。
+     *
+     * <p>调用方必须保证"这个图型用标记点几何画是对的"（目前只有 {@code SCATTER} 与
+     * {@code LINE_AND_MARKERS} 的标记点那一半两种情况）。
+     */
+    void renderMarkers(RenderContext ctx, ChartData data, Series series, Axis[] axes) {
+        GLRenderContext c = (GLRenderContext) ctx;
 
         // 缓冲归 ChartRenderer 管，渲染器自己不持有状态
         // （SeriesRenderer 的类文档要求它是纯函数）。
@@ -304,7 +324,8 @@ final class ScatterSeriesRenderer implements SeriesRenderer {
      * {@code drawsMarkers()} 就放行"：{@link ChartType#LINE_AND_MARKERS} 同样
      * 落在那条判据里，而本渲染器会把它的<b>折线部分整个丢掉</b>——
      * 画面里只剩下一串孤立的点，看起来"就是一种散射图风格"，而不是"少了一半"。
-     * 那半由 {@link LineSeriesRenderer} 负责（那里也写着同一个已知缺口）。
+     * 那半由 {@link LineSeriesRenderer} 负责，它调的是 {@link #renderMarkers}
+     * （无守卫版本），而不是这里。
      *
      * <p>{@link ChartType#BAR} 也是"不连线"的，但它的顶点是矩形、不是居中的标记点，
      * 画出来会是一串方点而柱状图的高度含义整个消失。

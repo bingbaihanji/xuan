@@ -132,6 +132,53 @@ class ChartTest {
         assertEquals(0f, t.barGap(), 0f);
     }
 
+    /**
+     * 样式里的**非有限数**必须是响亮的：NaN / Infinity 不是"越界的值"，是程序错误。
+     *
+     * <p>这条与"越界但有限的量按原契约钳住/退化"（{@code fillAlpha(2)} → 实心、
+     * {@code lineWidth(-1)} → 不画线）**不冲突**，两者的分界正是
+     * "渲染侧对这种输入有没有一个明确、可预期的处置"：
+     * <ul>
+     *   <li>NaN 没有。{@code fillAlpha(NaN)} 会落进 {@code AreaSeriesRenderer.fillColor}
+     *       的两个分支都不成立的那条缝里，{@code Math.round(NaN)} 得 0，
+     *       于是填充**全透明**——而"用户把不透明度设成 0"与"用户算出了一个 NaN"
+     *       在画面上逐像素相同；</li>
+     *   <li>NaN 线宽进顶点着色器后整个图元一起消失，也是静默的。</li>
+     * </ul>
+     * <p>Infinity 与 NaN 同类处置：几何量取 Infinity 让图元退化（在画面上等于没画），
+     * 而 {@code fillAlpha(Infinity)} 虽然恰好被钳成 1，但那条路径上没有任何东西
+     * 能告诉调用方"你给的不是一个数"——统一在入口拒绝，就没有第二种解释。
+     */
+    @Test
+    void 样式里的非有限数会抛异常() {
+        Series s = new Series("s", data(), ChartType.LINE);
+
+        assertThrows(IllegalArgumentException.class, () -> s.fillAlpha(Float.NaN),
+                "NaN 不透明度会静默变成全透明（Math.round(NaN) = 0），必须抛");
+        assertThrows(IllegalArgumentException.class, () -> s.lineWidth(Float.NaN));
+        assertThrows(IllegalArgumentException.class, () -> s.markerSize(Float.NaN));
+        assertThrows(IllegalArgumentException.class, () -> s.baseline(Float.NaN));
+        assertThrows(IllegalArgumentException.class, () -> s.categoryGap(Float.NaN));
+        assertThrows(IllegalArgumentException.class, () -> s.barGap(Float.NaN));
+
+        assertThrows(IllegalArgumentException.class, () -> s.fillAlpha(Float.POSITIVE_INFINITY));
+        assertThrows(IllegalArgumentException.class, () -> s.lineWidth(Float.NEGATIVE_INFINITY));
+        assertThrows(IllegalArgumentException.class, () -> s.markerSize(Float.POSITIVE_INFINITY));
+
+        // 抛异常之后不许改到字段：否则"抛了但值已经进去了"比不抛更难查。
+        assertEquals(0.5f, s.fillAlpha(), 0f, "被拒绝的赋值不该改到字段");
+        assertEquals(1f, s.lineWidth(), 0f);
+        assertEquals(3f, s.markerSize(), 0f);
+        assertEquals(0f, s.baseline(), 0f);
+        assertEquals(0.2f, s.categoryGap(), 0f);
+        assertEquals(0.2f, s.barGap(), 0f);
+
+        // 反面：越界但**有限**的量仍然按原契约收下（渲染侧钳住/退化），
+        // "越界抛异常"会让用户只能靠读栈去猜是哪个字段。
+        assertEquals(2f, s.fillAlpha(2f).fillAlpha(), 0f, "fillAlpha > 1 不抛，由渲染侧钳到 1");
+        assertEquals(-1f, s.lineWidth(-1f).lineWidth(), 0f, "负线宽不抛，渲染侧不画线");
+    }
+
     @Test
     void 非法装配会抛异常() {
         Chart chart = new Chart(new Axis(AxisType.LINEAR, AxisRange.of(0, 10)));

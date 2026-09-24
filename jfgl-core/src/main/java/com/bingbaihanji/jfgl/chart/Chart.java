@@ -71,6 +71,44 @@ public final class Chart {
     /** 外边距（内框 = 外框扣掉它），默认全 0。 */
     private ChartInsets padding = ChartInsets.NONE;
 
+    // ------------------------------------------------------------------
+    // 轴标题与刻度文字的预留带
+    //
+    // 刻度文字在本库里是**调用方画的**（`Axis.ticks()` 给位置，画由应用做），
+    // 所以图表层不可能知道它占多高——这就是"可配置的预留量"而不是"自动测量"的理由。
+    // 图表层能做的只有两件：把绘图区往里让出调用方声明的量，再把轴标题画在那之外。
+    // ------------------------------------------------------------------
+
+    /**
+     * 是否显示轴标题（{@code AxisRange} 的 name / unit）。默认 <b>false</b>。
+     *
+     * <p><b>为什么默认关着</b>（与 JavaFX 的"设了 label 就显示"不同）：
+     * 打开它会让绘图区让出两条带子，而**绘图区变了就是画面变了**——
+     * 本库所有既有的图（含五个校验器里那些按像素钉着的期望值）都会整体挪几像素。
+     * 那正是 {@link ChartLayout} 反复强调不许发生的事（"给标题留位置不许悄悄改动
+     * 已验证的行为"）。新能力默认打开，与悄悄改行为没有区别。
+     *
+     * <p>数据本来就带了名字与单位（{@link AxisRange} 的 name / unit），所以打开之后
+     * 不需要再配置一次文字：{@code 轴 0} 的 name/unit → x 轴标题，{@code 轴 1} → y 轴标题。
+     */
+    private boolean axisTitlesVisible = false;
+
+    /** 轴标题字号（像素），默认 12。 */
+    private float axisTitleFontSize = 12f;
+
+    /** 轴标题带与它内侧那块（刻度预留 / 绘图区）之间的间隙（像素），默认 4。 */
+    private float axisTitleGap = 4f;
+
+    /**
+     * x 轴刻度文字的预留量（像素，绘图区**下方**）。
+     *
+     * <p>默认 0（不让地方）——理由与 {@link #axisTitlesVisible} 同：让地方就是改画面。
+     */
+    private float bottomTickLabelReserve = 0f;
+
+    /** y 轴刻度文字的预留量（像素，绘图区**左侧**）。默认 0。 */
+    private float leftTickLabelReserve = 0f;
+
     /**
      * 构造，至少给一根轴。
      *
@@ -315,6 +353,121 @@ public final class Chart {
     }
 
     // ------------------------------------------------------------------
+    // 轴标题与刻度文字的预留带
+    // ------------------------------------------------------------------
+
+    /** 是否显示轴标题（{@code AxisRange} 的 name / unit）。默认 {@code false}，理由见字段说明。 */
+    public boolean axisTitlesVisible() {
+        return axisTitlesVisible;
+    }
+
+    /**
+     * 设置是否显示轴标题。
+     *
+     * <p>打开它会把绘图区让出两条带子（x 轴标题在下方、y 轴标题在左侧），
+     * 让出来的宽度由{@code 轴 0 / 轴 1} 的 name / unit 与 {@link #axisTitleFontSize} 决定。
+     *
+     * @return 自身，便于链式调用
+     */
+    public Chart axisTitlesVisible(boolean visible) {
+        this.axisTitlesVisible = visible;
+        return this;
+    }
+
+    /** 轴标题的字号（像素）。 */
+    public float axisTitleFontSize() {
+        return axisTitleFontSize;
+    }
+
+    /**
+     * 设置轴标题字号（同时决定轴标题带的高度，见 {@link ChartLayout} 的尺寸规则）。
+     *
+     * @return 自身，便于链式调用
+     * @throws IllegalArgumentException 非正或非有限时
+     */
+    public Chart axisTitleFontSize(float px) {
+        requirePositiveFinite(px, "轴标题字号");
+        this.axisTitleFontSize = px;
+        return this;
+    }
+
+    /** 轴标题带与它内侧那块之间的间隙（像素）。 */
+    public float axisTitleGap() {
+        return axisTitleGap;
+    }
+
+    /** 设置轴标题带与内侧那块之间的间隙。 */
+    public Chart axisTitleGap(float px) {
+        requireNonNegative(px, "轴标题间隙");
+        this.axisTitleGap = px;
+        return this;
+    }
+
+    /**
+     * 刻度文字的预留量（像素）。
+     *
+     * <p><b>它为什么是一个配置项，而不是自动测量</b>：刻度文字由调用方画
+     * （{@code Axis.ticks()} 只给位置），图表层拿不到它的高度；硬猜一个值的话，
+     * 字号一大刻度文字就压在数据上——而"刻度文字和数据线重叠"看起来像绘图区太小，
+     * 不像配置问题。所以这里让调用方声明自己画的刻度文字占多少，
+     * 图表层负责把它从绘图区里扣掉。
+     *
+     * @param side {@link ChartSide#BOTTOM}（x 轴刻度，绘图区下方）或
+     *             {@link ChartSide#LEFT}（y 轴刻度，绘图区左侧）
+     * @return 该方向当前的预留量
+     * @throws IllegalArgumentException side 为 null 时
+     */
+    public float tickLabelReserve(ChartSide side) {
+        if (side == null) {
+            throw new IllegalArgumentException("方向不能为 null");
+        }
+        if (side == ChartSide.BOTTOM) {
+            return bottomTickLabelReserve;
+        }
+        if (side == ChartSide.LEFT) {
+            return leftTickLabelReserve;
+        }
+        throw new IllegalArgumentException(
+                "刻度文字的预留量只支持 BOTTOM 与 LEFT，实际为 " + side + "。"
+                        + "本库的约定是：x 轴（下标轴）的刻度画在绘图区下方、y 轴（数值轴）"
+                        + "画在左侧（见 README 的图表一节）。上面/右边的刻度文字没有对应的"
+                        + "预留带——收下它然后什么也不做，就是「设了但没用」这种静默失效。");
+    }
+
+    /**
+     * 设置某一侧的刻度文字预留量。
+     *
+     * @param side {@link ChartSide#BOTTOM} 或 {@link ChartSide#LEFT}
+     * @param px   预留量（像素），0 表示不让地方
+     * @return 自身，便于链式调用
+     * @throws IllegalArgumentException side 不是 BOTTOM/LEFT，或 px 为负/非有限时
+     */
+    public Chart tickLabelReserve(ChartSide side, float px) {
+        requireNonNegative(px, "刻度文字预留量");
+        // 先让上面的 getter 校验方向，再赋值——两处判断只留一份。
+        tickLabelReserve(side);
+        if (side == ChartSide.BOTTOM) {
+            this.bottomTickLabelReserve = px;
+        } else {
+            this.leftTickLabelReserve = px;
+        }
+        return this;
+    }
+
+    /**
+     * 一次设置两边的刻度文字预留量（x 轴与 y 轴刻度通常一样高）。
+     *
+     * @param px 预留量（像素）
+     * @return 自身，便于链式调用
+     * @throws IllegalArgumentException px 为负/非有限时
+     */
+    public Chart tickLabelReserve(float px) {
+        tickLabelReserve(ChartSide.BOTTOM, px);
+        tickLabelReserve(ChartSide.LEFT, px);
+        return this;
+    }
+
+    // ------------------------------------------------------------------
     // 外边距
     // ------------------------------------------------------------------
 
@@ -343,9 +496,17 @@ public final class Chart {
         }
     }
 
+    /**
+     * 非负且有限。
+     *
+     * <p>非有限数一并拒掉的理由与 {@link Series} 那边相同：{@code Infinity} 的间隙会让
+     * 绘图区缩成 0（在画面上等于"这张图没数据"），而 {@code NaN} 会一路传进矩形的算术里，
+     * 那些 {@code Math.max(0f, ...)} 的兜底都拦不住它——两者都没有一个"明确的处置"。
+     */
     private static void requireNonNegative(float value, String what) {
-        if (!(value >= 0f)) {
-            throw new IllegalArgumentException(what + "不能为负（也不会是 NaN），实际为 " + value);
+        if (!Float.isFinite(value) || value < 0f) {
+            throw new IllegalArgumentException(
+                    what + "必须是非负的有限数，实际为 " + value);
         }
     }
 }

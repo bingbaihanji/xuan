@@ -3,6 +3,12 @@ package com.bingbaihanji.jfgl.example
 import com.bingbaihanji.jfgl.dsl.jfgl
 import com.bingbaihanji.jfgl.renderer.Gc
 import com.bingbaihanji.jfgl.renderer.PickHit
+import javafx.application.Platform
+import javafx.scene.Scene
+import javafx.scene.control.Label
+import javafx.scene.layout.Pane
+import javafx.scene.layout.StackPane
+import kotlin.system.exitProcess
 
 /**
  * 用 **`jfgl { }` DSL** 走一遍完整的点击闭环。
@@ -13,11 +19,16 @@ import com.bingbaihanji.jfgl.renderer.PickHit
  * 整个应用只有 `onInit` / `onRender` / `onClick` 三块，没有一处手工搭 `Scene`/`Stage`，
  * 也没有一处手写坐标换算。
  *
- * <p>与 `ClickExample` 的两点差别：
- * - **反馈画在画布上**而不是 JavaFX 控件里（DSL 只把画布放进场景图，不暴露 Label 之类的
- *   容器），所以命中结果用 `drawText` 画在顶部，选中项加一圈黄色高亮；
+ * <p>与 `ClickExample` 的三点差别：
+ * - **反馈同时画在画布上和 JavaFX 控件里**：命中结果既用 `drawText` 画在顶部
+ *   （画布上的反馈，选中项另加一圈黄色高亮），也写进叠加层里的一个 `Label`
+ *   （`jfgl { onScene { overlay.children.add(...) } }`）。后者是这一版新加的：
+ *   在此之前 DSL **不暴露任何容器**，用户按 README 的快速开始起步时加不了控件；
  * - 每次点击额外 `println` 一行，好让"真实鼠标点下去确实有反应"这件事**可以被自动核对**
- *   （一个只画在 GL 画布上的示例，截图是抓不到的——见 `CLAUDE.md` 里那条）。
+ *   （一个只画在 GL 画布上的示例，截图是抓不到的——见 `CLAUDE.md` 里那条）；
+ * - 启动时做一次**结构自检**：`Label` 真的在场景图里、叠加层真的在画布之上。
+ *   自检失败就打印一行到 stderr 并以非 0 退出——"窗口看起来正常"与"控件没接上"
+ *   在截图里分不出来（控件本来就是空的），所以不能只靠肉眼看。
  *
  * <p>**运行方式**同其它示例：必须 `exec:exec` 另起 JVM（`exec:java` 必崩）：
  * ```
@@ -40,6 +51,10 @@ fun clickDslMain() {
 
         // 一行接上鼠标。坐标换算、事件注册、点击队列都在里面（见 JFGL.onClick 的说明）。
         onClick { hit -> DslScene.onHit(hit) }
+
+        // JavaFX 线程、窗口显示之前调一次：这里是**唯一**能安全往场景图里加控件的时机
+        // （onInit / onRender 都在 GL 线程上，在那里碰场景图会崩得毫无规律）。
+        onScene { scene -> DslScene.attachLabel(scene, overlay) }
     }
 }
 
@@ -79,6 +94,16 @@ private object DslScene {
     @Volatile
     private var status: String = "在图形上点一下"
 
+    /**
+     * 叠加层里的那个 `Label`。
+     *
+     * <p>`@Volatile` 的理由与 [status] 相同：它在 JavaFX 线程上被创建与改写，
+     * 而 GL 线程上的每帧绘制也会读它（自检那一行）。普通字段在这种读写下的可见性
+     * 没有保证，表现是"点了没反应，偶尔又有反应"。
+     */
+    @Volatile
+    private var label: Label? = null
+
     /** 绘制区尺寸，只在第一帧打印一次（自动化核对点击位置时要用）。 */
     @Volatile
     private var sizeReported = false
@@ -96,10 +121,67 @@ private object DslScene {
         selected = item
         val where = if (hit != null) "设备像素 ${hit.x().toInt()}, ${hit.y().toInt()}" else "空白处"
         status = if (item == null) "未命中（$where）" else "命中：${item.name} —— ${item.kind}（$where）"
-        // 一个真实应用这里会去改 Label；DSL 不暴露容器，所以改为画在画布上 + 打一行日志。
-        // 打日志不只是给人看：GL 画布上的内容截图抓不到，这行 stdout 是这条链路唯一的
+        // 这里在 JavaFX 应用线程上，所以**可以直接改控件**——这正是叠加层存在的意义。
+        label?.text = status
+        // 再打一行日志：GL 画布上的内容截图抓不到，这行 stdout 是这条链路唯一的
         // 可自动核对的出口。
         println("[点击] $status")
+    }
+
+    /**
+     * 在 JavaFX 线程上把 `Label` 放进叠加层，并做一次**结构自检**。
+     *
+     * <p>自检为什么不是可选的：一个没接上的控件在截图上就是"画面里什么都没有"，
+     * 而那与"控件是空的"完全一样。这里断言两件事——`Label` 真的进了场景图
+     * （`scene != null`），以及叠加层在画布**之后**（StackPane 的 children 顺序就是 z 序，
+     * 也就是"浮在画面上"）。任一条不成立就打印到 stderr 并以非 0 退出，
+     * 好让"这个示例跑通了"有据可查。
+     */
+    fun attachLabel(scene: Scene, overlay: Pane) {
+        val l = Label("在图形上点一下（这一行是 JavaFX 控件，浮在画布之上）").apply {
+            style = "-fx-text-fill: #FFE082; -fx-background-color: rgba(21,24,28,0.75);" +
+                    " -fx-padding: 4 8 4 8;"
+            layoutX = 12.0
+            layoutY = 12.0
+        }
+        overlay.children.add(l)
+        label = l
+
+        val stack = overlay.parent as? StackPane
+        val canvas = stack?.children?.firstOrNull()
+        val canvasBelow = canvas != null && canvas !== overlay &&
+                stack.children.indexOf(canvas) < stack.children.indexOf(overlay)
+        val attached = l.scene != null && overlay.scene != null && canvasBelow
+        println(
+            "[叠加层] 控件在场景图里=${l.scene != null}，叠加层在画布之上=$canvasBelow，" +
+                    "根节点=${scene.root.javaClass.simpleName}，控件数=${overlay.children.size}"
+        )
+        if (!attached) {
+            System.err.println("[叠加层] 自检失败：Label 没有接上场景图，或叠加层不在画布之上")
+            exitProcess(1)
+        }
+
+        // 第二条自检要等到**布局跑过一次之后**（此刻窗口还没 show，控件的宽高都是 0）。
+        // 它问的是"叠加层会不会把画布上的点击吃掉"：`isPickOnBounds = false` 且没有背景的
+        // 容器**不认领任何点**，所以画布照旧收到点击（`onClick` 不会因为这个容器而失灵）。
+        // 点在 Label 自己那块地方上时会被它吃掉——那是对的，点在控件上不该同时命中画布。
+        Platform.runLater {
+            val cx = overlay.width / 2
+            val cy = overlay.height / 2
+            val passThrough = overlay.width > 0 && overlay.height > 0 &&
+                    !overlay.contains(cx, cy)
+            println(
+                "[叠加层] 布局后 ${overlay.width.toInt()}x${overlay.height.toInt()}，" +
+                        "容器不吃中心点的鼠标事件=$passThrough"
+            )
+            if (!passThrough) {
+                System.err.println(
+                    "[叠加层] 自检失败：叠加层认领了它自己的整块区域，会吃掉画布上的点击" +
+                            "（isPickOnBounds 应为 false，且容器不该有背景）"
+                )
+                exitProcess(1)
+            }
+        }
     }
 
     /** 画一帧。在 GL 线程上执行——不要在这里碰 JavaFX 控件。 */

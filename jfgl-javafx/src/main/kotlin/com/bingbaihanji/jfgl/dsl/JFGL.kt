@@ -6,6 +6,8 @@ import com.bingbaihanji.jfgl.renderer.PickHit
 import com.bingbaihanji.jfgl.view.MainView
 import javafx.application.Application
 import javafx.scene.Scene
+import javafx.scene.layout.Pane
+import javafx.scene.layout.StackPane
 import javafx.stage.Stage
 
 /**
@@ -26,6 +28,9 @@ import javafx.stage.Stage
  *
  * <p>要接鼠标点击就再加一个 [onClick]：`onRender` 里用 `gc.pickable(id) { }` 打标，
  * `onClick` 里就能从 `hit.payload()` 拿回那个对象（细节见 [onClick] 的说明）。
+ *
+ * <p>要放 `Label` / `Button` 这类 **JavaFX 控件**就再加一个 [onScene]，
+ * 在里面往 [overlay] 里加（那是一个叠在画布之上的透明容器）。
  *
  * <p>坐标系：回调拿到的是 [Gc]（批处理的 2D 绘制上下文），坐标是**像素、原点左上、y 向下**。
  *
@@ -56,6 +61,75 @@ class JFGL {
 
     /** 点击回调。为空表示不接鼠标事件（那就不做任何拾取，白付代价）。 */
     private var onClickCallback: ((PickHit?) -> Unit)? = null
+
+    /** 场景图就绪回调，在 JavaFX 应用线程上调用一次。 */
+    private var onSceneCallback: ((Scene) -> Unit)? = null
+
+    /**
+     * 叠加在 GL 画布**之上**的 JavaFX 容器：`Label`、`Button`、`Tooltip` 这类控件放这里。
+     *
+     * <h2>它是"最小的口子"，不是一套布局</h2>
+     * <p>本库的画布是一个普通的 JavaFX 节点，所以控件与画布共存本来就不需要什么机制——
+     * 缺的只是"往哪儿放"。这里给的就是那一个位置：一个背景透明的 `Pane`，
+     * 叠在画布上面。想排工具条就把自己的 `BorderPane`/`HBox` 塞进来，本库不替你决定版式。
+     *
+     * <p>用 `StackPane` 叠放而不是把画布塞进 `BorderPane` 的中心，是因为**控件要浮在画面上**
+     * 才是这里最常见的用法（状态角标、十字光标读数、图例开关）。要占整条边的工具条，
+     * 自己往里放一个 `BorderPane` 即可。
+     *
+     * <h2>三条必须知道的</h2>
+     * <ol>
+     *   <li><b>只能在 JavaFX 应用线程上碰它</b>——它是场景图的一部分。可用的时机是
+     *       [onScene] 与 [onClick] 这两个回调（它们都在 JavaFX 线程上）；
+     *       [onRender] / [onInit] 在 GL 线程上，在那里加控件是跨线程操作场景图，
+     *       崩起来毫无规律。</li>
+     *   <li><b>它自己不吃鼠标事件</b>（`isPickOnBounds = false`），所以画布上的点击照旧
+     *       落到画布上，`onClick` 不会因为多了这个容器而失灵。但**控件本身占的那块地方会吃掉点击**
+     *       ——点在按钮上不该同时命中画布，这是对的。</li>
+     *   <li><b>坐标系是 JavaFX 的</b>（逻辑像素、随窗口缩放），而 [Gc] 用的是设备像素。
+     *       两者在高 DPI 下差一个缩放系数（见 [Gc.width] 的说明），
+     *       所以"把控件对准画面上的某个图形"要先自己做一次换算，
+     *       或者干脆用 `localToScene` 之类的 JavaFX 手段（`ClickExample` 里就是这么做的）。</li>
+     * </ol>
+     *
+     * <p>典型用法：
+     * ```kotlin
+     * jfgl {
+     *     onScene {                     // JavaFX 线程，窗口显示之前
+     *         val label = Label("在图形上点一下")
+     *         overlay.children.add(label)
+     *     }
+     *     onClick { hit -> /* ... */ }  // JavaFX 线程，可以安全地改那个 label
+     * }
+     * ```
+     */
+    val overlay: Pane by lazy { Pane().apply { isPickOnBounds = false } }
+
+    /**
+     * 设置**场景图就绪**回调：在 JavaFX 应用线程上、窗口显示之前调用一次，
+     * 参数是刚建好的 [Scene]。
+     *
+     * <p>为什么需要它：[onInit] / [onRender] 都在 GL 线程上（不能碰场景图），
+     * [onClick] 在 JavaFX 线程上但要等到用户点一下。往 [overlay] 里放控件需要一个
+     * "JavaFX 线程、只跑一次"的时机，这个回调就是那一个。
+     *
+     * <p>在配置块（`jfgl { ... }`）里直接 new 控件是**不行的**：那个块在
+     * `Application.launch` 之前执行，JavaFX 工具包还没起来。
+     *
+     * @param block 回调；参数是场景（根节点可用 `scene.root` 取）
+     */
+    fun onScene(block: (Scene) -> Unit) {
+        onSceneCallback = block
+    }
+
+    /**
+     * 转发场景就绪回调。由 [JFGLApplication] 在 JavaFX 线程上调用。
+     *
+     * @param scene 刚建好的场景
+     */
+    internal fun invokeScene(scene: Scene) {
+        onSceneCallback?.invoke(scene)
+    }
 
     /**
      * 设置**点击**回调：在画布上点一下，回调拿到命中的对象。
@@ -204,11 +278,17 @@ internal class JFGLApplication : Application() {
             bridge.onClick(view) { hit -> config.invokeClick(hit) }
         }
 
+        // 画布在下、叠加层在上。**顺序就是 z 序**：StackPane 按 children 的先后画，
+        // 后一个在上面，所以控件浮在画面上。
         val mainView = MainView().apply {
-            center = view
+            center = StackPane(view, config.overlay)
         }
         stage.title = config.title
-        stage.scene = Scene(mainView.createMainView(), config.width, config.height)
+        val scene = Scene(mainView.createMainView(), config.width, config.height)
+        stage.scene = scene
+        // 控件必须在 JavaFX 线程上、并趁场景已经建好时加进来。放在 show() 之前：
+        // 第一帧就能看见它们（放到 show() 之后会闪过一帧没有控件的画面）。
+        config.invokeScene(scene)
         stage.show()
     }
 

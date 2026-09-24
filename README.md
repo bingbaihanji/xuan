@@ -13,7 +13,8 @@
 - 📐 **纯计算几何层**：`geom/` 不依赖 GL 上下文，可脱离 OpenGL 单独测试
 - 📈 **图表**：折线、散点、阶梯、面积、柱状与**频谱**（GPU 上跑 FFT）走实例化绘制，
   数据常驻显存、每帧只上传新增的点，滚动缩放零重传；
-  轴、标题、图例、间距都可配置（`ChartLayout` / `Chart.title` / `Chart.legendVisible` / `Chart.padding`）
+  轴、标题、图例、轴标题、间距都可配置（`ChartLayout` / `Chart.title` / `Chart.legendVisible` /
+  `Chart.axisTitlesVisible` / `Chart.tickLabelReserve` / `Chart.padding`）
 
 ## 快速开始
 
@@ -53,6 +54,25 @@ fun main() {
 ```
 
 `onRender` 的接收者是 `Gc`，所以块内可以直接写 `fill = ...`、`fillRect(...)`。
+
+要放 `Label` / `Button` 这类 JavaFX 控件，用 `onScene` + `overlay`（一个叠在画布**之上**的透明容器）：
+
+```kotlin
+jfgl {
+    onScene {                                  // JavaFX 线程，窗口显示之前调一次
+        val label = Label("在图形上点一下")
+        overlay.children.add(label)            // 控件浮在画面上
+    }
+    onClick { hit -> /* 这里也在 JavaFX 线程上，可以直接改控件 */ }
+}
+```
+
+- **别在配置块里 new 控件**：那个块在 `Application.launch` 之前跑，JavaFX 工具包还没起来。
+  能安全碰场景图的两个时机是 `onScene`（JavaFX 线程、一次）与 `onClick`（JavaFX 线程）；
+  `onInit` / `onRender` 都在 **GL 线程**上，在那里加控件是跨线程操作场景图。
+- `overlay` 自己**不吃鼠标事件**，所以画布上的点击照旧落到画布上；但控件占的那块地方
+  会吃掉点击（点在按钮上不该同时命中画布）。
+- 控件用的是 JavaFX 坐标系（逻辑像素），`Gc` 用的是设备像素，两者在高 DPI 下差一个缩放系数。
 
 ## 点击事件
 
@@ -337,9 +357,14 @@ for (t in x.ticks()) {
 ```
 
 - **不支持的图型会明确抛异常**，不会静默不画：本期有 `LINE`、`LINE_AND_MARKERS`
-  （只画折线那半）、`SCATTER`、`STEP`、`AREA`、`BAR` 与 `SPECTRUM`；
+  （折线 + 标记点，标记点那半复用散点渲染器的几何）、`SCATTER`、`STEP`、`AREA`、`BAR`
+  与 `SPECTRUM`；
   `HEATMAP` / `WATERFALL` 还没有渲染器。`LOGARITHMIC` / `TEXT` 轴同样抛异常
   （GPU 路径只支持线性换算）。
+- **样式值里的 NaN / Infinity 会抛异常**（`Series.fillAlpha` / `lineWidth` / `markerSize` /
+  `baseline` / `categoryGap` / `barGap`）：NaN 没有"明确的处置"——`fillAlpha(NaN)` 会
+  `Math.round(NaN) = 0`，填充**全透明**，与"用户把不透明度设成 0"逐像素相同。
+  越界但**有限**的量照旧收下（`fillAlpha(2)` 钳成实心、负线宽不画线）。
 - **柱状图的柱宽与位置**：`Series.categoryGap` / `Series.barGap` 都是**比例**而不是像素
   （横轴可缩放，像素间距在缩小时会把柱子挤成零宽，而"整张图没了"与"数据没来"分不开）；
   同一层里的多个柱状系列**并排**，间距不一致时 `ChartRenderer` 抛异常。
@@ -350,10 +375,11 @@ for (t in x.ticks()) {
   高度就跟着轴走，而画面完全正常。填充默认半透明（`Series.fillAlpha` = 0.5），
   轮廓线由折线路径画。
 
-### 标题 / 图例 / 外边距
+### 标题 / 图例 / 轴标题 / 外边距
 
 `Chart` 上有一组装配配置（`title` / `titleSide` / `legendVisible` / `legendSide` /
-`padding` 等），`ChartLayout` 负责把**一整块外框**切成标题带、图例带与绘图区，
+`axisTitlesVisible` / `tickLabelReserve` / `padding` 等），`ChartLayout` 负责把
+**一整块外框**切成标题带、图例带、轴标题带、刻度预留带与绘图区，
 `Gc.charts.drawChart(chart, frame, gc.width, gc.height)` 一步画完：
 
 ```kotlin
@@ -374,9 +400,19 @@ gc.charts.drawChart(chart, frame, gc.width, gc.height)   // 装饰 + 数据系�
   会明确抛异常，而不是把标题画成横的。图例四个方向都支持。
 - 绘制入口是 `ChartPainter`（`Gc` 里有一个转发实现）：量文字、画文字、填色块。
   它同时是 `ChartTextMetrics`，所以布局能脱离 GL 单测。
-- **`AxisRange` 的 name/unit 没有任何地方画**（刻度文字在本库由调用方画，
-  于是"轴标题在刻度外面"需要图表层知道刻度文字占多高）。要补是给 `ChartLayout`
-  加一条刻度文字预留带，不是随手画在绘图区边上。
+- **轴标题**：`chart.axisTitlesVisible(true)` 打开后，`AxisRange` 的 name/unit 会被画出来
+  （`轴 0` 的名字/单位 → x 轴标题、`轴 1` → y 轴标题，文字形如 `电压 (V)`；
+  单位为空时只画名字）。它默认**关着**——打开会让绘图区让出两条带子，而"绘图区变了
+  就是画面变了"，既有图不该被一个新开关悄悄挪几像素。
+- **刻度文字仍然是调用方画的**（`Axis.ticks()` 只给位置），所以图表层不知道它占多高：
+  `chart.tickLabelReserve(ChartSide.BOTTOM, 18f)` 由调用方声明"我画的刻度文字占多少"，
+  图表层负责把它从绘图区里扣掉。预留带紧贴绘图区，轴标题带在它**外面**。
+- **装饰被裁到各自的带子里**：一项文字比带子宽时（系列名很长、外框很窄），
+  后面的部分在带子边缘被切断，而不是越过边界画到别处。折行与省略号都不做
+  （那要在"哪里断"上做决定，是排版决策，不该由布局替调用方做）。
+- **`drawChart` 不能带着变换调用**（`translate` / `scale` / `rotate`）：布局算出来的矩形是
+  设备像素，带着变换会让装饰落到布局没算过的位置上。带着变换调用会抛
+  `IllegalStateException`，消息里说清了原因。
 - **脏区间**：`dirtyRange(sinceRevision)` 让渲染器只上传新增的那一段；
   `revision` 不变时报空，静态数据一次上传后永不重传。
   数据在 GPU 里存的是**数值不是屏幕坐标**，所以滚动/缩放/改窗口尺寸只是改 uniform、

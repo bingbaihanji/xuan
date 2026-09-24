@@ -53,7 +53,8 @@ import java.util.function.Consumer;
  * 画面里少一张图，与"这张图没数据"在视觉上完全一样。
  *
  * <p>本期已实现的图型有七种：{@link ChartType#LINE} 与
- * {@link ChartType#LINE_AND_MARKERS}（折线渲染器，后者只画折线那半）、
+ * {@link ChartType#LINE_AND_MARKERS}（折线渲染器；后者是折线 + 标记点，
+ * 标记点那一半复用散点渲染器的几何）、
  * {@link ChartType#SCATTER}（散点渲染器）、{@link ChartType#STEP}（阶梯）、
  * {@link ChartType#AREA}（面积：填充 + 轮廓线）、{@link ChartType#BAR}（柱状）
  * 以及 {@link ChartType#SPECTRUM}（{@link SpectrumSeriesRenderer}——它的顶点由
@@ -211,8 +212,10 @@ public final class ChartRenderer implements Disposable {
         this.barShader = gl.createShader(SeriesShaders.BAR_VERTEX, SeriesShaders.LINE_FRAGMENT);
         this.barPickShader =
                 gl.createShader(SeriesShaders.BAR_VERTEX, SeriesShaders.PICK_FRAGMENT);
-        this.lineRenderer = new LineSeriesRenderer(gl);
+        // 散点渲染器先建：折线渲染器要拿它画 LINE_AND_MARKERS 的标记点那一半
+        // （注入的必须是**同一个实例**，否则两边各建一套 VAO，画的还是同一批像素）。
         this.scatterRenderer = new ScatterSeriesRenderer(gl);
+        this.lineRenderer = new LineSeriesRenderer(gl, scatterRenderer);
         // 面积图的轮廓线由折线路径画，所以它要拿到那一个渲染器（两者都是无状态的纯函数）。
         this.areaRenderer = new AreaSeriesRenderer(gl, lineRenderer);
         this.stepRenderer = new StepSeriesRenderer(gl);
@@ -237,11 +240,22 @@ public final class ChartRenderer implements Disposable {
      * 两者在几何上不重叠（{@link ChartLayout} 保证这一点）。与 {@link #draw} 一样，
      * 调用方应当先画网格再调它。
      *
+     * <h2>两条入口检查</h2>
+     * <ul>
+     *   <li><b>不能带着变换</b>（{@code translate/scale/rotate}）：{@link ChartLayout}
+     *       算出来的矩形是设备像素，带着变换会让装饰落到布局没算过的位置上。
+     *       这条由 {@link ChartPainter#begin} 强制（{@code Gc} 的实现会检查），
+     *       而且<b>没有装饰时也会发生</b>——绘图区同样算在设备像素里。</li>
+     *   <li>装饰被<b>裁到各自的带子里</b>：一项文字比带子宽时，后面的部分会在带子
+     *       边缘被切断，而不是越过边界画到别处（取舍见 {@link ChartLayout} 的类文档）。
+     *       调用方原本设的裁剪仍然有效（求交）。</li>
+     * </ul>
+     *
      * @param chart          图表
      * @param frame          整块外框（设备像素）
      * @param viewportWidth  帧缓冲宽度（设备像素）
      * @param viewportHeight 帧缓冲高度（设备像素）
-     * @throws IllegalStateException 已释放后调用
+     * @throws IllegalStateException 已释放后调用，或当前带着变换时（见上）
      * @throws NullPointerException  没有注入 {@link ChartPainter} 时（构造时传了 null）
      */
     public void drawChart(Chart chart, Rect frame, int viewportWidth, int viewportHeight) {
@@ -256,7 +270,13 @@ public final class ChartRenderer implements Disposable {
         }
         ChartLayout layout = ChartLayout.compute(chart, frame, painter);
         // 装饰借调用方的状态来画，begin/end 成对（见 ChartPainter 的文档）。
-        painter.begin();
+        //
+        // 这一层的带子是**整块外框**，它只做三件事：压栈、关掉拾取、
+        // 以及**校验"没有带着变换"**——那条校验必须在**没有装饰时也发生**
+        // （绘图区同样算在设备像素空间里，带着变换一样会画错地方），
+        // 所以它不能藏在 ChartDecorations 里那些"有标题/图例才开"的层里。
+        // 各带子的裁剪由 ChartDecorations 再各开一层（可以嵌套）。
+        painter.begin(frame);
         try {
             ChartDecorations.paint(painter, chart, layout);
         } finally {
@@ -443,10 +463,10 @@ public final class ChartRenderer implements Disposable {
      *       放在 {@code polylineFamily()} 那道守卫之后的话，它先被"本期还没有渲染器"
      *       抛掉，频谱永远画不出来。</li>
      *   <li>{@link ChartType#LINE_AND_MARKERS} <b>不走散点这条分支</b>：它的
-     *       {@code drawsMarkers()} 也为真，但 {@code connectsSamples()} 同时为真，
-     *       而本期只画它的折线部分（标记点那半是写在 {@code LineSeriesRenderer.requireSupported}
-     *       文档里的已知缺口）。少了 {@code !connectsSamples()} 它会走散点渲染器，
-     *       于是折线整条消失、只剩一串点——而"只有点"看起来像一种刻意的风格。</li>
+     *       {@code drawsMarkers()} 也为真，但 {@code connectsSamples()} 同时为真。
+     *       它归折线渲染器（那边画完折线再调一次散点渲染器的"无守卫"入口画标记点），
+     *       少了这条判断它会走散点渲染器，于是折线整条消失、只剩一串点——
+     *       而"只有点"看起来像一种刻意的风格。</li>
      * </ol>
      */
     private SeriesRenderer rendererFor(ChartType type) {

@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -462,6 +463,69 @@ class ViewTransformTest {
         // 转 90° 恰好把两个轴的缩放互换：基向量长度仍是 2 与 4，平均仍是 3
         t.rotate(90f);
         assertEquals(3f, t.matrixScale(), 1e-3f);
+    }
+
+    // ------------------------------------------------------------------
+    // 「当前变换是不是本帧的基础变换」
+    // ------------------------------------------------------------------
+
+    /**
+     * 基础变换是**像素 → NDC 那一趟**，不是数学单位阵。
+     *
+     * <p>这一条是 {@code ChartPainter.begin()} 那道守卫的口径：图表装饰的布局算的是设备像素，
+     * 所以调用方带着任何 translate/scale/rotate 进 {@code drawChart} 都会让装饰落到
+     * 布局没算过的位置。守卫必须放行"什么都没做"，不然每一张图都画不出来。
+     */
+    @Test
+    void freshlyOpenedFrameIsBaseTransform() {
+        assertTrue(frame(800, 600).isBaseTransform(), "刚 beginFrame 的变换就是基础变换");
+        assertTrue(new ViewTransform().isBaseTransform(),
+                "还没 beginFrame 时矩阵是单位阵，也算基础变换（守卫不该在帧外误报）");
+    }
+
+    @Test
+    void anyTransformMakesItNotBase() {
+        ViewTransform t = frame();
+        t.translate(1f, 0f);
+        assertFalse(t.isBaseTransform(), "哪怕是 1 像素的平移，装饰也会画错地方");
+
+        ViewTransform s = frame();
+        s.scale(1f, 1f);
+        assertFalse(s.isBaseTransform(), "scale(1,1) 数值上等于基础变换，但不是同一次设置——"
+                + "判据是「有没有被动过」而不是「矩阵看起来一样」");
+
+        ViewTransform r = frame();
+        r.rotate(0f);
+        assertFalse(r.isBaseTransform(), "rotate(0) 同理");
+
+        ViewTransform u = frame();
+        u.translate(5f, 7f);
+        u.translate(-5f, -7f);
+        assertFalse(u.isBaseTransform(), "平移过去又平移回来：矩阵回到原值，但仍是「被动过」");
+    }
+
+    /**
+     * 变换栈弹回之后必须**重新**算基础变换。
+     *
+     * <p>这才是守卫真正要拦的那种调用：{@code save(); translate(...); drawChart(...)}——
+     * 装饰画在错位的地方、而 {@code restore()} 之后一切正常，缺陷只在那一次调用上可见。
+     */
+    @Test
+    void saveRestoreReturnsToBaseTransform() {
+        ViewTransform t = frame();
+        t.save();
+        t.translate(10f, 20f);
+        assertFalse(t.isBaseTransform(), "save/translate 之内不是基础变换");
+        t.restore();
+        assertTrue(t.isBaseTransform(), "restore 之后必须重新算基础变换");
+    }
+
+    @Test
+    void beginFrameResetsBaseTransformAfterScale() {
+        ViewTransform t = frame();
+        t.scale(3f, 3f);
+        t.beginFrame(400, 300);
+        assertTrue(t.isBaseTransform(), "新一帧从基础变换开始，与上一帧做过什么无关");
     }
 
     // ------------------------------------------------------------------

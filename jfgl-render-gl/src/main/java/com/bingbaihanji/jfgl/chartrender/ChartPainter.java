@@ -1,6 +1,7 @@
 package com.bingbaihanji.jfgl.chartrender;
 
 import com.bingbaihanji.jfgl.chart.ChartTextMetrics;
+import com.bingbaihanji.jfgl.util.Rect;
 
 /**
  * 标题与图例的"一支笔"：量文字、画文字、填矩形。<strong>它同时是 {@link ChartTextMetrics}</strong>。
@@ -16,20 +17,29 @@ import com.bingbaihanji.jfgl.chart.ChartTextMetrics;
  *       要加第五个（比如旋转），得先回答"谁来验它"。</li>
  * </ul>
  * <p>{@code Gc} 那边有一个匿名实现（见 {@code Gc.chartPainter}），
- * 它把本接口转发到自己的 {@code save/restore}、{@code measureText}、
+ * 它把本接口转发到自己的 {@code save/restore}、{@code clipRect}、{@code measureText}、
  * {@code drawText}、{@code fillRect} 上。
  *
- * <h2>实现必须遵守的三条</h2>
+ * <h2>实现必须遵守的四条</h2>
  * <ol>
- *   <li><b>{@link #begin()} / {@link #end()} 必须成对</b>，且实现要压/弹<b>全部</b>绘制
+ *   <li><b>{@link #begin(Rect)} / {@link #end()} 必须成对</b>，且实现要压/弹<b>全部</b>绘制
  *       状态（变换、裁剪、颜色、字号、拾取 ID）。标题与图例是"借"调用方的状态来画的，
- *       漏了还原的表现是"这张图之后画的图元全都变了样"，而那张图自己完全正常。</li>
+ *       漏了还原的表现是"这张图之后画的图元全都变了样"，而那张图自己完全正常。
+ *       <b>允许嵌套</b>（{@code drawChart} 会用整块外框开一层、每个带子再各开一层），
+ *       实现按栈处理即可。</li>
+ *   <li><b>后续绘制被限制在 {@code band} 之内</b>（裁到该矩形）。这条是"装饰不折行、
+ *       不省略"的兜底：一项的文字比带子宽时，后面的部分本来会<b>越过带子画到别处去</b>
+ *       （带子只说明"摆在哪"）。裁掉之后它变成"在带子边缘被切断"——<b>看得见</b>，
+ *       而且不会画到别的地方。取舍见 {@code ChartLayout} 的类文档。</li>
  *   <li>期间<b>不参与拾取</b>（拾取 ID 为 0）：点在图例的色块上不该命中一个系列——
  *       图例是装饰，不是数据。它同时也避免了"色块恰好压在某个数据系列上"时
  *       把点击分给装饰。</li>
- *   <li>坐标是<b>设备像素、原点左上</b>（与整条管线一致），且 <b>{@link #begin()} 之后
- *       变换必须是单位阵</b>：布局算出来的矩形是设备像素，调用方进 {@code drawChart} 时
- *       若带着变换，标题会跟着变换跑，而图例的矩形不会。</li>
+ *   <li>坐标是<b>设备像素、原点左上</b>（与整条管线一致），且 <b>{@link #begin(Rect)} 时
+ *       变换必须还是本帧的基础变换</b>：布局算出来的矩形是设备像素，调用方进
+ *       {@code drawChart} 时若带着 {@code translate/rotate/scale}，装饰会落到布局
+ *       没算过的位置上（而"装饰偏了几像素"看起来只是字号或间距的问题）。
+ *       <b>这条不再只是文档</b>：{@code Gc} 的实现会检查并抛
+ *       {@link IllegalStateException}。</li>
  * </ol>
  *
  * <h2>{@link #lineHeight(float)} 的口径</h2>
@@ -39,13 +49,17 @@ import com.bingbaihanji.jfgl.chart.ChartTextMetrics;
 public interface ChartPainter extends ChartTextMetrics {
 
     /**
-     * 进入绘制：压栈，并把状态调成中性（变换为单位阵、拾取 ID 为 0）。
+     * 进入绘制：压栈，把状态调成中性（拾取 ID 为 0），并把后续绘制限制在 {@code band} 内。
      *
-     * <p>调用方必须保证与 {@link #end()} 成对。
+     * <p>调用方必须保证与 {@link #end()} 成对；可以嵌套。
+     *
+     * @param band 这一层要画的带子（设备像素），也是这一层的裁剪矩形
+     * @throws IllegalStateException 当前带着变换（不是本帧的基础变换）时
+     *                               ——{@code Gc} 的实现会这么抛，理由见类文档第 4 条
      */
-    void begin();
+    void begin(Rect band);
 
-    /** 退出绘制：弹栈，把状态还原成 {@link #begin()} 之前的样子。 */
+    /** 退出绘制：弹栈，把状态还原成 {@link #begin(Rect)} 之前的样子。 */
     void end();
 
     /**

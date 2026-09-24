@@ -91,10 +91,10 @@ jfgl-render-gl/src/test/.../gpu/        FftWindowTest、FftKernelTest
 （`...` 是 `java/com/bingbaihanji/jfgl`。`jfgl-javafx` 没有 surefire 测试——它的
 `example/` 里那七个校验器是**手动跑的 main**，不是单测。）
 
-当前 **357 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+当前 **370 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
 `@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`（跨模块加 `-pl 模块名`）。
-分布：`geom/` 79、`renderer/` 100、`gl/` 12、`text/` 32、`chart/` 71、`chartrender/` 49、
-`gpu/` 14（合计 357）。
+分布：`geom/` 79、`renderer/` 104、`gl/` 12、`text/` 32、`chart/` 80、`chartrender/` 49、
+`gpu/` 14（合计 370）。
 
 `geom/`、`math/`、`util/`、`ViewTransform`、`text/{SdfGenerator, TextLayout}`、`chart/`、
 `gpu/FftWindow`（窗系数与相干增益补偿，纯算术）都是纯计算、不依赖 GL 上下文，最适合写单测。
@@ -378,8 +378,8 @@ gc.endFrame()
   换算（×2）只在 `ScatterSeriesRenderer.markerEdge` 一处。两处各持一半解释的话，
   用户设半径 5 会拿到宽 5 的方块，**画面上没有任何症状**。
 - **不支持的要明确抛异常，不许静默不画**。本期实现了七种图型：
-  `LINE`、`LINE_AND_MARKERS`（**只画折线那半**，标记点那半是已知缺口）、`SCATTER`、
-  `STEP`、`AREA`、`BAR`、`SPECTRUM`（独立渲染器，见下）。
+  `LINE`、`LINE_AND_MARKERS`（折线 + 标记点：标记点那半复用散点渲染器的几何，
+  见下）、`SCATTER`、`STEP`、`AREA`、`BAR`、`SPECTRUM`（独立渲染器，见下）。
   `HEATMAP` / `WATERFALL` 一律抛异常——它们的顶点不是"每个样本一个点"，
   要各自的独立渲染器。
 - **每个图型一个渲染器，哪怕顶点来自同一批实例属性**。折线族（`polylineFamily()`）
@@ -403,9 +403,21 @@ gc.endFrame()
   装饰交给 `ChartLayout`。前者一字未改，两条路径画数据系列的代码是同一段。
 - **标题只支持上下**（左右要转 90°，而绘制入口只有横排文字）：`titleSide(LEFT/RIGHT)`
   明确抛异常。图例四个方向都支持。
-- **`AxisRange` 的 name/unit 没有任何地方画**——刻度文字由调用方画（见 README），
-  于是"轴标题在刻度的外面"要图表层知道刻度文字占多高。要补是给 `ChartLayout` 加
-  一个"刻度文字预留带"，不是随手画在绘图区边上。
+- **轴标题与刻度预留带**：`axisTitlesVisible(true)` 打开后 `AxisRange` 的 name/unit
+  被画出来（轴 0 → x 轴标题、轴 1 → y 轴标题，形如 `电压 (V)`），**默认关着**——
+  打开会让绘图区让出两条带子，而"绘图区变了就是画面变了"（既有图不该被新开关挪像素）。
+  刻度文字仍由**调用方**画，所以"它占多高"是调用方的信息：
+  `chart.tickLabelReserve(BOTTOM/LEFT, px)` 由调用方声明，图表层负责扣掉。
+  带子从外向里是 **图例 → 轴标题带 → 刻度预留 → 绘图区**；
+  x 轴标题带横跨**绘图区**（不是整条内框），所以它不会与 y 轴标题带在左下角重叠。
+- **装饰被裁到各自的带子里**（`ChartPainter.begin(Rect band)`）：一项文字比带子宽时，
+  后面的部分在带子边缘被切断，而不是越过边界画到别处。折行/省略号都不做（排版决策）。
+  **抛异常被明确否掉**：`ChartLayout.compute` 在绘制路径上每帧被调用，
+  而 GL 线程上的异常在本项目是**静默吞掉**的——用静默的坏事去修静默的坏事没有意义。
+- **`drawChart` 不能带着变换**：布局算的是设备像素，带着 `translate/scale/rotate`
+  会让装饰落到没算过的位置上。`Gc` 的实现里有一条**会抛 `IllegalStateException`** 的守卫
+  （`ViewTransform.isBaseTransform()`，判据是"有没有被动过"而不是"矩阵等不等于基础矩阵"），
+  由 `ChartVerifier` 的探针钉着。
 - **饼图塞不进现在的 `Chart` 模型**：`Chart` 至少要一根轴、`ChartRenderer.draw`
   至少要两根，而饼图没有笛卡尔轴；扇区的标签与颜色也没有地方放
   （`Series` 只有名字与主色，`AxisRange` 的 name/unit 是**按维度**的）。
@@ -571,10 +583,14 @@ gc.endFrame()
    而"点得比帧率快"是正常压力不是程序错误，所以不抛异常——但绝不静默。
 
    `ClickExample.kt`（`FXGLTransfer` 版，JavaFX Label 反馈）与 `ClickDslExample.kt`
-   （`jfgl { onClick { } }` 版，反馈画在画布上、并把每次命中 `println` 出来好让自动化
-   能核对）是两个可跑的示例。后者的存在是为了证明**从 DSL 那个入口也能接上点击**：
-   它只有 `onInit` / `onRender` / `onClick` 三块，没有一处手工搭 `Scene`/`Stage`，
-   也没有一处手写坐标换算。
+   （`jfgl { onClick { } }` 版）是两个可跑的示例。后者的存在是为了证明**从 DSL 那个入口
+   也能接上点击**：它没有一处手工搭 `Scene`/`Stage`，也没有一处手写坐标换算。
+   它另外钉住 DSL 的**叠加层**（`jfgl { onScene { overlay.children.add(label) } }`）：
+   命中结果既画在画布上、也写进一个真的 `Label`，启动时做一次结构自检
+   （控件在场景图里、叠加层在画布之上），失败就 `exitProcess(1)`——
+   "窗口看起来正常"与"控件没接上"在截图里分不出来（控件本来就是空的）。
+   **能安全碰场景图的只有 `onScene`（JavaFX 线程、一次）与 `onClick`（JavaFX 线程）**；
+   `onInit` / `onRender` 都在 GL 线程上。
 
    改**文本**路径后跑 `TextVerifier`（退出码 0/1）。它的核心断言是：
    同一个字以 24px 与 192px 绘制时，**边缘过渡带宽度大致恒定**——
@@ -601,6 +617,14 @@ gc.endFrame()
    以及**频谱**（见下），并且**场景逐帧在变**（有几张实验图只在观察期画、
    有一条系列中途整条消失）——静态场景的校验器有盲区（`PickVerifier` 当时 24 条全绿
    仍漏掉一个真缺陷，见 README 的「测试」一节）。
+
+   **左/右图例、底部标题、轴标题、带子边界那一节**（"★ 左/右图例…"）是另一组此后要维护的：
+   五个变体共用一个 108×38 的矩形、**按帧轮换**（一块地方只装得下一个变体），
+   各自在自己那一段的最后一帧抓快照。判别式都是手算的、且刻意只用与字体无关的量
+   （带子高、色块位置、绘图区上下边缘）——左右图例的**带宽**与字体有关，所以那几条
+   只钉"色块贴哪条边""文字在色块右边""绘图区从带子之后开始"，不写固定的列号。
+   这一节同时钉住了新能力：`LINE_AND_MARKERS` 的两个半边（点的两块 6×6 与线的
+   52×2 列）、轴标题居中、刻度预留真的挤过绘图区、以及超长系列名**被切断而不是画到界外**。
 
    **频谱那一组（`ChartVerifier` 的"★ 频谱"一节）值得单独说一句**：它的判别式是
    「相邻两个 bin 之间那一列上的墨迹落在**哪一行**」——两个 bin 的幅值之间的中点，
@@ -663,6 +687,8 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
 `gpu/ComputeShader`、`gpu/FftKernel`（一次 dispatch 干完全部：取数 → 加窗 → 位反转 →
 `log2(N)` 级蝶形 → 幅度，单 workgroup 全在 shared memory 里做；输出是 `N/2+1` 个 bin 的
 半谱）、
+`chartrender/` 的装饰（`ChartLayout` 的轴标题带与刻度预留、`ChartPainter.begin(Rect)` 的
+带子裁剪）、`dsl/JFGL` 的 `overlay` / `onScene`（把 JavaFX 控件放进 DSL 应用）、
 `renderer/PickRegistry`（ID 分配与 `id→对象` 映射，纯内存可单测）、
 `renderer/PickBuffer`、`PickHit`、`Gc` 的 `pickId` / `pickable` / `pick` / `pickRect`、
 `FXGLTransfer` 的 `pickAsync` / `pickAsyncAtNode`（hover，最新覆盖旧的）与
@@ -677,19 +703,17 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
 **未实现 / 待办**
 - **其余图型的渲染器**：`HEATMAP` / `WATERFALL` 目前一律**抛异常**
   （`chart/` 里有这两个 `ChartType`，但没有渲染器）。属于 ③ 或更后面的事。
-  同样地，`LINE_AND_MARKERS` **只画折线那半**，标记点那半还没接（见
-  `LineSeriesRenderer.requireSupported` 的 Javadoc）。
+  （`LINE_AND_MARKERS` 的标记点那半**已经接上**了：`LineSeriesRenderer` 持有
+  `ScatterSeriesRenderer` 并调它的 `renderMarkers`，复用的是同一份几何与拾取热区。）
 - **饼图没有 `ChartType` 常量，也没有渲染器**，而且它塞不进现在的 `Chart` 模型：
   `Chart` 至少要一根轴、`ChartRenderer.draw` 至少要两根（0 号是数据下标、1 号是数值），
   而饼图没有笛卡尔轴；每个扇区的**标签与颜色**也没有地方放（`Series` 只有名字与
   主色，`AxisRange` 的 name/unit 是**按维度**而不是按数据点的，`ArrayChartData`
   的 name 又是全局的）。真要做得先回答"扇区标签放哪"，
   那是数据模型上的一个决定，不该硬塞。
-- **轴标题（`AxisRange` 的 name/unit）没有任何地方画**。模型里有，渲染层不读它。
-  它是**刻意**的：刻度文字在本库由调用方画（见 README 的图表一节），
-  于是"轴标题该在刻度的外面"这件事要图表层知道刻度文字占多高——
-  那是调用方的信息。要补的话是给 `ChartLayout` 加一条"刻度文字预留带"
-  （两个配置项）再加两条带子，而不是随手画在绘图区边上。
+- **轴标题已经实现**（`Chart.axisTitlesVisible` + `Chart.tickLabelReserve`，
+  模型在 `chart/`、绘制在 `chartrender/`），见「图表」一节。
+  它**默认关着**，理由见那里。刻度文字仍由调用方画。
 - **非线性轴的 GPU 路径**：`LOGARITHMIC` / `TEXT` 轴在 `ChartRenderLayout` 里明确抛异常。
 - **GPU 计算**（子项目 D-③）：FFT（**③-1 已完成**）、降采样、包络、密度累积（数字荧光）。
   - **③-1 的实现是 `gpu/FftKernel.java`**（`#version 430`，Cooley-Tukey radix-2 + SSBO，

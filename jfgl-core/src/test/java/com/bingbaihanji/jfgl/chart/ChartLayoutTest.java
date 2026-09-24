@@ -46,6 +46,18 @@ class ChartLayoutTest {
         return chart;
     }
 
+    /** 带名字与单位的图：轴标题的文字来自 {@code AxisRange} 的 name / unit。 */
+    private static Chart namedChart() {
+        ArrayChartData data = new ArrayChartData(
+                new AxisRange[]{new AxisRange(0, 10, "样本", ""),
+                        new AxisRange(0, 1, "值", "V")},
+                new double[][]{{0, 1, 2, 3}, {0.1, 0.2, 0.3, 0.4}});
+        Chart chart = new Chart(new Axis(AxisType.LINEAR, data.axisRange(0)),
+                new Axis(AxisType.LINEAR, data.axisRange(1)));
+        chart.addLayer("主").add(new Series("电压", data, ChartType.LINE).color(0xFF00FF00));
+        return chart;
+    }
+
     private static void assertSameRect(Rect expected, Rect actual, String what) {
         assertEquals(expected.x, actual.x, 1e-4f, what + " x");
         assertEquals(expected.y, actual.y, 1e-4f, what + " y");
@@ -212,6 +224,191 @@ class ChartLayoutTest {
         assertEquals(15f, chart.titleFontSize(), 1e-4f);
         assertEquals(12f, chart.legendFontSize(), 1e-4f);
         assertEquals(10f, chart.legendSwatchSize(), 1e-4f);
+        // 轴标题与刻度预留默认**都不占地方**：它们是新能力，默认打开会无声地改动
+        // 每一张既有图的绘图区（那些图的期望值是按像素钉着的）。理由见 Chart 的字段说明。
+        assertFalse(chart.axisTitlesVisible(), "默认不显示轴标题");
+        assertEquals(0f, chart.tickLabelReserve(ChartSide.BOTTOM), 0f);
+        assertEquals(0f, chart.tickLabelReserve(ChartSide.LEFT), 0f);
+    }
+
+    // ------------------------------------------------------------------
+    // 刻度文字预留带与轴标题
+    // ------------------------------------------------------------------
+
+    /**
+     * 刻度文字在本库里是**调用方画的**（{@code Axis.ticks()} 给位置，画由应用做），
+     * 所以图表层不可能知道它占多高——那正是"可配置的预留量"而不是"自动测量"的理由。
+     *
+     * <p>它必须像别的带子一样，把绘图区往里挤，而不是让刻度文字压在数据上。
+     */
+    @Test
+    void 刻度文字预留带把绘图区往里挤() {
+        Chart chart = chart();
+        chart.legendVisible(false)
+                .tickLabelReserve(ChartSide.BOTTOM, 18f)
+                .tickLabelReserve(ChartSide.LEFT, 26f);
+
+        ChartLayout layout = ChartLayout.compute(chart, FRAME, METRICS);
+
+        assertSameRect(new Rect(FRAME.x + 26f, FRAME.y,
+                FRAME.width - 26f, FRAME.height - 18f), layout.plotRect(), "扣掉预留之后的绘图区");
+    }
+
+    /** 一次设两边的简写（x 轴与 y 轴刻度通常一样高）。 */
+    @Test
+    void 刻度文字预留带可以一次设两边() {
+        Chart chart = chart();
+        chart.legendVisible(false).tickLabelReserve(15f);
+
+        ChartLayout layout = ChartLayout.compute(chart, FRAME, METRICS);
+
+        assertEquals(15f, chart.tickLabelReserve(ChartSide.BOTTOM), 1e-4f);
+        assertEquals(15f, chart.tickLabelReserve(ChartSide.LEFT), 1e-4f);
+        assertSameRect(new Rect(FRAME.x + 15f, FRAME.y,
+                FRAME.width - 15f, FRAME.height - 15f), layout.plotRect(), "两边各收 15");
+    }
+
+    /**
+     * 轴标题在**刻度预留之外**（也就是离绘图区更远），而不是压着刻度文字。
+     *
+     * <p>顺序从外向里是：图例 → 轴标题带 → 刻度预留 → 绘图区。
+     */
+    @Test
+    void 轴标题带在刻度预留之外() {
+        Chart chart = namedChart();
+        chart.legendVisible(false)
+                .axisTitlesVisible(true).axisTitleFontSize(10f).axisTitleGap(4f)
+                .tickLabelReserve(ChartSide.BOTTOM, 18f)
+                .tickLabelReserve(ChartSide.LEFT, 26f);
+
+        ChartLayout layout = ChartLayout.compute(chart, FRAME, METRICS);
+
+        float xTitleH = 10f * ChartLayout.LINE_HEIGHT_FACTOR;
+        ChartLayout.AxisTitle x = layout.xAxisTitle();
+        assertNotNull(x, "x 轴标题（轴 0 的 name/unit）");
+        assertEquals("样本", x.text(), "轴 0 的名字就是 x 轴标题（单位为空时不带括号）");
+        // 它的横向范围**就是绘图区**：这样它不会与 y 轴标题带在左下角重叠，
+        // 而"居中于绘图区"也是"这条轴从哪到哪"的正确语义。
+        float yBandW = METRICS.width(layout.yAxisTitle().text(), 10f);
+        assertSameRect(new Rect(FRAME.x + yBandW + 4f + 26f,
+                FRAME.y + FRAME.height - xTitleH,
+                FRAME.width - yBandW - 4f - 26f, xTitleH), x.rect(),
+                "x 轴标题带贴内框下边、横跨绘图区");
+        assertEquals(FRAME.y + FRAME.height - xTitleH + 10f * ChartLayout.BASELINE_FACTOR,
+                x.baseline(), 1e-4f, "基线 = 带子顶部 + 字号 × BASELINE_FACTOR");
+
+        // 绘图区下边 = 内框下边 - 轴标题带 - 轴标题间隙 - 刻度预留
+        assertEquals(FRAME.y + FRAME.height - xTitleH - 4f - 18f,
+                layout.plotRect().y + layout.plotRect().height, 1e-4f,
+                "刻度预留紧挨绘图区，轴标题带在它外面");
+    }
+
+    /**
+     * x 轴标题**水平居中于带子**（它是轴的标题，左边对齐会看着像另一个标注）。
+     *
+     * <p>居中用的是度量给的宽度，所以它是本类第二处"与字体有关"的算术
+     * （第一处是左右图例的带宽）——但那不影响任何**带子**的高度。
+     */
+    @Test
+    void x轴标题水平居中而y轴标题带宽由度量决定() {
+        Chart chart = namedChart();
+        chart.legendVisible(false).axisTitlesVisible(true).axisTitleFontSize(10f);
+
+        ChartLayout layout = ChartLayout.compute(chart, FRAME, METRICS);
+
+        ChartLayout.AxisTitle x = layout.xAxisTitle();
+        float textW = METRICS.width(x.text(), 10f);
+        assertEquals(x.rect().x + x.rect().width / 2f, x.x() + textW / 2f, 1e-4f,
+                "x 轴标题的**文字**在带子里居中（左对齐会看着像另一个标注）");
+        assertEquals(layout.plotRect().x, x.rect().x, 1e-4f, "x 轴标题带横跨绘图区");
+        assertEquals(layout.plotRect().width, x.rect().width, 1e-4f);
+
+        ChartLayout.AxisTitle y = layout.yAxisTitle();
+        assertNotNull(y, "y 轴标题（轴 1 的 name/unit）");
+        assertEquals(METRICS.width(y.text(), 10f), y.rect().width, 1e-4f,
+                "y 轴标题带的宽度 = 文字宽度（横排文字，不旋转）");
+        assertEquals(layout.plotRect().x, y.rect().x + y.rect().width + chart.axisTitleGap(),
+                1e-4f, "y 轴标题带与绘图区之间隔着一个轴标题间隙");
+        assertEquals(y.rect().x, y.x(), 1e-4f, "y 轴标题的文字从带子左边缘起（带子只有文字那么宽）");
+        // 垂直居中：基线 = 带子中心 + 半个字面高（近似，见 CENTER_BASELINE_FACTOR 的文档）
+        assertEquals(y.rect().y
+                        + (y.rect().height + 10f * (2f * ChartLayout.CENTER_BASELINE_FACTOR)) * 0.5f,
+                y.baseline(), 1e-4f, "y 轴标题在带子里垂直居中");
+    }
+
+    /** 名字与单位怎么拼：单位为空时不要多出空括号。 */
+    @Test
+    void 轴标题的文字由名字与单位拼成() {
+        ArrayChartData data = new ArrayChartData(
+                new AxisRange[]{new AxisRange(0, 10, "时间", "s"),
+                        new AxisRange(0, 1, "电压", "V")},
+                new double[][]{{0, 1}, {0, 1}});
+        Chart chart = new Chart(new Axis(AxisType.LINEAR, data.axisRange(0)),
+                new Axis(AxisType.LINEAR, data.axisRange(1)));
+        chart.legendVisible(false).axisTitlesVisible(true);
+
+        ChartLayout layout = ChartLayout.compute(chart, FRAME, METRICS);
+        assertEquals("时间 (s)", layout.xAxisTitle().text());
+        assertEquals("电压 (V)", layout.yAxisTitle().text());
+
+        // 名字为空、只有单位 → 只显示单位（不然会画出一对空括号）
+        ArrayChartData onlyUnit = new ArrayChartData(
+                new AxisRange[]{new AxisRange(0, 10, "", "s"),
+                        new AxisRange(0, 1, "", "")},
+                new double[][]{{0, 1}, {0, 1}});
+        Chart c2 = new Chart(new Axis(AxisType.LINEAR, onlyUnit.axisRange(0)),
+                new Axis(AxisType.LINEAR, onlyUnit.axisRange(1)));
+        c2.legendVisible(false).axisTitlesVisible(true);
+        ChartLayout l2 = ChartLayout.compute(c2, FRAME, METRICS);
+        assertEquals("s", l2.xAxisTitle().text(), "只有单位时只显示单位");
+        assertNull(l2.yAxisTitle(), "名字与单位都空 → 没有标题，也不占地方");
+    }
+
+    /** 关掉轴标题时它一点都不占地方（绘图区与不设它时逐字段相等）。 */
+    @Test
+    void 关掉轴标题时不占地方() {
+        Chart chart = namedChart();
+        chart.legendVisible(false).tickLabelReserve(5f);
+
+        ChartLayout off = ChartLayout.compute(chart, FRAME, METRICS);
+        chart.axisTitlesVisible(true);
+        ChartLayout on = ChartLayout.compute(chart, FRAME, METRICS);
+
+        assertNull(off.xAxisTitle(), "默认没有 x 轴标题");
+        assertNull(off.yAxisTitle());
+        assertTrue(on.plotRect().height < off.plotRect().height,
+                "打开之后绘图区变矮（带子真的占了地方）");
+        assertTrue(on.plotRect().width < off.plotRect().width,
+                "并且变窄（y 轴标题带占了左边）");
+    }
+
+    /** 只有一根轴时没有 y 轴标题（不能去 axis(1) 上越界）。 */
+    @Test
+    void 只有一根轴时没有y轴标题() {
+        Chart chart = new Chart(new Axis(AxisType.LINEAR,
+                new AxisRange(0, 10, "样本", "")));
+        chart.axisTitlesVisible(true);
+
+        ChartLayout layout = ChartLayout.compute(chart, FRAME, METRICS);
+
+        assertNull(layout.yAxisTitle());
+        assertNotNull(layout.xAxisTitle(), "0 号轴仍然是 x 轴");
+    }
+
+    /** 预留量只支持 BOTTOM（x 轴刻度）与 LEFT（y 轴刻度）；别的方向明确抛异常。 */
+    @Test
+    void 刻度预留只支持下边与左边() {
+        Chart chart = chart();
+        assertThrows(IllegalArgumentException.class,
+                () -> chart.tickLabelReserve(ChartSide.TOP, 10f));
+        assertThrows(IllegalArgumentException.class,
+                () -> chart.tickLabelReserve(ChartSide.RIGHT, 10f));
+        assertThrows(IllegalArgumentException.class,
+                () -> chart.tickLabelReserve(ChartSide.BOTTOM, -1f));
+        assertThrows(IllegalArgumentException.class,
+                () -> chart.tickLabelReserve(ChartSide.BOTTOM, Float.NaN));
+        assertThrows(IllegalArgumentException.class, () -> chart.axisTitleFontSize(0f));
+        assertThrows(IllegalArgumentException.class, () -> chart.axisTitleGap(-1f));
     }
 
     @Test

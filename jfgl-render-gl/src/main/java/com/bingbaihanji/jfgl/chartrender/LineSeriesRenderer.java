@@ -56,6 +56,22 @@ import static org.lwjgl.opengl.GL20.glVertexAttribPointer;
  *       会比预期暗一大截，而画面看起来"只是颜色有点深"。</li>
  *   <li><b>VAO 与着色器</b>：用完解绑。</li>
  * </ul>
+ *
+ * <h2>{@link ChartType#LINE_AND_MARKERS} 的标记点那一半</h2>
+ * <p>它<b>不再是缺口</b>：本类持有一个 {@link ScatterSeriesRenderer}
+ * （由 {@code ChartRenderer} 注入），折线画完之后调它的
+ * {@link ScatterSeriesRenderer#renderMarkers} 把标记点画上去。
+ *
+ * <p><b>复用而不是各写一份</b>：标记点的几何（居中四边形、{@code markerSize} 半径→边长
+ * 的换算、{@code max(uMarkerSize, uPickTolerance*2)} 的退化处置、拾取热区）
+ * 与散点渲染器<b>逐项相同</b>，而这些恰恰是"画面上看不出来"的那一类缺陷
+ * （热区比标记小一半、标记比声明的小一半都只是"看起来有点小"）。
+ * 抄一份的话两处迟早分叉；而"哪一半归谁"这件事仍然只有 {@code rendererFor} 一处判断。
+ *
+ * <p>调的是 {@link ScatterSeriesRenderer#renderMarkers}（无守卫版本），
+ * 不是它的 {@code render}——那个方法会<b>正确地</b>拒绝 {@code LINE_AND_MARKERS}
+ * （理由见 {@link ScatterSeriesRenderer#requireSupported}），
+ * 与面积图渲染器调 {@link #renderPolyline} 是同一个道理。
  */
 final class LineSeriesRenderer implements SeriesRenderer {
 
@@ -82,12 +98,21 @@ final class LineSeriesRenderer implements SeriesRenderer {
 
     private final GLAbstraction gl;
 
+    /** 画 {@code LINE_AND_MARKERS} 标记点那一半的渲染器（不持有数据，全局共享）。 */
+    private final ScatterSeriesRenderer markerRenderer;
+
     private final int vao;
 
     private final int cornerVbo;
 
-    LineSeriesRenderer(GLAbstraction gl) {
+    /**
+     * @param markerRenderer 标记点那一半的绘制入口；由 {@code ChartRenderer} 注入
+     *                       （它必须与 {@code ChartRenderer} 自己用的那一个是同一个实例，
+     *                       否则两处会各自建一套 VAO 与着色器，画的还是同一批像素）
+     */
+    LineSeriesRenderer(GLAbstraction gl, ScatterSeriesRenderer markerRenderer) {
         this.gl = gl;
+        this.markerRenderer = markerRenderer;
         this.vao = gl.createVao();
         this.cornerVbo = gl.createVbo();
 
@@ -142,6 +167,14 @@ final class LineSeriesRenderer implements SeriesRenderer {
         // 那边决定"谁来画"，这里决定"画不画得了"）。
         requireSupported(series.type());
         renderPolyline(ctx, data, series, axes);
+        // 标记点画在折线**之上**（后画的在上）。顺序反过来倒也不会看不见，
+        // 但"点被线压在下面"是让人以为标记没画的那种画面，没有必要。
+        //
+        // 只有 LINE_AND_MARKERS 有这一半：把标记点也画给 LINE，是**无声地多画了东西**，
+        // 而 ChartType 那边 LINE 与 LINE_AND_MARKERS 是两个不同的图型，用户的选择必须被尊重。
+        if (series.type() == ChartType.LINE_AND_MARKERS) {
+            markerRenderer.renderMarkers(ctx, data, series, axes);
+        }
     }
 
     /**
@@ -156,6 +189,10 @@ final class LineSeriesRenderer implements SeriesRenderer {
      *
      * <p>调用方必须保证"这个图型用折线几何画是对的"（目前只有
      * {@code LINE} / {@code LINE_AND_MARKERS} / {@code AREA} 的轮廓线三种情况）。
+     *
+     * <p><b>它不画标记点。</b>{@code LINE_AND_MARKERS} 的标记点由 {@link #render} 在
+     * 折线之后补上——走 {@link #renderPolyline} 的那几个调用方（面积图的轮廓线）
+     * 要的就是一条纯折线。
      */
     void renderPolyline(RenderContext ctx, ChartData data, Series series, Axis[] axes) {
         GLRenderContext c = (GLRenderContext) ctx;
@@ -285,8 +322,11 @@ final class LineSeriesRenderer implements SeriesRenderer {
      * 这与"按线性去画对数轴"是同一种错误：<b>形状是错的，而不报错</b>。
      * 本期这两者都还没有渲染器（见计划 Task 15 的"未实现"清单）。
      *
-     * <p>同理，{@link ChartType#LINE_AND_MARKERS} 的标记点由散点渲染器负责（Task 14），
-     * 本期只画它的折线部分——这一点是<b>写在文档里的已知缺口</b>，不是"顺手少画一半"。
+     * <p>{@link ChartType#LINE_AND_MARKERS} <b>整个都归本渲染器</b>（折线 + 标记点，
+     * 后半由 {@link ScatterSeriesRenderer#renderMarkers} 画，见类文档）——
+     * 这条不再是缺口，所以那个图型列在白名单里是对的。
+     * 光看 {@code drawsMarkers()} 为真就把它路由到散点渲染器仍是错的：
+     * 那样折线整条消失、只剩一串点，而"只有点"看起来像一种刻意的风格。
      */
     private static void requireSupported(ChartType type) {
         if (type == ChartType.LINE || type == ChartType.LINE_AND_MARKERS) {

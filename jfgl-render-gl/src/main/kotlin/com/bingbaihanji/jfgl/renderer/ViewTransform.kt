@@ -39,6 +39,23 @@ internal class ViewTransform {
     var matrix: Mat3 = Mat3.identity()
         private set
 
+    /**
+     * 本帧的基础矩阵（像素 → NDC），[beginFrame] 时记下。
+     *
+     * <p>用**同一个对象引用**表示"没被动过"：`translate/scale/rotate` 生成的矩阵都是
+     * [Mat3.multiply] 的新对象，只有 [beginFrame] 与 [restore] 会把 [matrix] 指回它。
+     */
+    private var base: Mat3 = matrix
+
+    /**
+     * 当前变换是否**还是本帧的基础变换**（[beginFrame] 之后一次 translate/scale/rotate 都没追加过）。
+     *
+     * <p>注意判据是"有没有被动过"，**不是**"矩阵的数值是不是恰好等于基础矩阵"：
+     * `scale(1, 1)` 数值上什么都没变，但它说明调用方**以为**自己在一个变换里——
+     * 而装饰画完之后调用方多半会 `restore()`，把布局算过的位置再挪一次。
+     */
+    private var atBase = true
+
     /** 当前裁剪矩形左边界（设备像素，y 向下，含）。 */
     var clipLeft: Float = 0f
         private set
@@ -105,7 +122,9 @@ internal class ViewTransform {
         viewportHeight = height
         matrixStack.clear()
         levels = 0
-        setMatrix(baseMatrix(width, height))
+        base = baseMatrix(width, height)
+        setMatrix(base)
+        atBase = true
         clipLeft = 0f
         clipTop = 0f
         clipRight = width.toFloat()
@@ -150,7 +169,11 @@ internal class ViewTransform {
     fun restore() {
         check(levels > 0) { "restore() 与 save() 不配对：当前栈为空，没有可恢复的状态" }
         levels--
-        setMatrix(matrixStack.removeLast())
+        val restored = matrixStack.removeLast()
+        setMatrix(restored)
+        // 弹回来的是不是基础矩阵，看**引用**就够了：只有 beginFrame 会把 matrix 指向 base，
+        // 而 beginFrame 会清栈，所以栈里存下来的 base 引用一定还是这一帧的那一个。
+        atBase = restored === base
         val base = levels * 4
         clipLeft = clipStack[base]
         clipTop = clipStack[base + 1]
@@ -166,6 +189,7 @@ internal class ViewTransform {
      */
     fun translate(tx: Float, ty: Float) {
         setMatrix(matrix.multiply(Mat3.translation(tx, ty)))
+        atBase = false
     }
 
     /**
@@ -176,6 +200,7 @@ internal class ViewTransform {
      */
     fun scale(sx: Float, sy: Float) {
         setMatrix(matrix.multiply(Mat3.scale(sx, sy)))
+        atBase = false
     }
 
     /**
@@ -188,7 +213,26 @@ internal class ViewTransform {
      */
     fun rotate(degrees: Float) {
         setMatrix(matrix.multiply(Mat3.rotation(Math.toRadians(degrees.toDouble()).toFloat())))
+        atBase = false
     }
+
+    /**
+     * 当前变换是否**就是本帧的基础变换**（[beginFrame] 之后一次 translate/scale/rotate
+     * 都没有追加过；`save()` / `restore()` 弹回基础变换之后重新为真）。
+     *
+     * <h2>谁需要它</h2>
+     * <p>图表装饰（{@code ChartPainter}）的布局算出来的是**设备像素**：调用方带着变换
+     * 去调 {@code ChartRenderer.drawChart}，装饰就会落到布局没算过的位置上——
+     * 而"装饰偏了一点"看起来只是字号或间距的问题。图表层因此要在入口拦住它，
+     * 拦的依据就是这个方法。
+     *
+     * <p><b>它不是数学单位阵。</b>基础矩阵是"像素 → NDC"那一趟，见 [companion object] 的
+     * {@code baseMatrix}：在这个类里"什么都没做"就长这样。写成
+     * `matrix == Mat3.identity()` 的话，**每一张图都会抛异常**。
+     *
+     * @return 没被动过时为 true
+     */
+    fun isBaseTransform(): Boolean = atBase
 
     /**
      * 用当前变换对用户坐标点做变换，返回 NDC 下的 x 分量。

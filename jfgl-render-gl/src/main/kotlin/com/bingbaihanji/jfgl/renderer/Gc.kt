@@ -10,6 +10,7 @@ import com.bingbaihanji.jfgl.geom.Tessellator
 import com.bingbaihanji.jfgl.math.Mat3
 import com.bingbaihanji.jfgl.text.GlyphSlot
 import com.bingbaihanji.jfgl.text.TextLayout
+import com.bingbaihanji.jfgl.util.Rect
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
@@ -160,9 +161,26 @@ class Gc constructor(private val batch: RenderBatch) {
      *   所以调用 `drawChart` 时不该带着变换（这一点写在 `ChartPainter` 的类文档里）。
      */
     private val chartPainter = object : ChartPainter {
-        override fun begin() {
+        override fun begin(band: Rect) {
+            // 契约（ChartPainter 的类文档第 4 条）在这里被真正强制：布局算出来的是
+            // **设备像素**，带着变换去调 drawChart 会让装饰落到布局没算过的位置上。
+            // 之前这条只写在文档里——而"装饰偏了几像素"看起来只是字号或间距的问题，
+            // 没人会去读那份文档。判据是「有没有被动过」，不是「矩阵等不等于基础矩阵」
+            // （见 ViewTransform.isBaseTransform 的说明）。
+            check(state.isBaseTransform()) {
+                "图表装饰的布局算在**设备像素**空间，调用 drawChart 时不能带着变换：" +
+                    "带着 translate/scale/rotate 的话，装饰会落到 ChartLayout 没算过的位置上" +
+                    "（标题带、图例色块与绘图区的相对位置全错），而画面看起来只是" +
+                    "\"间距不太对\"。请在调用前 restore() 回到基础变换，" +
+                    "或者改用低层的 draw(chart, plotRect, w, h) 自己排布绘图区。"
+            }
             this@Gc.save()
             pickId = 0
+            // 带子就是这一层的边界（契约第 2 条）：一项文字比带子宽时，
+            // 裁掉之后是"在带子边缘被切断"，而不是画到隔壁去。clipRect 与调用方
+            // 原本的裁剪**求交**，所以"图表画在一块被裁过的区域里"仍然成立。
+            // 它会自动吸附到整像素，见 ViewTransform.clipRect。
+            this@Gc.clipRect(band.x, band.y, band.width, band.height)
         }
 
         override fun end() {

@@ -13,6 +13,21 @@ package com.bingbaihanji.jfgl.chart;
  * "复制一份、改一个字段、再塞回去"。这些 setter 不校验范围之外的语义
  * （比如线宽为负），因为渲染侧对它们的处理是明确的（负线宽 = 不画线），
  * 而不是一个静默的错值。
+ *
+ * <h2>但<b>非有限数</b>一律抛异常——它不属于"范围之外的语义"</h2>
+ * <p>分界判据是"渲染侧对这份输入有没有一个明确、可预期的处置"：
+ * <ul>
+ *   <li>{@code fillAlpha(2f)} 有（钳到 1，实心），{@code lineWidth(-1f)} 有（不画线），
+ *       所以收下；</li>
+ *   <li>{@code fillAlpha(Float.NaN)} <b>没有</b>：{@code < 0} 与 {@code > 1} 两个分支
+ *       对 NaN 都不成立，于是 NaN 一路走到 {@code Math.round(NaN)}——
+ *       结果是 <b>0</b>，填充全透明。而"用户把不透明度设成 0"与
+ *       "用户算出了一个 NaN"在画面上<b>逐像素相同</b>；</li>
+ *   <li>NaN 线宽 / NaN 标记尺寸进顶点着色器后，那个图元整块消失——同样静默。</li>
+ * </ul>
+ * <p>{@code Infinity} 与 NaN 同类处置（几何量取 Infinity 让图元退化，在画面上等于没画），
+ * 统一在入口拒绝就没有第二种解释。校验发生在赋值<b>之前</b>：抛了之后字段保持原值，
+ * 不会留下"抛异常了但值已经进去了"这种更难查的状态。
  */
 public final class Series {
 
@@ -141,8 +156,13 @@ public final class Series {
         return lineWidth;
     }
 
-    /** 设置线宽。 */
+    /**
+     * 设置线宽。负值表示不画线（与 JavaFX 的零线宽同类处置）。
+     *
+     * @throws IllegalArgumentException 非有限数时（理由见类文档）
+     */
     public Series lineWidth(float width) {
+        requireFinite(width, "线宽");
         this.lineWidth = width;
         return this;
     }
@@ -152,8 +172,13 @@ public final class Series {
         return markerSize;
     }
 
-    /** 设置标记点半径。 */
+    /**
+     * 设置标记点半径。0 或负数表示不画标记（拾取热区仍在，见散点渲染器）。
+     *
+     * @throws IllegalArgumentException 非有限数时（理由见类文档）
+     */
     public Series markerSize(float size) {
+        requireFinite(size, "标记点半径");
         this.markerSize = size;
         return this;
     }
@@ -174,8 +199,13 @@ public final class Series {
         return baseline;
     }
 
-    /** 设置面积/柱状图的下沿数值（见字段说明）。 */
+    /**
+     * 设置面积/柱状图的下沿数值（见字段说明）。
+     *
+     * @throws IllegalArgumentException 非有限数时（它一路进到顶点里的基线，理由见类文档）
+     */
     public Series baseline(float value) {
+        requireFinite(value, "基线");
         this.baseline = value;
         return this;
     }
@@ -192,9 +222,12 @@ public final class Series {
      *              （&gt;1 即实心、&le;0 即不画填充）。不抛的理由与线宽为负相同：
      *              "把它钳住"是一个明确、可预期的处置，而一个因为样式值越界
      *              就抛异常的图表，用户只能靠读栈去猜是哪个字段
+     * @throws IllegalArgumentException 非有限数时（NaN 没有"明确的处置"——
+     *              两个分支都不成立、{@code Math.round(NaN)} 得 0，见类文档）
      * @return 自身，便于链式调用
      */
     public Series fillAlpha(float alpha) {
+        requireFinite(alpha, "填充不透明度");
         this.fillAlpha = alpha;
         return this;
     }
@@ -208,9 +241,12 @@ public final class Series {
      * 设置柱状图的类别间距。
      *
      * @param gap 占一格宽度的比例；&ge;1 会让柱子退化成零宽（不画，与线宽为负同类处置）
+     * @throws IllegalArgumentException 非有限数时（NaN 从柱宽公式里出来就不是"零宽"了，
+     *              而是整排柱子一起消失，见类文档）
      * @return 自身，便于链式调用
      */
     public Series categoryGap(float gap) {
+        requireFinite(gap, "类别间距");
         this.categoryGap = gap;
         return this;
     }
@@ -224,10 +260,28 @@ public final class Series {
      * 设置同类别内的柱间距。
      *
      * @param gap 占一根柱宽度的比例；0 表示并排的柱子紧挨着
+     * @throws IllegalArgumentException 非有限数时（理由与 {@link #categoryGap} 相同）
      * @return 自身，便于链式调用
      */
     public Series barGap(float gap) {
+        requireFinite(gap, "柱间距");
         this.barGap = gap;
         return this;
+    }
+
+    /**
+     * 拒绝 NaN 与 ±Infinity，而<b>不</b>拒绝越界但有限的量。
+     *
+     * <p>分界判据见类文档："渲染侧对这份输入有没有一个明确、可预期的处置"。
+     * 故意不用 {@code requirePositive} 之类：那会把 {@code lineWidth(-1)}
+     * （一个有确定含义的样式值）一起拒掉，与 {@link #lineWidth} 的文档打架。
+     */
+    private static void requireFinite(float value, String what) {
+        if (!Float.isFinite(value)) {
+            throw new IllegalArgumentException(
+                    what + "必须是有限数（NaN 与 ±Infinity 都不是样式值），实际为 " + value
+                            + "。越界但有限的量（负线宽、fillAlpha > 1）照旧收下，"
+                            + "由渲染侧钳住或退化——那里有一个确定的处置，而 NaN 没有。");
+        }
     }
 }
