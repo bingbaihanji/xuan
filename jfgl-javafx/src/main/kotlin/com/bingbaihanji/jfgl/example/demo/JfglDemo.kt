@@ -327,9 +327,20 @@ class JfglDemoApp : Application() {
      * <p>**必须在三处调用**，否则不变式"`dragStartX` 非 NaN ⟺ 真的有一次 DRAW 拖拽在进行"
      * 不被任何东西维护：
      * ① 拖拽正常结束（[onRelease] 的 DRAW 分支）；
-     * ② 框选正常结束（[onRelease] 的 SECONDARY 分支）——**顺带把主键拖拽也取消掉**：
-     *    双键同时按下是个语义含糊的手势（左键拖到一半再按右键），
-     *    取消它比"按当前鼠标位置提交到错误的终点"好；
+     * ② 框选正常结束（[onRelease] 的 SECONDARY 分支）——**顺带取消可能在进行的主键拖拽**。
+     *    双键同时按下是个语义含糊的手势，**而这半边只闭合了一半**，两种松开顺序不同：
+     *    - **右键先松开**：主键拖拽被取消，随后那次左键释放 `moved = 0`、退化成一次
+     *      单击拾取——无害；
+     *    - **左键先松开**：走 PRIMARY 分支、用**释放点**提交，而预览停在最后一次
+     *      `MOUSE_DRAGGED`（[onDrag] 的右键分支早返回，轨迹此后不再更新）——
+     *      于是"提交的位置"与"停帧显示的预览"不一致。轨迹型图形不受影响
+     *      （它们不吃 `endX/endY`，提交的仍是那条冻结的轨迹）；紧接着的右键释放
+     *      会因为 `marqueeW` 已被清而**静默取消这次框选**。
+     *
+     *    **没有把左键那半也闭合是刻意的**：双键手势本身语义含糊，而"按鼠标实际位置提交"
+     *    并不比"按预览提交"更错——**不假装它已经被处理**。
+     *    （这条措辞是质量评审逼出来的：原稿写的是"取消它比提交到错误的终点好"，
+     *    而那只在右键先松开时成立。**文档承诺超过实现**与本文件 I1 那条是同一类问题。）
      * ③ **模式被切走时**（[buildMenuBar] 的 `modeItem`）。
      *
      * <p>③ 是最容易漏的那一处，而漏掉的后果是**静默错画**：
@@ -442,7 +453,11 @@ class JfglDemoApp : Application() {
                 "矩形/圆/椭圆要求横竖都不为零）"
             return
         }
-        shapes.set(shapes.get() + Placed(s, 0))     // pickId 在 Task 6 接上
+        // pickRegistry 自己是线程安全的（Gc 文档里明确的例外），
+        // 所以可以在 JavaFX 线程直接注册，不必塞进 onFrame。
+        // **号由注册表发，不要自己维护计数器**——两本账迟早对不上。
+        val id = transfer?.gc()?.pickRegistry?.register(s) ?: 0
+        shapes.set(shapes.get() + Placed(s, id))
         status.text = "已画：${s.describe()} · 共 ${shapes.get().size} 个"
     }
 
@@ -491,7 +506,28 @@ class JfglDemoApp : Application() {
             return
         }
 
-        for (p in shapes.get()) p.shape.draw(gc)
+        val sel = selection.get()
+        for (p in shapes.get()) {
+            if (p.pickId != 0) {
+                // pickable 是 save/pickId/restore 的作用域版本：块内改的颜色/线宽
+                // 在块结束时全部回滚，因此不可能"忘了复位 pickId"。
+                gc.pickable(p.pickId) { p.shape.draw(gc) }
+            } else {
+                p.shape.draw(gc)
+            }
+        }
+        // 选中高亮画在所有图形之后，此时 pickId 已被 pickable 复原成 0
+        gc.save()
+        gc.pickId = 0
+        gc.stroke = HIGHLIGHT
+        gc.lineWidth = 3f
+        for (p in shapes.get()) {
+            if (p.pickId in sel) {
+                val b = p.shape.bounds()
+                gc.strokeRect(b.x - 6f, b.y - 6f, b.width + 12f, b.height + 12f)
+            }
+        }
+        gc.restore()
         drawDragPreview(gc)
         drawMarquee(gc)
         // ★ 这里**不能**调 consumeMarquee（框选读回）——见它的文档：
