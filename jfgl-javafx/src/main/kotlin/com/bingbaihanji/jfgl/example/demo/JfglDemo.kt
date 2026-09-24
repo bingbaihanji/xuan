@@ -247,16 +247,27 @@ class JfglDemoApp : Application() {
      * 改变状态（键在 `MOUSE_PRESSED` 那一刻就已按下），所以按契约它就**不该**被依赖。
      * 判断"当前按着哪个"是 `isXxxButtonDown()` 的职责，文档对这两个方法的分工是明确的。
      *
-     * <p>用 `e.button == SECONDARY` 之类的判断，一旦它对拖拽事件返回 `NONE`，
+     * <p>用 `e.button == SECONDARY` 之类的判断，一旦它对拖拽事件不给出正确的键，
      * 两个分支就永远不成立，**整个绘制功能会静默失效**：轨迹一个点都收不到、
      * 图形画不出来、框选永远不出现，**而且不报任何错**——画面看起来就是"拖了没反应"。
      *
-     * <p>⚠️ <strong>这条是按契约推的，不是实测结论</strong>：我读了本机 JDK 里的
-     * `javafx/scene/Scene.java`，它把 `e.getButton()` 从 glass 层**原样透传**
-     * （`Scene.java` 里两处 `new MouseEvent(..., e.getButton(), ...)`），
-     * 所以拖拽时那个值到底是不是 `NONE` 取决于 Windows 平台层，**我没有测到**。
-     * 换成 `isXxxButtonDown()` 在两种情况下都正确，所以不必先知道答案。
-     * （同一个文件里"两轴都用 outputScaleY"那条也是这么标注的：推断与实测分开写。）
+     * <p><strong>★ 实测（2026-09-24，本机 Windows 11 + JDK 内置的 JavaFX 25）</strong>：
+     * 用 `javafx.scene.robot.Robot` 驱动一次真实拖拽、监听 `MOUSE_DRAGGED`，结果是
+     * **`e.getButton()` 返回真实按下的那个键**（左拖 `PRIMARY`、右拖 `SECONDARY`），
+     * **不是 `NONE`**。也就是说——**用 `e.button` 判拖拽在本机是能工作的**。
+     *
+     * <p><strong>但换掉它仍然是对的，只是理由变了。</strong>
+     * 本机之所以拿到正确的值，是因为 glass 层在 Windows 上把按下的键透传了上来
+     * （读本机 JDK 的 `javafx/scene/Scene.java` 可见它两处都是
+     * `new MouseEvent(..., e.getButton(), ...)` 的**原样透传**）。
+     * **那是未文档化的平台行为，不是契约**——`getButton()` 的契约仍然是
+     * "哪个按键**改变了状态**"，而拖拽期间没有任何键改变状态。
+     * 所以这是一处典型的「**在本机能跑，正确性却挂在没人承诺过的东西上**」。
+     *
+     * <p>这段历史值得留着，因为它记下了**推断与实测的差别**：原先这里写的是
+     * "按契约推断它返回 `NONE`"，实测发现本机不返回 `NONE`。
+     * **结论没变，理由从"它会返回 NONE"改成了"契约不承诺它，而 `isXxxButtonDown()`
+     * 正是为回答这个问题而存在的"**。哪天有人想把它改回 `e.button`，这就是那条"别改"的理由。
      *
      * <p>`MOUSE_PRESSED` / `MOUSE_RELEASED` 上 `getButton()` 是可靠的——那两刻确实
      * 有按键改变了状态，正是它契约所指的情形。所以 [onPress] / [onRelease] 照旧用它。
