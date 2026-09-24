@@ -425,6 +425,16 @@ gc.endFrame()
    它回读帧缓冲，逐项断言像素数、包围盒、描边四条边的对称性，失败以非零码退出。
    它是上述缺陷被发现的原因。
 
+   改 **`Gc` 的路径方法**（`strokePath` / `fillPath` / 子路径处理）后跑 `PathVerifier`
+   （退出码 0/1）。它用一个**双变体**场景——同一条路径里画两条互不相连的横线，
+   另一帧只画第一条——因此能同时钉住两件事：子路径之间**没有**多出连线，
+   以及"上一帧的顶点留在缓冲里"这类**跨帧残留**。
+
+   ```bash
+   mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
+       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.PathVerifierKt"
+   ```
+
    改**拾取**路径后跑 `PickVerifier`（同样回读像素、断言精确 ID，退出码 0/1）：
 
    ```bash
@@ -605,9 +615,19 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
   （纯色 = 超白色纹理 + 顶点颜色，渐变 = 1×256 LUT）。
 - **`createTexture` 已在 LWJGL 入口完成 ARGB→RGBA 通道转换**；新增纹理类型时继续沿用
   `0xAARRGGBB` 公共 API 契约，并为新上传路径补充字节序测试。
-- `Gc.strokePath()` 的闭合子路径在收尾顶点处不生成接头（线段本身不缺）。
-  修法需要去看 `Path` 的命令表判断末条命令是否为 `CLOSE`，见该方法的 Javadoc。
-- `Gc.strokePath()` 会把所有子路径当成**一条**折线描边，多条子路径之间会多出一段连线。
+- ✅ **已修**：`Gc.strokePath()` 现在按 `Flattener` 的子路径**逐段独立描边**，
+  多条子路径之间那段并不存在的连线没有了。判据（末条命令是否为 `CLOSE`）**查的是
+  `Path` 的命令表**，不是看点集——平铺后的点集里，`CLOSE` 追加的起点与"用户自己
+  `lineTo` 回起点"产生的末点**逐位相同**，光看点分不出来。
+  **`PathVerifier` 钉着它**（18 条），变异实测：把 `subPaths == 1` 改成 `subPaths >= 1`
+  → 恰好 3 条倒下，其中一条直接量到那段假连线（84 px）。
+- ⚠️ **闭合子路径的收尾接头已修，但端到端断言还没补。** 同一处改动让闭合子路径
+  按 `closed = true` 收尾（以前只落平头封口，尖角外侧留小缺口）。
+  **这一条目前没有像素断言**——`StrokeGeneratorTest` 只钉住生成器那一侧
+  （"末点重复起点时闭合描边与去重后等价"），没钉住 `Gc.strokePath` 这层的接线。
+  补法已经想清楚：90° 直角 + MITER，外角像素 (92,92) 在有接头时被覆盖、
+  开放描边时是背景；更好的对照组是"同一份几何用 `strokePolyline(closed=false)` 画一遍"。
+  **在补上之前，不要把它当成"已验证"。**
 - 没有黄金图像测试。
 
 **声明了但完全没用到的依赖**

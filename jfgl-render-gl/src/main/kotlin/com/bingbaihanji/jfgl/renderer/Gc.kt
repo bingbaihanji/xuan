@@ -786,6 +786,16 @@ class Gc constructor(private val batch: RenderBatch) {
      */
     private var scratchPoints = FloatArray(INITIAL_SCRATCH_FLOATS)
 
+    /**
+     * 多子路径描边时**单个子路径**的临时缓冲，与 [scratchPoints] 分开。
+     *
+     * <p>分开是必须的：子路径的点就住在 [scratchPoints] 里，就地覆盖会把本次循环
+     * 之后那些子路径的输入**提前抹掉**——而表现是"后半截形状画错"，不报错。
+     *
+     * <p>只在 [strokePath] 遇到多个子路径时才用到（单子路径走零拷贝那条）。
+     */
+    private var subScratchPoints = FloatArray(INITIAL_SCRATCH_FLOATS)
+
     /** 开始一条新路径，丢弃之前累积的全部子路径。 */
     fun beginPath() {
         path.reset()
@@ -870,23 +880,21 @@ class Gc constructor(private val batch: RenderBatch) {
     /**
      * 用当前 [stroke] 与 [lineWidth] 描边当前路径。
      *
-     * <p>**闭合子路径的处理（已知限制）**：`close()` 产生的收尾<strong>线段</strong>不缺——
-     * [Flattener] 处理 `CLOSE` 时会把子路径起点追加为末点，那一段照常生成。
-     * 缺的是闭合顶点处的<strong>接头</strong>：本方法按开放折线描边，收尾处只落平头封口，
-     * 尖角外侧会留下一个小缺口（细线宽下几乎不可见，但确实是与 Canvas 的差异）。
+     * <p><strong>每个子路径独立描边，且按它自己的闭合状态收尾。</strong>
+     * 「闭合」的判据是**该子路径的末条命令是否为 `CLOSE`**（[lastCommandIsClose] /
+     * [subPathClosedFlags]），不是看点集——平铺后的点集里，`CLOSE` 追加的起点与
+     * 「用户自己 `lineTo` 回到起点」产生的末点**逐位相同**，光看点分不出来。
      *
-     * <p>改成 `closed = true` 在几何上是<strong>安全</strong>的：[StrokeGenerator] 会跳过
-     * 「末点与起点重复」产生的零长度段，并用 `firstValidSegment` 把接头正确放回首尾之间——
-     * `StrokeGeneratorTest.末点重复起点时闭合描边与去重后等价` 用覆盖性断言钉住了这一点。
+     * <p>两条曾经的行为差异因此消失：
      *
-     * <p>之所以没这么改，是因为本方法<strong>不知道路径是不是闭合的</strong>：用户画一条
-     * 开放折线时同样走到这里，强行按闭合描边会凭空多画一段。判断依据（末条命令是否为
-     * `CLOSE`）只存在于 [Path] 的命令表里，而平坦化后的点集已经分不清「重复的起点」
-     * 与「碰巧回到起点的末点」。要修就得让本方法去查命令表，属于待办。
+     * - 闭合子路径的收尾<strong>接头</strong>以前缺（只落平头封口，尖角外侧留小缺口）；
+     * - 多条子路径以前被当成**一条**折线，子路径之间会多出一段**并不存在的连线**。
      *
-     * <p>**已知限制**：所有子路径会被平坦化后当作**一条**折线描边，
-     * 因此多条子路径之间会多出一段并不存在的连线。需要多段独立描边时，
-     * 请分别 `beginPath()` 后各自调用本方法。
+     * <p>判据只影响**轮廓的收尾方式与分段**，不改变用户主动画的任何一条线段：
+     * 开放子路径照旧两端平头，闭合子路径补上首尾接头。
+     *
+     * <p>性能上单子路径是**零拷贝**的（绝大多数调用），多子路径才会经一次
+     * [copySubPath] 搬进 [subScratchPoints]。
      */
     fun strokePath() {
         if (path.isEmpty) {
@@ -897,7 +905,96 @@ class Gc constructor(private val batch: RenderBatch) {
             return
         }
         val count = flattenToScratch()
-        strokeOpenOutline(scratchPoints, count)
+        val subPaths = flattener.subPathCount()
+
+        // 退化路径（一条 MOVE_TO 都没有）与"单子路径且正好从 0 开始"都走这条：
+        // 与改动前完全一致的点集，只有"收尾方式"这一处是新的。
+        if (subPaths == 0 || (subPaths == 1 && flattener.subPathStart(0) == 0)) {
+            strokeOutline(scratchPoints, count, closed = lastCommandIsClose())
+            return
+        }
+
+        val closed = subPathClosedFlags(subPaths)
+        for (i in 0 until subPaths) {
+            val from = flattener.subPathStart(i)
+            val to = if (i + 1 < subPaths) flattener.subPathStart(i + 1) else count
+            val n = to - from
+            // 少于两点的子路径描不出东西（StrokeGenerator 会直接返回），跳过即可。
+            if (n < 2) {
+                continue
+            }
+            strokeOutline(copySubPath(from, n), n, closed = closed[i])
+        }
+    }
+
+    /**
+     * 判断「唯一那个子路径」是否以 `CLOSE` 结束。
+     *
+     * <p>从命令表末尾往前找，遇到第一条 `MOVE_TO` 就说明该子路径已经到头——
+     * 那之前没有 `CLOSE`，就是开放的。中间的 `LINE_TO`/曲线命令一律跳过。
+     *
+     * @return 末条属于该子路径的命令是 `CLOSE` 时为 true
+     */
+    private fun lastCommandIsClose(): Boolean {
+        for (i in path.commandCount() - 1 downTo 0) {
+            when (path.commandType(i)) {
+                Path.Type.CLOSE -> return true
+                Path.Type.MOVE_TO -> return false
+                else -> {}
+            }
+        }
+        return false
+    }
+
+    /**
+     * 逐个判断第 i 个子路径是否以 `CLOSE` 结束。
+     *
+     * <p>子路径的下标与 [Flattener.subPathStart] 对齐：[Flattener] 在每条 `MOVE_TO`
+     * 处开一条新子路径，两者按同一顺序编号。
+     *
+     * <p>实现上让每条非 `CLOSE` 命令把当前位置的标志**清成 false**，`CLOSE` 置 true——
+     * 于是循环结束时留下的就是「**末条**命令是不是 `CLOSE`」。这在
+     * `close()` 之后又继续画线（同一条子路径里出现两个 `CLOSE` 之间还有命令）时，
+     * 判的是最后那一段，而不是"曾经闭合过"。
+     *
+     * @param subPaths 子路径条数
+     * @return 长度等于 `subPaths` 的闭合标志
+     */
+    private fun subPathClosedFlags(subPaths: Int): BooleanArray {
+        val flags = BooleanArray(subPaths)
+        var current = -1
+        for (i in 0 until path.commandCount()) {
+            val type = path.commandType(i)
+            if (type == Path.Type.MOVE_TO) {
+                current++
+                continue
+            }
+            if (current < 0 || current >= subPaths) {
+                continue
+            }
+            flags[current] = type == Path.Type.CLOSE
+        }
+        return flags
+    }
+
+    /**
+     * 把 [scratchPoints] 里从第 `from` 个顶点起的一段搬进 [subScratchPoints]。
+     *
+     * @param from       源起始**顶点**下标（不是 float 下标）
+     * @param pointCount 顶点个数
+     * @return [subScratchPoints]（长度可能大于所需，调用方另传 `pointCount`）
+     */
+    private fun copySubPath(from: Int, pointCount: Int): FloatArray {
+        val need = pointCount * 2
+        if (subScratchPoints.size < need) {
+            var size = subScratchPoints.size
+            while (size < need) {
+                size *= 2
+            }
+            subScratchPoints = FloatArray(size)
+        }
+        System.arraycopy(scratchPoints, from * 2, subScratchPoints, 0, need)
+        return subScratchPoints
     }
 
     // ------------------------------------------------------------------
