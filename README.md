@@ -11,8 +11,9 @@
 - ✂️ **状态栈与裁剪**：`save` / `restore` / `translate` / `scale` / `rotate` / `clipRect`
 - 🖼️ **嵌入 JavaFX 场景图**：GL 画布就是一个普通 `Node`，与 JavaFX 布局共存
 - 📐 **纯计算几何层**：`geom/` 不依赖 GL 上下文，可脱离 OpenGL 单独测试
-- 📈 **图表**：折线、散点与**频谱**（GPU 上跑 FFT）走实例化绘制，
-  数据常驻显存、每帧只上传新增的点，滚动缩放零重传
+- 📈 **图表**：折线、散点、阶梯、面积、柱状与**频谱**（GPU 上跑 FFT）走实例化绘制，
+  数据常驻显存、每帧只上传新增的点，滚动缩放零重传；
+  轴、标题、图例、间距都可配置（`ChartLayout` / `Chart.title` / `Chart.legendVisible` / `Chart.padding`）
 
 ## 快速开始
 
@@ -146,7 +147,7 @@ mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime
 跑 `FftVerifier`（数值）**和** `ChartVerifier`（频谱画出来的位置），
 动了鼠标点击那条闭环（`FXGLTransfer` 的 `pickAsync` / `clickAsync` / `onClick`、
 `resolvePendingPick` 的点击队列、坐标换算）跑 `ClickVerifier`。
-六个都过不代表没漏——它们只证明自己断言过的那些点，见文末「测试」一节。
+七个都过不代表没漏——它们只证明自己断言过的那些点，见文末「测试」一节。
 
 > **Windows 下要带 `-Dstdout.encoding=UTF-8`**（放在 `-cp` 之前）：JVM 的
 > `stdout.encoding` 默认取系统编码（实测本机是 GBK），而 `exec:exec` 不会替你设置它，
@@ -335,9 +336,47 @@ for (t in x.ticks()) {
 }
 ```
 
-- **不支持的图型会明确抛异常**，不会静默不画：本期只有 `LINE`、`LINE_AND_MARKERS`
-  （只画折线那半）与 `SCATTER` 三种；`STEP` / `AREA` / `BAR` / `HEATMAP` / `WATERFALL`
-  还没有渲染器。`LOGARITHMIC` / `TEXT` 轴同样抛异常（GPU 路径只支持线性换算）。
+- **不支持的图型会明确抛异常**，不会静默不画：本期有 `LINE`、`LINE_AND_MARKERS`
+  （只画折线那半）、`SCATTER`、`STEP`、`AREA`、`BAR` 与 `SPECTRUM`；
+  `HEATMAP` / `WATERFALL` 还没有渲染器。`LOGARITHMIC` / `TEXT` 轴同样抛异常
+  （GPU 路径只支持线性换算）。
+- **柱状图的柱宽与位置**：`Series.categoryGap` / `Series.barGap` 都是**比例**而不是像素
+  （横轴可缩放，像素间距在缩小时会把柱子挤成零宽，而"整张图没了"与"数据没来"分不开）；
+  同一层里的多个柱状系列**并排**，间距不一致时 `ChartRenderer` 抛异常。
+  柱心落在样本的屏幕 x 上，所以窗口取 `[0, N-1]` 时首尾两根各有一半在绘图区外——
+  要每根都完整，把 x 轴窗口左右各放半格（`setWindow(-0.5, N-0.5)`）。
+- **面积图的下沿是 `Series.baseline()` 那个数值**（默认 0，对应 JavaFX 的
+  `forceZeroInRange`），不是"绘图区下边缘"——写成下边缘的话，y 轴一放大柱/填充的
+  高度就跟着轴走，而画面完全正常。填充默认半透明（`Series.fillAlpha` = 0.5），
+  轮廓线由折线路径画。
+
+### 标题 / 图例 / 外边距
+
+`Chart` 上有一组装配配置（`title` / `titleSide` / `legendVisible` / `legendSide` /
+`padding` 等），`ChartLayout` 负责把**一整块外框**切成标题带、图例带与绘图区，
+`Gc.charts.drawChart(chart, frame, gc.width, gc.height)` 一步画完：
+
+```kotlin
+val frame = Rect(20f, 20f, 760f, 560f)
+chart.title("电压监测").titleFontSize(16f)
+chart.legendSide(ChartSide.BOTTOM)
+gc.charts.drawChart(chart, frame, gc.width, gc.height)   // 装饰 + 数据系列
+```
+
+- **不设标题、不设图例、外边距为 0 时，绘图区与外框逐字段相等**，于是画面与
+  "自己算好绘图区再调 `draw`"**逐像素相同**（这条由 `ChartVerifier` 按像素钉着：
+  同一张图两条路径各画一帧再比对）。
+- 两个入口的分工：`draw(chart, plotRect, w, h)` 要**已经算好的绘图区**
+  （网格、刻度、坐标轴全由调用方安排，见上面的例子）；`drawChart` 要**整块外框**，
+  装饰的排布交给 `ChartLayout`。装饰件占的是绘图区**之外**的带子，所以两条路径
+  画数据系列的代码是同一段。
+- **标题只支持上下**（左右放的标题要转 90°，绘制入口只有横排文字）——传 LEFT/RIGHT
+  会明确抛异常，而不是把标题画成横的。图例四个方向都支持。
+- 绘制入口是 `ChartPainter`（`Gc` 里有一个转发实现）：量文字、画文字、填色块。
+  它同时是 `ChartTextMetrics`，所以布局能脱离 GL 单测。
+- **`AxisRange` 的 name/unit 没有任何地方画**（刻度文字在本库由调用方画，
+  于是"轴标题在刻度外面"需要图表层知道刻度文字占多高）。要补是给 `ChartLayout`
+  加一条刻度文字预留带，不是随手画在绘图区边上。
 - **脏区间**：`dirtyRange(sinceRevision)` 让渲染器只上传新增的那一段；
   `revision` 不变时报空，静态数据一次上传后永不重传。
   数据在 GPU 里存的是**数值不是屏幕坐标**，所以滚动/缩放/改窗口尺寸只是改 uniform、
@@ -447,9 +486,9 @@ mvn -pl jfgl-core -Dtest=PathTest test  # 单个 core 测试类
 mvn -pl jfgl-render-gl -Dtest=PickBufferTest test
 ```
 
-当前 **329 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
-`@Disabled` 的已知缺陷）。分布：`geom/` 69、`renderer/` 97、`gl/` 10、`text/` 32、
-`chart/` 57、`chartrender/` 44、`gpu/` 14。
+当前 **357 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+`@Disabled` 的已知缺陷）。分布：`geom/` 79、`renderer/` 100、`gl/` 12、`text/` 32、
+`chart/` 71、`chartrender/` 49、`gpu/` 14。
 
 `geom/`、`renderer/` 的顶点侧、`math/`、`util/`、`chart/` 都是纯计算，不依赖 GL 上下文；
 `chartrender/` 里 `WindowRange`、`SeriesUploadPlan`、`ChartRenderLayout` 是纯算术，

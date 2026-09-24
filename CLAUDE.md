@@ -51,7 +51,7 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
 
 > **⚠️ Windows 下必须带 `-Dstdout.encoding=UTF-8`。**
 > JVM 的 `stdout.encoding` 默认取系统编码（本机实测是 **GBK**），而 `exec:exec`
-> **不会**替你把它设成 UTF-8——于是五个校验器打印的中文断言（含**失败清单**）
+> **不会**替你把它设成 UTF-8——于是七个校验器打印的中文断言（含**失败清单**）
 > 全是乱码。**实测**：同一支 `ChartVerifier`，不加时整份输出不可读，加上之后逐行可读；
 > 失败信息可读恰恰是这些校验器存在的一半理由（一个读不出原因的 FAIL 与没有断言差不多）。
 > 它必须写在 `-Dexec.args` 的值里（即分给那个 fork 出来的 JVM），放在 `-cp` 之前。
@@ -74,7 +74,7 @@ jfgl-core/src/test/.../geom/       PathTest、FlattenerTest、TessellatorTest、
 jfgl-core/src/test/.../chart/      TickGeneratorTest、AxisTest、ArrayChartDataTest、
                                                 RingChartDataTest、ChartDataConcurrencyTest、
                                                 ColorMappingTest、ChartTest、
-                                                ChartPackageIsolationTest
+                                                ChartLayoutTest、ChartPackageIsolationTest
 jfgl-render-gl/src/test/.../renderer/   VertexFormatTest、VertexWriterTest、ViewTransformTest、
                                                 PickRegistryTest、PickBufferTest
 jfgl-render-gl/src/test/.../gl/         FramebufferTest、LwjglGLAbstractionTest、
@@ -82,18 +82,19 @@ jfgl-render-gl/src/test/.../gl/         FramebufferTest、LwjglGLAbstractionTest
 jfgl-render-gl/src/test/.../text/       SdfGeneratorTest、GlyphAtlasTest、FontFileTest、
                                                 GlyphRasterizerTest、TextLayoutTest
 jfgl-render-gl/src/test/.../chartrender/ ChartRenderLayoutTest、SeriesBufferTest、
-                                                SeriesUploadPlanTest、WindowRangeTest
+                                                SeriesUploadPlanTest、WindowRangeTest、
+                                                BarLayoutTest
                                                 （夹具类 ChartDataFixtures 本身没有测试）
 jfgl-render-gl/src/test/.../gpu/        FftWindowTest、FftKernelTest
 ```
 
 （`...` 是 `java/com/bingbaihanji/jfgl`。`jfgl-javafx` 没有 surefire 测试——它的
-`example/` 里那五个校验器是**手动跑的 main**，不是单测。）
+`example/` 里那七个校验器是**手动跑的 main**，不是单测。）
 
-当前 **340 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+当前 **357 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
 `@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`（跨模块加 `-pl 模块名`）。
-分布：`geom/` 79、`renderer/` 100、`gl/` 12、`text/` 32、`chart/` 59、`chartrender/` 44、
-`gpu/` 14（合计 340）。
+分布：`geom/` 79、`renderer/` 100、`gl/` 12、`text/` 32、`chart/` 71、`chartrender/` 49、
+`gpu/` 14（合计 357）。
 
 `geom/`、`math/`、`util/`、`ViewTransform`、`text/{SdfGenerator, TextLayout}`、`chart/`、
 `gpu/FftWindow`（窗系数与相干增益补偿，纯算术）都是纯计算、不依赖 GL 上下文，最适合写单测。
@@ -110,8 +111,9 @@ SeriesUploadPlan, ChartRenderLayout, SeriesBuffer}` 只依赖 `GLAbstraction` **
 **`chart/` 的边界是机器强制的**：它连 `renderer/` 也不依赖，由
 `ChartPackageIsolationTest` 递归遍历源码、按**包名白名单**守卫——白名单只放行
 `chart/`、`math/`、`util/`，引用 `gl/`、`renderer/`、`text/`、`geom/` 中的任何一个
-都会让测试失败。**注意目前 `chart/` 连 `math/` 与 `util/` 也一处没用**：16 个源文件
-除了 `java.*` 之外没有任何 import（守卫放行 ≠ 已经用了）。
+都会让测试失败。**注意 `chart/` 的白名单虽然放行 `math/` 与 `util/`，实际只用了后者**
+（`util/Rect`，20 个源文件里只有 `ChartLayout` 一个 import 它；`math/` 仍然一处没用）。
+守卫放行 ≠ 已经用了，也 ≠ 可以随便用。
 同一个测试还断言 `RenderContext` 是**空接口**（0 方法 / 0 字段 / 0 嵌套类型）。
 
 ## 前置事实（已实测，不要重新猜）
@@ -265,12 +267,17 @@ Main.kt                     设置 prism.* 系统属性
 
 图表框架（子项目 D-①）在 `chart/` 下，**纯计算、零 GL 依赖**：数据容器（`ArrayChartData`
 静态 / `RingChartData` 流式）、轴与刻度（`Axis` / `TickGenerator` / `AxisType`）、
-配色 LUT（`ColorMapping`）、装配（`Chart` / `Layer` / `Series` / `ChartType`）。
+配色 LUT（`ColorMapping`）、装配（`Chart` / `Layer` / `Series` / `ChartType`）、
+**装配与布局**（`ChartLayout` 把外框切成标题带 / 图例带 / 绘图区，
+`ChartInsets` / `ChartSide` / `ChartTextMetrics`）。
 
 GPU 绘制后端（子项目 D-②）在 `chartrender/` 下，**已完成**：`ChartRenderer`（入口，
-经 `Gc.charts` 懒创建）、`LineSeriesRenderer` / `ScatterSeriesRenderer`（折线与散点，
-两个 pass：颜色的与 ID 的）、`SeriesBuffer`（每系列一块 GPU 常驻缓冲）、
-`SeriesShaders`（四份 GLSL：`{折线, 散点} × {绘制, 拾取}`）。
+经 `Gc.charts` 懒创建）、`LineSeriesRenderer` / `ScatterSeriesRenderer` /
+`StepSeriesRenderer` / `AreaSeriesRenderer` / `BarSeriesRenderer` / `SpectrumSeriesRenderer`
+（折线、散点、阶梯、面积、柱状、频谱，各自两个 pass：颜色的与 ID 的）、
+`SeriesBuffer`（每系列一块 GPU 常驻缓冲）、`BarLayout`（柱宽与柱心偏移，纯算术可单测）、
+`ChartPainter` / `ChartDecorations`（标题与图例那支笔）、
+`SeriesShaders`（GLSL：`{折线, 散点, 阶梯, 面积, 柱状} × {绘制, 拾取}`，共 10 个程序）。
 **② 与 ① 的接缝只有两个类型**：`chart/RenderContext`（空接口，② 用
 `chartrender/GLRenderContext` 扩展它）与 `chart/SeriesRenderer`（纯函数：数据 + 轴 → 顶点）。
 
@@ -370,10 +377,39 @@ gc.endFrame()
 - **`Series.markerSize()` 是半径**（用户坐标单位），而着色器的 `uMarkerSize` 是**边长**；
   换算（×2）只在 `ScatterSeriesRenderer.markerEdge` 一处。两处各持一半解释的话，
   用户设半径 5 会拿到宽 5 的方块，**画面上没有任何症状**。
-- **不支持的要明确抛异常，不许静默不画**。本期只实现了四种图型：
+- **不支持的要明确抛异常，不许静默不画**。本期实现了七种图型：
   `LINE`、`LINE_AND_MARKERS`（**只画折线那半**，标记点那半是已知缺口）、`SCATTER`、
-  `SPECTRUM`（独立渲染器，见下）。`STEP` / `AREA` / `BAR` / `HEATMAP` / `WATERFALL`
-  一律抛异常——把它们当普通折线画，阶梯图被拉成斜线、面积图整个填充消失，而画面完全正常。
+  `STEP`、`AREA`、`BAR`、`SPECTRUM`（独立渲染器，见下）。
+  `HEATMAP` / `WATERFALL` 一律抛异常——它们的顶点不是"每个样本一个点"，
+  要各自的独立渲染器。
+- **每个图型一个渲染器，哪怕顶点来自同一批实例属性**。折线族（`polylineFamily()`）
+  只说明"顶点来自逐样本的点"，**不等于"折线渲染器画得出来"**：阶梯要拐角、
+  面积要基线、柱状是矩形。把它们按属性组合推给折线渲染器会画成：阶梯被拉成斜线、
+  面积图整个填充消失、柱状变成一串方块——**三种都是"画面完全正常"**。
+  所以 `ChartRenderer.rendererFor` 是逐图型的显式枚举，各渲染器的
+  `requireSupported` 是第二张（冗余的）白名单。
+- **标题 / 图例 / 外边距：模型在 `chart/`，绘制在 `chartrender/`**。
+  `ChartLayout`（纯计算，可单测）把**一整块外框**切成标题带 / 图例带 / 绘图区，
+  尺寸规则只有两条且**与字体无关**（带子高 = 字号 × 1.4、基线 = 带子顶 + 字号）——
+  读字体的真实 ascent 会让"同一个外框 + 同一个配置"在不同字体下给出不同的绘图区，
+  逐像素的期望值就没地方写了。文字要占多宽必须问度量，于是有一个
+  `chart/ChartTextMetrics` 接口（② 的 `ChartPainter extends` 它）。
+- **★ 不设标题、不设图例、外边距为 0 时，绘图区与外框逐字段相等**。这是
+  "给装饰留位置"不改变既有行为的那条底线，`ChartLayoutTest` 与 `ChartVerifier`
+  两头钉着（后者按像素：同一张图走 `drawChart` 与走 `draw` 各一帧，逐像素相同）。
+  **改动 `ChartLayout` 的默认值就会撞响它**——实测把默认外边距改成 2px 只倒那一条。
+- **`draw(chart, plotRect, w, h)` 与 `drawChart(chart, frame, w, h)` 是两层**：
+  前者要"已经算好的绘图区"（网格、刻度、轴全由调用方安排），后者要"整块外框"、
+  装饰交给 `ChartLayout`。前者一字未改，两条路径画数据系列的代码是同一段。
+- **标题只支持上下**（左右要转 90°，而绘制入口只有横排文字）：`titleSide(LEFT/RIGHT)`
+  明确抛异常。图例四个方向都支持。
+- **`AxisRange` 的 name/unit 没有任何地方画**——刻度文字由调用方画（见 README），
+  于是"轴标题在刻度的外面"要图表层知道刻度文字占多高。要补是给 `ChartLayout` 加
+  一个"刻度文字预留带"，不是随手画在绘图区边上。
+- **饼图塞不进现在的 `Chart` 模型**：`Chart` 至少要一根轴、`ChartRenderer.draw`
+  至少要两根，而饼图没有笛卡尔轴；扇区的标签与颜色也没有地方放
+  （`Series` 只有名字与主色，`AxisRange` 的 name/unit 是**按维度**的）。
+  要做得先回答"扇区标签放哪"——那是数据模型上的决定，不该硬塞。
 - **`LOGARITHMIC` / `TEXT` 轴明确抛异常**：本期 GPU 路径只支持线性换算
   （`LINEAR` 与 `TIME`——时间轴的值是纪元秒，本身就是线性的）。
   按线性去画对数轴，曲线的形状是错的，而画面看起来完全正常。
@@ -639,11 +675,21 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
 `SeriesBuffer`、`SeriesShaders`；用法见「图表」一节）
 
 **未实现 / 待办**
-- **其余图型的渲染器**：`STEP` / `AREA` / `BAR` / `HEATMAP` / `WATERFALL`
-  目前一律**抛异常**（`chart/` 里有这些 `ChartType`，但没有渲染器）。
-  属于 ③ 或更后面的事。
+- **其余图型的渲染器**：`HEATMAP` / `WATERFALL` 目前一律**抛异常**
+  （`chart/` 里有这两个 `ChartType`，但没有渲染器）。属于 ③ 或更后面的事。
   同样地，`LINE_AND_MARKERS` **只画折线那半**，标记点那半还没接（见
   `LineSeriesRenderer.requireSupported` 的 Javadoc）。
+- **饼图没有 `ChartType` 常量，也没有渲染器**，而且它塞不进现在的 `Chart` 模型：
+  `Chart` 至少要一根轴、`ChartRenderer.draw` 至少要两根（0 号是数据下标、1 号是数值），
+  而饼图没有笛卡尔轴；每个扇区的**标签与颜色**也没有地方放（`Series` 只有名字与
+  主色，`AxisRange` 的 name/unit 是**按维度**而不是按数据点的，`ArrayChartData`
+  的 name 又是全局的）。真要做得先回答"扇区标签放哪"，
+  那是数据模型上的一个决定，不该硬塞。
+- **轴标题（`AxisRange` 的 name/unit）没有任何地方画**。模型里有，渲染层不读它。
+  它是**刻意**的：刻度文字在本库由调用方画（见 README 的图表一节），
+  于是"轴标题该在刻度的外面"这件事要图表层知道刻度文字占多高——
+  那是调用方的信息。要补的话是给 `ChartLayout` 加一条"刻度文字预留带"
+  （两个配置项）再加两条带子，而不是随手画在绘图区边上。
 - **非线性轴的 GPU 路径**：`LOGARITHMIC` / `TEXT` 轴在 `ChartRenderLayout` 里明确抛异常。
 - **GPU 计算**（子项目 D-③）：FFT（**③-1 已完成**）、降采样、包络、密度累积（数字荧光）。
   - **③-1 的实现是 `gpu/FftKernel.java`**（`#version 430`，Cooley-Tukey radix-2 + SSBO，
