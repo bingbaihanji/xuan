@@ -25,17 +25,31 @@ import kotlin.system.exitProcess
  * `StrokeGenerator` 的测试断言"闭合面积大于开放面积"，它自己是对的；
  * 错的是 `Gc.strokePath` 忘了传 `closed = true`。这类缺陷只有把**最终像素**当口径才拦得住。
  *
- * <p>本节场景对准一个"看起来完全正常"的错法：**把一条路径的所有子路径当成一条折线描边**。
- * 两条互不相连的横线之间会被连上一条斜线——那条线**显示了一个不存在的图形**
- * （与本仓库"缺口不能连过去"那条同理），而画面看上去"就是画了条折线"。
+ * <p>两个场景各对准一个"看起来完全正常"的错法：
+ *
+ * <ol>
+ *   <li><b>把一条路径的所有子路径当成一条折线描边</b>：两条互不相连的横线之间会被连上
+ *       一条斜线——那条线**显示了一个不存在的图形**（与本仓库"缺口不能连过去"那条同理），
+ *       而画面看上去"就是画了条折线"。判别式是**两条横线之间那个方框里没有像素**，
+ *       而不是"两条横线都在"（后者对"多连了一条线"同样成立）。</li>
+ *   <li><b>闭合子路径的收尾顶点缺接头</b>：整条闭合边都在，唯独收尾顶点外侧少一个接头，
+ *       线上只落平头封口。细线宽下几乎不可见（本目录的 `PipelineVerifier` 用线宽 3~4，
+ *       就是这么漏掉的），所以这里用**线宽 20 的直角方框**把它放大成一个看得见的缺口。
+ *       判别式是**收尾顶点外侧那一小块 6x6 被不被填满**。</li>
+ * </ol>
+ *
+ * <p>场景 ② 另有一个**同色同几何的对照变体**：同一份点集、只把"闭合"这一位换成
+ * `strokePolyline(closed = false)`。于是两个变体之间唯一的差异就是收尾那个接头，
+ * 断言可以拿两个变体的**像素总数做差**（应当恰好是接头三角形的面积 ≈50 px²）——
+ * 只断言"有像素"会被"整块都画错了"骗过去，而差值把"接头补上了"与"别的地方也变了"分开。
  *
  * <h2>场景为什么会变</h2>
  *
  * <p>[PickVerifier] 的教训：它 24 条断言全绿却漏掉一个真缺陷，因为**它的场景每帧完全相同**
  * ——陈旧数据与新鲜数据恰好一致。多子路径这一条尤其危险：`Gc` 的平坦化结果与子路径切片
  * 都跨帧复用同一块缓冲，"这一帧少画一条子路径"与"上一帧的顶点没被覆盖"在画面上是两回事，
- * 只有**前后两帧画不同的东西**才分得开。所以本校验器在连续两帧上各断言一次，
- * 两帧画的子路径数量不同（见 [PathVerifierApp.drawnVariant]）。
+ * 只有**前后两帧画不同的东西**才分得开。所以本校验器有四个变体、逐帧轮转、逐个断言
+ * （见 [PathVerifierApp.drawnVariant]）。
  *
  * <h2>运行</h2>
  *
@@ -61,8 +75,16 @@ private const val TOLERANCE = 0.05
 /** 第一次断言的帧号：此前画布尺寸与首帧布局尚未稳定。 */
 private const val FIRST_ASSERT_FRAME = 6
 
-/** 第二次断言的帧号：它画的是**另一个变体**，见 [PathVerifierApp.drawnVariant]。 */
-private const val SECOND_ASSERT_FRAME = 7
+/**
+ * 断言的帧数：一个变体一帧，见 [PathVerifierApp.drawnVariant]。
+ *
+ * <p>五个变体依次是：①两条横线 / ②一条横线 / ③闭合的直角方框 / ④同一份几何的**开放对照**
+ * / ⑤**开放**的直角折线（走 [Gc.strokePath]，见 [PathVerifierApp.drawOpenPolylineCase]）。
+ */
+private const val ASSERT_FRAME_COUNT = 5
+
+/** 最后一次断言的帧号。 */
+private const val LAST_ASSERT_FRAME = FIRST_ASSERT_FRAME + ASSERT_FRAME_COUNT - 1
 
 /** 场景背景色，即 `FXGLTransfer` 的 `glClearColor(0.2, 0.2, 0.2, 1)`。 */
 private const val BACKGROUND = 0x333333
@@ -91,6 +113,38 @@ private const val SUB_PATH_RGB = 0xFFFF00
 
 /** 断言时全画面应有的颜色种数：背景 + 上面那一个描边色。 */
 private const val EXPECTED_COLORS = 2
+
+// ---------------------------------------------------------------------------
+// 闭合子路径的收尾接头：一个粗线宽的直角方框
+// ---------------------------------------------------------------------------
+
+/** 方框的四角：`[x0,y0, x1,y1, x2,y2, x3,y3]`，闭合顶点是第一个角 `(500,60)`。 */
+private const val SQUARE_X0 = 500f
+private const val SQUARE_Y0 = 60f
+private const val SQUARE_X1 = 700f
+private const val SQUARE_Y1 = 260f
+
+/** 直角方框的线宽。取 20 是为了让收尾接头的缺口**肉眼可见**。 */
+private const val SQUARE_LINE_WIDTH = 20f
+
+/**
+ * 直角方框的描边色。
+ *
+ * <p>与 [SUB_PATH_RGB] 一样：全画面只有这一组图形用它，"像素总数"因此是一条覆盖整幅画面的
+ * 不变量。**两个变体必须用同一个颜色**——它们之间的差异只有收尾那一个接头，
+ * 换个颜色就分不清"差异来自接头"还是"差异来自换了颜色"。
+ */
+private const val CLOSED_JOIN_RGB = 0xFF8000
+
+// ---------------------------------------------------------------------------
+// 开放子路径的反面：它不该被当成闭合
+// ---------------------------------------------------------------------------
+
+/** 开放直角折线的两个端点与拐点：`(60,400) → (260,400) → (260,500)`。 */
+private const val OPEN_X0 = 60f
+private const val OPEN_Y0 = 400f
+private const val OPEN_X1 = 260f
+private const val OPEN_Y1 = 500f
 
 /**
  * 校验器的启动入口。
@@ -128,8 +182,17 @@ class PathVerifierApp : Application() {
      */
     private var drawnVariant = 0
 
-    /** 两次断言累积的失败项。退出码取它，而不是最后一帧的结果。 */
+    /** 各次断言累积的失败项。退出码取它，而不是最后一帧的结果。 */
     private val failures = ArrayList<String>()
+
+    /**
+     * 变体 2（闭合方框）测到的描边像素总数。
+     *
+     * <p>变体 3（同一份几何的开放对照）要拿它做差——「两个变体只差收尾那一个接头」
+     * 这句话只有**跨变体比较同一个量**才成立，而跨变体比较要求把它记下来。
+     * 变体按 0..3 轮转，所以变体 3 那一帧它必定已经被赋值。
+     */
+    private var closedJoinPixels = 0
 
     override fun start(stage: Stage) {
         val bridge = FXGLTransfer()
@@ -147,8 +210,14 @@ class PathVerifierApp : Application() {
 
     private fun drawFrame(gc: Gc) {
         try {
-            drawnVariant = drawCount++ % 2
-            drawSubPathCase(gc, twoSegments = drawnVariant == 0)
+            drawnVariant = drawCount++ % ASSERT_FRAME_COUNT
+            when (drawnVariant) {
+                0 -> drawSubPathCase(gc, twoSegments = true)
+                1 -> drawSubPathCase(gc, twoSegments = false)
+                2 -> drawClosedJoinCase(gc, closed = true)
+                3 -> drawClosedJoinCase(gc, closed = false)
+                else -> drawOpenPolylineCase(gc)
+            }
         } catch (t: Throwable) {
             println("\n=== 绘制过程抛出异常，判为失败 ===")
             t.printStackTrace()
@@ -180,6 +249,78 @@ class PathVerifierApp : Application() {
     }
 
     /**
+     * 闭合子路径的收尾接头：一个 `close()` 结束的直角方框，粗线宽 + MITER 接头。
+     *
+     * <p>两个变体画的是**逐位相同的点集**，只差一个"闭合"标志：
+     *
+     * <ul>
+     *   <li>[closed] = true：走 [Gc.beginPath] / [Gc.closePath] / [Gc.strokePath]，
+     *       平坦化结果是闭合成环的 5 个点（末点与首点重合）；</li>
+     *   <li>[closed] = false：走 [Gc.strokePolyline]，喂**同一份** 5 个点、`closed = false`
+     *       ——等价于"收尾接头这一处退回改动前的行为"，其余部分逐位相同。</li>
+     * </ul>
+     *
+     * <p>于是两个变体之间**唯一**的差异被压到收尾顶点外侧那一小块：
+     * 直角外侧的 MITER 接头三角形（半线宽 10 ⇒ 直角处伸到顶点外 14.14，见
+     * `StrokeGenerator` 的 `emitJoin`）。断言因此能把"接头补上了"与"别的地方也变了"
+     * 分开——只比较"有没有像素"，任何一处别的改动都会让两条断言同时说话。
+     *
+     * @param gc     当前帧的绘制上下文
+     * @param closed 是否按闭合子路径描边（收尾处补接头）
+     */
+    private fun drawClosedJoinCase(gc: Gc, closed: Boolean) {
+        gc.stroke = CLOSED_JOIN_RGB or (0xFF shl 24)
+        gc.lineWidth = SQUARE_LINE_WIDTH
+        if (closed) {
+            gc.beginPath()
+            gc.moveTo(SQUARE_X0, SQUARE_Y0)
+            gc.lineTo(SQUARE_X1, SQUARE_Y0)
+            gc.lineTo(SQUARE_X1, SQUARE_Y1)
+            gc.lineTo(SQUARE_X0, SQUARE_Y1)
+            gc.closePath()
+            gc.strokePath()
+        } else {
+            gc.strokePolyline(
+                floatArrayOf(
+                    SQUARE_X0, SQUARE_Y0,
+                    SQUARE_X1, SQUARE_Y0,
+                    SQUARE_X1, SQUARE_Y1,
+                    SQUARE_X0, SQUARE_Y1,
+                    SQUARE_X0, SQUARE_Y0
+                ),
+                closed = false
+            )
+        }
+    }
+
+    /**
+     * **开放**直角折线，且刻意走 [Gc.strokePath] 这条路（末条命令是 `LINE_TO`，不是 `CLOSE`）。
+     *
+     * <p>它是缺陷③那次修改的**反面**：给闭合子路径补接头的那句
+     * `closed = lastCommandIsClose()`（以及多子路径那一路的 `closed = closed[i]`）
+     * 一旦写成恒 `true`，开放折线就会被凭空补上一段首尾连线。
+     *
+     * <p>为什么另起一组而不是复用变体 0/1：那两个子路径都只是**两点**的横线，
+     * 按闭合描边时"补"出来的那段与原有线段**完全重合**（零长度段被 `StrokeGenerator` 跳过），
+     * 画面逐像素不变——拿它当反面是测不出东西的。这里用一条三段两腿的直角折线，
+     * 假收尾线段会横穿画面中间，判别式是那条斜线经过的方框里没有像素。
+     *
+     * <p>颜色沿用 [SUB_PATH_RGB]：它与变体 0/1 从不出现在同一帧，且两组的区域不相交
+     * （y≤174 与 y≥396），因此"全画面只有这一种描边色"这条不变量照旧成立。
+     *
+     * @param gc 当前帧的绘制上下文
+     */
+    private fun drawOpenPolylineCase(gc: Gc) {
+        gc.stroke = SUB_PATH_RGB or (0xFF shl 24)
+        gc.lineWidth = 4f
+        gc.beginPath()
+        gc.moveTo(OPEN_X0, OPEN_Y0)
+        gc.lineTo(OPEN_X1, OPEN_Y0)
+        gc.lineTo(OPEN_X1, OPEN_Y1)
+        gc.strokePath()
+    }
+
+    /**
      * `onRender` 回调的入口：把校验体包进 try/catch。
      *
      * <p>校验过程本身抛出异常时必须**以非零码退出**：这部分代码在 GL 线程上跑，
@@ -202,7 +343,7 @@ class PathVerifierApp : Application() {
         val bridge = transfer ?: return
         frame++
         if (frame < FIRST_ASSERT_FRAME) return
-        if (frame > SECOND_ASSERT_FRAME) return
+        if (frame > LAST_ASSERT_FRAME) return
 
         val w = bridge.scaledWidth
         val h = bridge.scaledHeight
@@ -275,45 +416,123 @@ class PathVerifierApp : Application() {
         report("Gc.width 等于帧缓冲宽度", gc?.width == w, "Gc.width=${gc?.width}，帧缓冲宽=$w")
         report("Gc.height 等于帧缓冲高度", gc?.height == h, "Gc.height=${gc?.height}，帧缓冲高=$h")
 
-        println("\n-- 多子路径描边：MOVE_TO 处必须断开 --")
-        val twoSegments = drawnVariant == 0
-        val sx0 = SEG_X0.toInt(); val sx1 = SEG_X1.toInt()
-        val sy0 = SEG_Y0.toInt(); val sy1 = SEG_Y1.toInt()
+        if (drawnVariant < 2) {
+            println("\n-- 多子路径描边：MOVE_TO 处必须断开 --")
+            val twoSegments = drawnVariant == 0
+            val sx0 = SEG_X0.toInt(); val sx1 = SEG_X1.toInt()
+            val sy0 = SEG_Y0.toInt(); val sy1 = SEG_Y1.toInt()
 
-        // 一条 200 长的横线、线宽 4：四条像素行、每行 200 个像素，应当**精确**是 800。
-        approx("第一条横线（y=$sy0）铺满 200x4",
-            countIn(sx0 - 5, sy0 - 4, sx1 + 5, sy0 + 4, SUB_PATH_RGB), 200.0 * 4)
-        if (twoSegments) {
-            approx("第二条横线（y=$sy1）铺满 200x4",
-                countIn(sx0 - 5, sy1 - 4, sx1 + 5, sy1 + 4, SUB_PATH_RGB), 200.0 * 4)
-            bbox("两条横线的包围盒（在一起）", SUB_PATH_RGB, sx0, sy0 - 2, sx1 - sx0, sy1 - sy0 + 4)
+            // 一条 200 长的横线、线宽 4：四条像素行、每行 200 个像素，应当**精确**是 800。
+            approx("第一条横线（y=$sy0）铺满 200x4",
+                countIn(sx0 - 5, sy0 - 4, sx1 + 5, sy0 + 4, SUB_PATH_RGB), 200.0 * 4)
+            if (twoSegments) {
+                approx("第二条横线（y=$sy1）铺满 200x4",
+                    countIn(sx0 - 5, sy1 - 4, sx1 + 5, sy1 + 4, SUB_PATH_RGB), 200.0 * 4)
+                bbox("两条横线的包围盒（在一起）", SUB_PATH_RGB, sx0, sy0 - 2, sx1 - sx0, sy1 - sy0 + 4)
+            } else {
+                // 变体 1 不画第二条：那个位置必须**一个像素都没有**。这一句与变体 0 里那句
+                // "第二条横线铺满"合起来才有意义——只断言"这里是干净的"，对"两条都没画"同样成立。
+                report("变体 1：未绘制的第二条横线位置必须是干净的",
+                    countIn(sx0 - 5, sy1 - 4, sx1 + 5, sy1 + 4, SUB_PATH_RGB) == 0,
+                    "实际 ${countIn(sx0 - 5, sy1 - 4, sx1 + 5, sy1 + 4, SUB_PATH_RGB)} px")
+                bbox("变体 1：只剩第一条横线", SUB_PATH_RGB, sx0, sy0 - 2, sx1 - sx0, 4)
+            }
+
+            // 这是本节的**判别式**。把两个子路径当成一条折线描边时，相邻两点会被连起来：
+            // 从第一条的末点 (260,70) 到第二条的起点 (60,170)，那条假斜线正好穿过 (160,120)。
+            // 断言"这个方框里没有像素"，而不是断言"两条横线都在"——后者对"多连了一条线"
+            // 同样成立（那条线是**多出来的**，不是替掉了什么）。
+            //
+            // 变体 1 里第二条横线不存在，也就无从连起；那一帧这条断言退化为恒真，
+            // 由变体 0 那一帧负责。
+            val corridor = countIn(150, 110, 170, 130, SUB_PATH_RGB)
+            report("两条子路径之间没有连线（假斜线会穿过 (160,120)）", corridor == 0,
+                "实际 $corridor px")
+
+            println("\n-- 无杂散像素（覆盖整幅画面）--")
+            val expectedStrokes = if (twoSegments) 2 else 1
+            // 该颜色全画面只出现在这些横线上：多画一块、少画一块、上一帧的顶点留在缓冲里，
+            // 都会让这个总数变化。颜色种数同时钉住"没有出现别的颜色"。
+            report("描边色像素总数恰好等于 ${expectedStrokes} 条横线的面积",
+                counts[SUB_PATH_RGB] == expectedStrokes * 200 * 4,
+                "实际 ${counts[SUB_PATH_RGB] ?: 0}，期望 ${expectedStrokes * 200 * 4}")
+        } else if (drawnVariant < 4) {
+            println("\n-- 闭合子路径的收尾接头 --")
+            val half = (SQUARE_LINE_WIDTH / 2).toInt()
+            val cx = SQUARE_X0.toInt() - half   // 收尾顶点（方框左上角）外侧那一块
+            val cy = SQUARE_Y0.toInt() - half
+            val side = (SQUARE_X1 - SQUARE_X0).toInt() + half * 2
+
+            // 四个直角各伸出一个 MITER 尖角，顶点外侧各半个线宽，故外沿恰好是 220x220。
+            bbox("直角方框描边的包围盒（含四角尖角）", CLOSED_JOIN_RGB, cx, cy, side, side)
+
+            // 判别式：收尾顶点 (500,60) 外侧那一块。半线宽 10、直角 ⇒ MITER 尖角伸到顶点外
+            // (10,10)，接头三角形是 (490,60)-(490,50)-(500,50)（斜边是直线 x+y=550）。
+            //
+            // 取的方框是**严格落在三角形内部**的 4x4（`(490,50)` 起、不含斜边）：
+            // 取整个 10x10 的话，其中 10 个像素的中心**正好落在斜边 x+y=550 上**，
+            // 它们算不算被覆盖取决于光栅化的 tie 规则（实测 36 格的 6x6 里只数到 33，
+            // 差的正是这些擦边像素）。避开它们，这条断言才是确定的、可解释的。
+            //
+            // 有接头 ⇒ 16 格全被填满；按开放折线收尾 ⇒ 一格都没有。两条横向的描边带都够不到
+            // 这里：左带是 x∈[490,510] 但 y≥60，上带是 y∈[50,70] 但 x≥500，
+            // 与这个方框只在边界上相接。
+            val corner = countIn(cx, cy, cx + 3, cy + 3, CLOSED_JOIN_RGB)
+
+            if (drawnVariant == 2) {
+                report("闭合子路径在收尾顶点外侧补上了接头（外角 4x4 应被填满）",
+                    corner == 16, "实际 $corner / 16 px，无接头时应为 0")
+                closedJoinPixels = counts[CLOSED_JOIN_RGB] ?: 0
+            } else {
+                // 反证：同一份几何、同一个颜色，只把"闭合"这一位去掉，收尾处就只剩平头封口。
+                // 没有这一条，"有接头"那一条对"整块都画错了"同样会通过。
+                report("反证：同一份几何按开放折线收尾时外角没有接头", corner == 0,
+                    "实际 $corner px")
+                // 两个变体之间**只该差那一个接头**：总面积差应当正好是接头三角形的面积
+                // （半线宽 10 的直角 ⇒ 50 px²；其中 10 个像素的中心在斜边上，实测差 45）。
+                // 差得多就说明变的不止接头——例如闭合那一路把某条边漏了（差一个数量级）
+                // 或多补了一块。
+                val diff = closedJoinPixels - (counts[CLOSED_JOIN_RGB] ?: 0)
+                report("两个变体只差收尾那一个接头（45±5 px²）", diff in 40..50,
+                    "闭合比开放多 $diff px（闭合总 $closedJoinPixels，开放总 ${counts[CLOSED_JOIN_RGB] ?: 0}）")
+            }
+
+            println("\n-- 无杂散像素（覆盖整幅画面）--")
+            // 4 条边各 200x20 = 16000，四角各与相邻边重叠 10x10（-400），
+            // 再加四个 50 px² 的接头三角形（+200）= 15800。
+            approx("方框描边像素总数 = 4 条边 - 4 处重叠 + 4 个接头", counts[CLOSED_JOIN_RGB] ?: 0,
+                15800.0, 0.01)
         } else {
-            // 变体 1 不画第二条：那个位置必须**一个像素都没有**。这一句与变体 0 里那句
-            // "第二条横线铺满"合起来才有意义——只断言"这里是干净的"，对"两条都没画"同样成立。
-            report("变体 1：未绘制的第二条横线位置必须是干净的",
-                countIn(sx0 - 5, sy1 - 4, sx1 + 5, sy1 + 4, SUB_PATH_RGB) == 0,
-                "实际 ${countIn(sx0 - 5, sy1 - 4, sx1 + 5, sy1 + 4, SUB_PATH_RGB)} px")
-            bbox("变体 1：只剩第一条横线", SUB_PATH_RGB, sx0, sy0 - 2, sx1 - sx0, 4)
+            println("\n-- 开放子路径：不该被当成闭合 --")
+            val ox0 = OPEN_X0.toInt(); val ox1 = OPEN_X1.toInt()
+            val oy0 = OPEN_Y0.toInt(); val oy1 = OPEN_Y1.toInt()
+
+            // 水平腿 200 长、竖直腿 100 长（`OPEN_Y1 - OPEN_Y0`），线宽都是 4。
+            approx("开放折线的水平腿铺满 200x4",
+                countIn(ox0 - 5, oy0 - 4, ox1 + 5, oy0 + 4, SUB_PATH_RGB), 200.0 * 4)
+            approx("开放折线的竖直腿铺满 100x4",
+                countIn(ox1 - 4, oy0 - 5, ox1 + 4, oy1 + 5, SUB_PATH_RGB), 100.0 * 4)
+            // 拐角 (260,400) 是一个内部顶点，照常补 MITER 尖角：外沿伸到 (262,398)，
+            // 于是包围盒比两条腿本身的 [60,260)x[398,500) 各多出一个像素。
+            bbox("开放折线的包围盒（含拐点尖角，不含任何收尾连线）", SUB_PATH_RGB,
+                ox0, oy0 - 2, ox1 - ox0 + 2, oy1 - oy0 + 2)
+
+            // 判别式：开放子路径如果被当成闭合描边，末点 (260,500) 会与首点 (60,400)
+            // 连上一条**并不存在**的斜线（斜率 -1/2，穿过 (160,450)）。
+            // 两条腿都离这个方框很远（y=400 / x=260），方框里出现任何像素都只可能是它。
+            val falseClose = countIn(150, 440, 170, 460, SUB_PATH_RGB)
+            report("开放子路径的首尾之间没有连线（假收尾线会穿过 (160,450)）", falseClose == 0,
+                "实际 $falseClose px")
+
+            println("\n-- 无杂散像素（覆盖整幅画面）--")
+            // 水平腿 800 + 竖直腿 400 - 拐角重叠 4 + 接头三角形（~1..7，擦边像素的多少
+            // 取决于光栅化 tie 规则）≈ 1200。容差取 2% 而不是 5%：
+            // 一段**假收尾斜线**（长 √(200²+100²)≈224、宽 4）会给总数加上近 900 px，
+            // 那是数量级的差异，不需要靠容差去分辨。
+            approx("开放折线像素总数 = 两条腿 - 拐角重叠 + 接头", counts[SUB_PATH_RGB] ?: 0,
+                1200.0, 0.02)
         }
 
-        // 这是本节的**判别式**。把两个子路径当成一条折线描边时，相邻两点会被连起来：
-        // 从第一条的末点 (260,70) 到第二条的起点 (60,170)，那条假斜线正好穿过 (160,120)。
-        // 断言"这个方框里没有像素"，而不是断言"两条横线都在"——后者对"多连了一条线"
-        // 同样成立（那条线是**多出来的**，不是替掉了什么）。
-        //
-        // 变体 1 里第二条横线不存在，也就无从连起；那一帧这条断言退化为恒真，
-        // 由变体 0 那一帧负责。
-        val corridor = countIn(150, 110, 170, 130, SUB_PATH_RGB)
-        report("两条子路径之间没有连线（假斜线会穿过 (160,120)）", corridor == 0,
-            "实际 $corridor px")
-
-        println("\n-- 无杂散像素（覆盖整幅画面）--")
-        val expectedStrokes = if (twoSegments) 2 else 1
-        // 该颜色全画面只出现在这些横线上：多画一块、少画一块、上一帧的顶点留在缓冲里，
-        // 都会让这个总数变化。颜色种数同时钉住"没有出现别的颜色"。
-        report("描边色像素总数恰好等于 ${expectedStrokes} 条横线的面积",
-            counts[SUB_PATH_RGB] == expectedStrokes * 200 * 4,
-            "实际 ${counts[SUB_PATH_RGB] ?: 0}，期望 ${expectedStrokes * 200 * 4}")
         report("画面只有 $EXPECTED_COLORS 种颜色（无杂散像素）", counts.size == EXPECTED_COLORS,
             "实际 ${counts.size} 种：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")
         report("背景色为 clear 色", (counts[BACKGROUND] ?: 0) > 0, "背景像素 ${counts[BACKGROUND] ?: 0}")
@@ -325,7 +544,7 @@ class PathVerifierApp : Application() {
             println("=== 第 $frame 帧为止失败 ${failures.size} 项：${failures.joinToString("；")} ===")
         }
 
-        if (frame == SECOND_ASSERT_FRAME) {
+        if (frame == LAST_ASSERT_FRAME) {
             Platform.exit()
             exitProcess(if (failures.isEmpty()) 0 else 1)
         }
