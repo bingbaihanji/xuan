@@ -379,23 +379,35 @@ internal fun boundsOf(points: FloatArray): Rect {
  * 与 `Gc` 内部那份（`rectOutline` / `circleOutline` / `ellipseOutline`，
  * 都是 `private`）**不是同一份代码**，因此**预览的圆与提交的圆在细分段数上可能不同**。
  *
+ * <p><strong>实测（数值仿真）：任意两段绘制区间互不重叠</strong>——半透明预览下
+ * 也不会因叠加而加深。★ **证据强度照实写：这是把本函数的切分逻辑忠实移植成 float32
+ * 之后跑出来的数值仿真，不是真机像素回读**（这个助手目前还没有调用方，没有画面可读）；
+ * 将来 `JfglDemo` 接上虚线预览后，若要拿像素口径钉它，请按本仓库的惯例另立校验器。
+ *
  * @param gc      绘制上下文（调用方负责设好 `stroke` 与 `lineWidth`）
  * @param points  扁平顶点数组 `[x0,y0, x1,y1, ...]`
  * @param closed  是否首尾相接
- * @param dashOn  实段长度（设备像素），≤0 时退化成实线
- * @param dashOff 空段长度（设备像素），≤0 时退化成实线
+ * @param dashOn  实段长度（设备像素），**非正（或 NaN）时退化成实线**
+ * @param dashOff 空段长度（设备像素），**非正（或 NaN）时退化成实线**
  */
 internal fun strokeDashedPolyline(
     gc: Gc, points: FloatArray, closed: Boolean, dashOn: Float, dashOff: Float
 ) {
     val n = points.size / 2
     if (n < 2) return
-    val pattern = dashOn + dashOff
-    if (dashOn <= 0f || dashOff <= 0f || pattern <= 0f) {
+    if (!(dashOn > 0f) || !(dashOff > 0f)) {
         // 退化：按实线画。**不静默什么都不画**——虚线的参数错不该让预览消失。
+        // ★ 判据必须写成 `!(x > 0f)`，**不能**写成 `x <= 0f`：NaN 与任何数比较都是
+        // false，所以 `x <= 0f` 对 NaN 为 false、守卫挡不住它。NaN 穿透到主路径的表现是
+        // `pattern = NaN` → `NaN.toInt()` 在 JVM 上是 0 → `0 * NaN <= s + len` 恒 false
+        // → **一段都不画、也不报错**，恰好就是这条守卫想避免的那件事。
+        // `!(x > 0f)` 一次覆盖 **NaN、0、负数**三种输入。
         gc.strokePolyline(points, closed)
         return
     }
+    // 走到这里两个参数都是正的，所以总和必为正——早先那条 `|| pattern <= 0f`
+    // 在这个判据之下恒假，已删（留着一个恒假的判据，下一个人会以为它有意义）。
+    val pattern = dashOn + dashOff
     val segCount = if (closed) n else n - 1
     var s = 0f                                  // 折线起点算起的累计弧长
     for (i in 0 until segCount) {
