@@ -273,8 +273,10 @@ public final class RenderBatch implements Disposable {
      * 极可能原样发回来。于是 ID 比较会得到"没变"的结论而跳过重配置 ——
      * 正好在需要它的场景下失效。用代数或标志位判断同样是在维护一份容易失同步的平行状态。
      *
-     * <p>每帧多跑 10 次 GL 调用（5 次 VertexAttribPointer + 5 次 EnableVertexAttribArray）
-     * 相对整帧开销完全可以忽略，因此这里选择**无条件重跑**，把问题彻底消掉。
+     * <p>每帧多跑 10 次 GL 调用（4 次 {@code VertexAttribPointer} +
+     * 1 次 {@code VertexAttribIPointer}——location 3 那条整数属性走的是它 +
+     * 5 次 {@code EnableVertexAttribArray}）相对整帧开销完全可以忽略，
+     * 因此这里选择**无条件重跑**，把问题彻底消掉。
      *
      * <p>属性布局与 {@link VertexFormat} 的常量一一对应（步长 32 字节）：
      * <ul>
