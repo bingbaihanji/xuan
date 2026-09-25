@@ -214,6 +214,14 @@ Expected: FAIL —— `expected: <32> but was: <24>`，且 `OFFSET_EDGE` 编译�
 
 （其余位置用的已经是 `VertexFormat.STRIDE_BYTES`，不必动。）
 
+> **★★ 2026-09-26 执行期修正：上面那句"其余位置……不必动"是错的。** 执行者实测：
+> 同一个文件第 91~93 行还有**三处**写死的 `120`（= 5×24）以及 `120+8` / `120+12`。
+> 只改第 90 行那处的话，这个用例会因为**读到顶点 4 的 y**（`0f` ≠ 期望的 `1f`）而失败，
+> 而失败原因与"边距"毫不相干——排查方向会被完全带偏。
+> 一并改成 `5 * VertexFormat.STRIDE_BYTES` 这类**由 stride 推出**的写法则可免疫。
+> **教训**：这类"把 stride 写死在断言里"的字面量，一处漏掉就会在下一次改格式时
+> 变成一条**指向错误方向的**失败。
+
 - [ ] **Step 6: 新增一条"边距真的落在 24/28"的测试**
 
 追加到 `VertexWriterTest` 末尾：
@@ -268,6 +276,17 @@ Expected: `Tests run: 159 + 211 = 370, Failures: 0, Errors: 0, Skipped: 2`（条
 ```
 
 （加完再跑 `PipelineVerifier`，Expected: 退出码 0。）
+
+> **★★ 2026-09-26 执行期修正：上面那句"接错一个偏移就会全画面错乱"在本 Task 范围内
+> 不成立——它是 Task 3 才成立的。** 执行者实测指出：本 Task 不碰着色器，所以此刻
+> **没有任何着色器声明 `layout(location = 4)`**（全仓库只有 location 0~3）。
+> GL 对"启用了但没指针/没被读"的属性返回通用常量，于是：
+> **把这句话删掉、或把偏移写成 0 或 28，画面都照样逐位不变。**
+> 也就是说 **`PipelineVerifier` 绿在这件事上不是证据**——本 Task 里这条属性指针的
+> 正确性只有"代码读过一遍"这一层保障。
+> **端到端证据要等 Task 3 给顶点着色器加上 `aEdge` 之后**，见 Task 3 的 Step 8。
+> 留着这段话是因为它指出了**未来真实的故障模式**（一旦着色器开始读它，接错就全画面错乱），
+> 但**不要**把它当成 Task 1 的验收依据。
 
 - [ ] **Step 9: 提交**
 
@@ -823,14 +842,44 @@ mvn -o -f jfgl-javafx/pom.xml compile exec:exec "-Dexec.executable=java" "-Dexec
 Expected: **退出码 0**。`antialias` 默认 false ⇒ 外扩量 0、边距全 0 ⇒ 画面必须**逐像素不变**。
 若这里红了，说明**默认路径被改动了**，先别往下走。
 
-- [ ] **Step 8: 提交**
+- [ ] **Step 8: 给 `aEdge` 的**偏移**补一条端到端探针（Task 1 的欠账）**
+
+> **★ 为什么必须有这一步**：Task 1 加了 `location 4` 的属性指针，但**当时没有任何着色器
+> 声明它**，所以那条指针的正确性**当时无法验证**（Task 1 Step 8 有一条与此相关的修正记录）。
+> 本 Task 第一次让着色器真正读 `aEdge` ⇒ **现在可以验了，而且必须验**：
+> 偏移接错（比如写成 20，读到拾取 ID）不会报任何错，只会让抗锯齿行为**莫名其妙**。
+
+加一个只在自检/校验模式下的探针：让片段着色器**把 `vEdge` 直接当颜色输出**
+（`fragColor = vec4(vEdge * 0.5 + 0.5, 0.0, 1.0)`），画一条已知几何的描边，
+回读几个像素并断言：
+
+- 描带**两条外缘**上的像素，红通道（`vEdge.x` 映射后）≈ `0.0` 与 `1.0`（即 `-1` 与 `+1`）；
+- 描带**中心线**上是 ≈ `0.5`（即 `0`）；
+- 绿通道（`vEdge.y`）在**中段**远大于 0.5、在**端帽那一排**≈ 0.5（即 `0`）。
+
+**注意**：探针必须画在**离屏**或一帧内用完即弃——别让它污染 Task 4 的那四条判据。
+实现上最简单的做法是**只在校验器里**用一段独立的着色器（或给它一个 `uProbe` uniform
+走另一条分支），**不要**改生产着色器的默认行为。
+
+- [ ] **Step 9: 顺手修一处过时注释（Task 1 的欠账）**
+
+`Gc.kt` 里 `INITIAL_VERTEX_CAPACITY` 的注释写着「约 1.5 MB（65536 个顶点 * 24 字节）」，
+stride 改成 32 之后应为 **2 MB**。本 Task 正好要改 `Gc.kt`，顺手改掉。
+（执行者报告里点名了它在 `Gc.kt:1395` 附近。）
+
+- [ ] **Step 10: 提交**
 
 ```bash
 git add jfgl-render-gl/src/main/java/com/bingbaihanji/jfgl/renderer/RenderBatch.java \
         jfgl-render-gl/src/main/kotlin/com/bingbaihanji/jfgl/renderer/Gc.kt \
-        jfgl-render-gl/src/test/java/com/bingbaihanji/jfgl/renderer/GcAntialiasTest.java
+        jfgl-render-gl/src/test/java/com/bingbaihanji/jfgl/renderer/GcAntialiasTest.java \
+        jfgl-javafx/src/main/kotlin/com/bingbaihanji/jfgl/example/PipelineVerifier.kt
 git commit -m "feat(render): 描边解析式抗锯齿（Gc.antialias，默认关）+ 几何外扩 1 像素"
 ```
+
+> **上面这份 `git add` 清单在原计划里是错的**（2026-09-26 执行期修正）：它漏掉了
+> 本 Task 新增的两处——`GcAntialiasTest.java`（Step 6）与 `PipelineVerifier.kt` 里的
+> `aEdge` 偏移探针（Step 8）。**按这份清单加。**
 
 ---
 
