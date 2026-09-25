@@ -191,7 +191,7 @@ class JfglDemoApp : Application() {
     //      那个钩子**（`consumeMarquee` 里调 `removeShapes` —— 见那里的 KDoc）。
     //      后者是**例外**，只在自检路径上（生产路径被 `if (SELFTEST …)` 挡着），
     //      而且它是一次**读-改-写**（`shapes.set(shapes.get().filter { … })`），
-    //      与 JavaFX 线程那侧交错时理论上会丢更新——真丢了会让第 ⑦ 条的判据响亮失败，
+    //      与 JavaFX 线程那侧交错时理论上会丢更新——真丢了会让第 ⑩ 条的判据响亮失败，
     //      不是静默错画，所以本期只把这句话说准，不动结构；
     //   ② **需要跨线程的标量**（`mode` / `kind`）：`@Volatile`；
     //   ③ **分别发布的标量**（`dragStart*` / `marquee[XYWH]`）：也 `@Volatile`，
@@ -269,37 +269,63 @@ class JfglDemoApp : Application() {
     /**
      * 菜单项引用，**只给自检用**（生产路径一次都不读）。
      *
-     * <p>第 8~11 条要按"**菜单动作**"驱动，不能去改 `mode` / `selectedKind` 常量：
-     * 改常量绕过了"菜单 → 字段 → 下一帧重建"这条**端到端链路**，而那条链才是要验的东西
-     * （比如 `chart()` 变成永远返回缓存时，改常量照样全绿，而菜单变死）。
-     * `MenuItem.fire()` 是纯 JavaFX 线程逻辑，能直接驱动它
+     * <p>第 ④ 条与第 ⑪~⑭ 条要按"**菜单动作**"驱动，不能去改 `mode` / `selectedKind`
+     * / `style` / `kind` 常量：改常量绕过了"菜单 → 字段 → 下一帧重建"这条**端到端链路**，
+     * 而那条链才是要验的东西（比如 `chart()` 变成永远返回缓存时，改常量照样全绿，
+     * 而菜单变死）。`MenuItem.fire()` 是纯 JavaFX 线程逻辑，能直接驱动它
      * （顺带：它连**禁用**状态都不判，"菜单被灰掉了"这件事得靠断言里的行为看出来）。
      *
-     * <p>它们是**启动时一次性 put 的**（三处 `buildMenuBar` 里的记账），
+     * <p>它们是**启动时一次性 put 的**（四处 `buildMenuBar` 里的记账），
      * 每帧一次都不碰——见上面那段"唯一的一处例外"。
      */
     private val modeMenuItems = HashMap<Mode, RadioMenuItem>()
     private val styleMenuItems = HashMap<ShapeStyle, RadioMenuItem>()
     private val chartMenuItems = ArrayList<RadioMenuItem>()
 
+    /**
+     * 图形种类的菜单项。**只给自检用**（第 ⑤ 条要切到"圆"验它那条新尺规，
+     * 第 ⑦ 条要切回"矩形"；而"切图形"在 [resetDragState] / [cancelAnchor] 的 KDoc 里
+     * 是四条语义路径之一，所以它必须是**生产路径**上的那个动作，
+     * 不能直接给 `kind` 字段赋值——见上面那段说明）。
+     */
+    private val kindMenuItems = HashMap<ShapeKind, RadioMenuItem>()
+
     /** 已在 [drawScene] 里执行过的帧数。**只在自检模式下自增**（见 [SELFTEST]）。 */
     @Volatile private var frameCount = 0
+
+    /**
+     * 自检专用的**末尾探针**：[drawDragPreview] 的两点式**虚线分支真的画完了**的帧数。
+     *
+     * <p><strong>为什么在调用方、不在 `strokeDashedPolyline` 里</strong>：那支助手的闸门是
+     * `DemoShapeMath.kt` 里那几条**判据的单元测试**（它们只比较布尔值、不跑循环），
+     * 而"这一段接线真的通了"只有这里能证——`drawDragPreview` 跑在 GL 线程上，
+     * 帧缓冲读不回来，且 GL 线程的异常在本项目**被 openglfx 的原生回调吞掉**
+     * （"少画了一帧"与"这一帧抛了异常"在画面上长得一样）。
+     *
+     * <p>它记的是"**锚点已定 → 鼠标移动过 → 轮廓非退化 → 虚线描边调用返回了**"这一整条链：
+     * 锚点刚设上时 `previewX/Y` 还等于锚点本身，RECT 的轮廓在那里是零宽/零高
+     * （[twoPointPreviewOutline] 返回 null），所以**这一格只在鼠标真的移动过之后才会涨**。
+     *
+     * <p>与 `DemoChart.selfTestDrawnFrames` 同一形态：只在 [SELFTEST] 打开时自增，
+     * **没有任何绘制逻辑读它**。
+     */
+    @Volatile private var previewDashedFrames = 0
 
     /** 拾取回调交付的命中 / 未命中次数。用来核对"回调真的被交付了"，而不只是"状态栏碰巧对"。 */
     private var pickHitCount = 0
     private var pickMissCount = 0
 
     /**
-     * 自检第 7 条的一次性钩子：让 [consumeMarquee] **在拾取读回之后、活快照之前**
+     * 自检第 ⑩ 条的一次性钩子：让 [consumeMarquee] **在拾取读回之后、活快照之前**
      * 执行一次"删除"。完整的时序理由见那个钩子所在的注释。
      */
     @Volatile private var selfTestDeleteAfterReadback = false
 
-    /** 上面那个钩子真的执行了几次（GL 线程写、JavaFX 线程读）。**必须 >0 才说明第 7 条测的是那条路径**。 */
+    /** 上面那个钩子真的执行了几次（GL 线程写、JavaFX 线程读）。**必须 >0 才说明第 ⑩ 条测的是那条路径**。 */
     @Volatile private var selfTestDeleteHookRuns = 0
 
     /**
-     * 第 ⑦ 条：**那一次读回到底命中了哪些号**（钩子在 GL 线程上顺手记下的）。
+     * 第 ⑩ 条：**那一次读回到底命中了哪些号**（钩子在 GL 线程上顺手记下的）。
      *
      * <p>没有它，⑦ 的判别力挂在一个没人断言的前提上：`gc.pickRect` 这次若返回**空**，
      * "活快照过滤"根本没参与运算（`ids` 空 ⇒ `selection` 空 ⇒ "新图形没被高亮"真），
@@ -308,7 +334,7 @@ class JfglDemoApp : Application() {
      */
     @Volatile private var selfTestHookHitIds: List<Int> = emptyList()
 
-    /** 第 ⑥ 条的两个前提：删之前有几个图形、删除那一刻状态栏说了什么。 */
+    /** 第 ⑨ 条的两个前提：删之前有几个图形、删除那一刻状态栏说了什么。 */
     private var selfTestDeleteBefore = -1
     private var selfTestDeleteStatus = ""
 
@@ -323,10 +349,25 @@ class JfglDemoApp : Application() {
      *
      * <p>为什么不用累计值的绝对值：这个计数器是全脚本累计的，写死期望值会随"前面某条
      * 也点空过"而变。实测第一版就在这上面栽了——第 ④ 条自己就是一次未命中，
-     * 于是第 ⑥ 条那句 `pickMissCount == 1` 恒为假。
+     * 于是第 ⑨ 条那句 `pickMissCount == 1` 恒为假。
      */
     private var selfTestHitBefore = 0
     private var selfTestMissBefore = 0
+
+    /** ① 的虚线预览探针基准（见 [previewDashedFrames]）。 */
+    private var selfTestPreviewBefore = 0
+
+    /**
+     * ⑥（`Esc` 取消）的前提：按 `Esc` 之前有几个图形。
+     *
+     * <p>它与 ⑨ 的 `selfTestDeleteBefore` 是**同一种做法**——把"这一步之前有几个"
+     * 记下来再断言"之后还是几个"，否则"压根没画出来任何东西"与"画了又被 `Esc` 正确取消"
+     * 在读数上分不开（那正是本仓库"被静默跳过的断言"的形态）。
+     */
+    private var selfTestSizeBeforeEsc = -1
+
+    /** ⑦（两点式上拖拽什么都不做）的前提：拖之前有几个图形。理由同 [selfTestSizeBeforeEsc]。 */
+    private var selfTestSizeBeforeDrag = -1
 
     /** 模式切换后同步那三个属性。**只在 JavaFX 线程调用。** */
     private fun syncModeProperties() {
@@ -998,7 +1039,7 @@ class JfglDemoApp : Application() {
      * <p><strong>★ 注册表走参数，不是在里面读 [transfer] 拿的</strong>——这不是风格问题：
      * `transfer` 是个**普通字段**（`@Volatile` 都没有），而本文件在 [start] 里明文把这种读法
      * 称作数据竞争（那边的原话是"读它属于数据竞争"）。本函数**要在 GL 线程上被调**
-     * （自检第 7 条的钩子，见 [consumeMarquee]），所以在里面读 `transfer?.gc()` 就凭空多出
+     * （自检第 ⑩ 条的钩子，见 [consumeMarquee]），所以在里面读 `transfer?.gc()` 就凭空多出
      * 一处跨线程读——而它的 KDoc 同时声称"只碰线程安全的三样东西"，**文档承诺超过实现**。
      * 改法是让那句话**为真**，不是给它加一段注解：注册表由**调用方在它自己那一侧**解析。
      *
@@ -1010,15 +1051,15 @@ class JfglDemoApp : Application() {
      * （终审指出；`0c13440` 只消掉了 `transfer` 那一处）：
      * `shapes.set(shapes.get().filter { … })` 与 `selection.set(emptySet())` 都是
      * **读-改-写**，而本函数**有两个线程上的调用方**——[deleteSelected]（JavaFX 线程）与
-     * 自检第 ⑦ 条的钩子（**GL 线程**，见 [consumeMarquee]）。两次 RMW 交错会**丢一次更新**
+     * 自检第 ⑩ 条的钩子（**GL 线程**，见 [consumeMarquee]）。两次 RMW 交错会**丢一次更新**
      * （经典的 lost update：A 读到旧表 → B 读到旧表并写回 → A 写回它的旧表）。
      *
      * <p><strong>为什么这仍然不是生产缺陷</strong>：GL 线程那一侧被
      * `if (SELFTEST &amp;&amp; selfTestDeleteAfterReadback)` 挡着，**生产路径根本走不到**；
-     * 而真丢了更新的话，第 ⑦ 条自己的判据（`shapes.size`、`selection`）会**响亮失败**，
+     * 而真丢了更新的话，第 ⑩ 条自己的判据（`shapes.size`、`selection`）会**响亮失败**，
      * 不是静默错画。所以本轮**只把话说准**：
      * **这两张表的写者有两处，一处是自检模式下 GL 线程上的钩子**——那是个例外，且只在自检路径。
-     * （**不改成 `Platform.runLater`**：那会把第 ⑦ 条的时序判据——"读回落地之前按 Delete"——
+     * （**不改成 `Platform.runLater`**：那会把第 ⑩ 条的时序判据——"读回落地之前按 Delete"——
      * 从确定性变成竞态，正是那条判据花了一整轮才立住的东西。）
      *
      * <p>状态栏是 JavaFX 控件，**不在这里写**，由调用方负责
@@ -1164,6 +1205,11 @@ class JfglDemoApp : Application() {
             if (outline != null) {
                 strokeDashedPolyline(gc, outline, closed = kind != ShapeKind.LINE,
                     dashOn = PREVIEW_DASH_ON, dashOff = PREVIEW_DASH_OFF)
+                // ★ **末尾探针**（只在自检模式下写，见 [previewDashedFrames]）。
+                //   位置有讲究：写在 `strokeDashedPolyline` **之后**，所以它证明的是
+                //   "整段调用都返回了"——而 GL 线程的异常在本项目是被 openglfx 静默吞掉的，
+                //   "少画一帧"与"这一帧抛了"在画面上长得一样，只有这个计数能把两者分开。
+                if (SELFTEST) previewDashedFrames++
             }
             // 锚点十字：与鼠标重合时虚线退化成零长、什么都看不见，
             // 没有它就分不出"还没有第一点"与"第一点正好在鼠标下"。
@@ -1287,7 +1333,7 @@ class JfglDemoApp : Application() {
         val r = marqueePending.getAndSet(null) ?: return
         val hits = gc.pickRect(r.x, r.y, r.width, r.height)
 
-        // ★★ **自检第 7 条的钩子**（只在 `-Djfgl.demo.selftest=1` 时可能为真）。
+        // ★★ **自检第 ⑩ 条的钩子**（只在 `-Djfgl.demo.selftest=1` 时可能为真）。
         //
         //    它模拟的是**真实可达**的那个时序：用户在框选读回还在飞的时候按了 Delete。
         //    Delete 走的是 JavaFX 线程，而这一帧的 ID pass 早在 `endFrame` 时就渲染完了
@@ -1298,14 +1344,14 @@ class JfglDemoApp : Application() {
         //    本函数末尾那条 `runLater`（把 ids 写进 selection）是**本帧 onRender 里**
         //    发出去的；而 JavaFX 线程上的下一个动作最早也要等到**下一次脉冲**（约 16 ms 后），
         //    那时这条 runLater 早已执行完 —— 于是删除落在它**之后**，删除会把选中集清空，
-        //    "新图形被高亮"这个症状永远不会出现，第 7 条就成了**恒真**的橡皮图章。
+        //    "新图形被高亮"这个症状永远不会出现，第 ⑩ 条就成了**恒真**的橡皮图章。
         //    钩子放在这两行之间，判据是确定的：**读回已经发生、活快照还没取**。
         //
         //    它调的是 [removeShapes]（生产代码本身），不是一处"专为测试写的近似删除"。
         if (SELFTEST && selfTestDeleteAfterReadback) {
             selfTestDeleteAfterReadback = false
             selfTestDeleteHookRuns++
-            // 顺手记下**这次读回命中了哪些号**（零成本，就是一次 map）。第 ⑦ 条的 `ok`
+            // 顺手记下**这次读回命中了哪些号**（零成本，就是一次 map）。第 ⑩ 条的 `ok`
             // 要断言"里面含被删的那个号"——否则读回为空时那条断言会空转通过，见字段说明。
             selfTestHookHitIds = hits.map { it.id() }
             val sel = selection.get()
@@ -1380,6 +1426,7 @@ class JfglDemoApp : Application() {
                     // 会得到一条**实心描边**的线而界面毫无反馈——那是"设了但没用"的静默失效。
                     styleIsLine.set(k == ShapeKind.LINE)
                 }
+                kindMenuItems[k] = this    // 只给自检用（第 ⑤ 条要切到"圆"）
             }
         }
         val kindMenu = Menu("图形").apply { items.addAll(kindItems) }
@@ -1398,7 +1445,7 @@ class JfglDemoApp : Application() {
                 //   "Assignment type mismatch: actual type is 'ShapeStyle', but 'String!' was expected"。
                 //   往 CSS 里塞 "FILL"/"STROKE" 是无效 CSS，所以这里没有第二种读法。
                 setOnAction { this@JfglDemoApp.style = s }
-                styleMenuItems[s] = this    // 只给自检用（第 4 条要切「只描边」）
+                styleMenuItems[s] = this    // 只给自检用（第 ④ 条要切「只描边」）
             }
         }
         val widthGroup = ToggleGroup()
@@ -1437,7 +1484,7 @@ class JfglDemoApp : Application() {
                 toggleGroup = chartGroup
                 isSelected = (i == 0)
                 setOnAction { DemoChart.selectedKind = i }
-                chartMenuItems.add(this)    // 只给自检用（第 10、11 条按菜单动作切图型）
+                chartMenuItems.add(this)    // 只给自检用（第 ⑬、⑭ 条按菜单动作切图型）
             }
         }
         val chartMenu = Menu("图型").apply { items.addAll(chartItems) }
@@ -1520,7 +1567,7 @@ class JfglDemoApp : Application() {
      *               用满即**记一条失败**（"结果已到"在预算内没成立 ⇒ 这一段之后的断言是在
      *               **还没到**的状态上求值，那正是"被静默跳过的断言"的变体）
      * @param until  "结果已到"的判据。**它必须是与该段断言不同的一个量**——用断言本身当
-     *               等待条件会让那条断言退化成恒真（例如第 ⑤ 条等的是"状态栏说框选到了"，
+     *               等待条件会让那条断言退化成恒真（例如第 ⑧ 条等的是"状态栏说框选到了"，
      *               断的是"选择集等于这三个号"）
      */
     private class Segment(
@@ -1533,7 +1580,7 @@ class JfglDemoApp : Application() {
     /** 自检脚本的一步 = 若干段 + **一条**断言（一步正好对应输出里的一行）。 */
     private class Step(val title: String, val segments: List<Segment>, val verify: () -> Unit)
 
-    /** 第 11 条每一步读到的三样东西：图型下标、拾取号总数、当前 `Chart` 的身份哈希。 */
+    /** 第 ⑭ 条每一步读到的三样东西：图型下标、拾取号总数、当前 `Chart` 的身份哈希。 */
     private class KindReading(val kind: Int, val ids: Int, val identity: Int)
 
     /** 自检的脉冲上限。超了判失败退出——**卡死不退出是另一种静默**（报告上什么都看不到）。 */
@@ -1571,7 +1618,7 @@ class JfglDemoApp : Application() {
     private var selfTestIdentityKind0 = 0
     private var selfTestDrawnBefore = 0
 
-    /** 第 ⑪ 条每一段要等的那个图型（等待条件见 [chartDrawnAfterStep]）。 */
+    /** 第 ⑭ 条每一段要等的那个图型（等待条件见 [chartDrawnAfterStep]）。 */
     private var selfTestStepKind = 0
     private val selfTestKindReadings = ArrayList<KindReading>()
 
@@ -1662,7 +1709,7 @@ class JfglDemoApp : Application() {
         selfTestDone.countDown()
         println()
         // ★ **分母是"已评估"而不是"总共"**：超时/挂死那条路径走到这里时，后面的断言
-        //   一次都没跑。写成"断言 11 条，失败 1 项"读起来像"11 条里只坏了 1 条"，
+        //   一次都没跑。写成"断言 14 条，失败 1 项"读起来像"14 条里只坏了 1 条"，
         //   而实际可能是"只跑了 4 条、剩下 7 条从没被评估"——本仓库那条判据（"被静默
         //   跳过的断言比失败的断言更坏"）说的就是这种报告。
         println("[自检-合成] 已评估 ${selfTestStep}/${selfTestSteps.size} 条断言，失败 $selfTestFailures 项")
@@ -1811,10 +1858,53 @@ class JfglDemoApp : Application() {
         fireReleaseP(nx(fx1), ny(fy1))
     }
 
-    /** 一次单击：按下与抬起在**同一个点**（`moved == 0 < CLICK_SLOP`）。 */
+    /**
+     * 一次**左键**单击：按下与抬起在**同一个点**（`moved == 0 < CLICK_SLOP`）。
+     *
+     * <p>2026-09-25 起左键单击有**两种**含义，由 `anchorX` 是不是 NaN 分（见 [onRelease]）：
+     * 两点式上是"定第一点"或"提交"，轨迹型上仍是"拾取选中"（那条路径没改）。
+     * **拾取选中在两点式上已经挪到右键**（见 [clickRight]）。
+     */
     private fun clickAt(fx: Double, fy: Double) {
         firePress(nx(fx), ny(fy))
         fireReleaseP(nx(fx), ny(fy))
+    }
+
+    /**
+     * 一次**右键**单击 —— 两点式上的"拾取选中"（2026-09-25 从 [clickAt] 移到这里）。
+     *
+     * <p>按下与抬起**必须在同一个点**：`onRelease` 那条右键分支用 `CLICK_SLOP` 把
+     * "只按不拖 = 拾取"与"拖着 = 框选"分开，位移一超就落进后者（见 [marqueeFromTo]）。
+     */
+    private fun clickRight(fx: Double, fy: Double) {
+        firePress(nx(fx), ny(fy), secondary = true)
+        fireReleaseP(nx(fx), ny(fy), secondary = true)
+    }
+
+    /**
+     * 一次**鼠标移动**（**没有键按下**）—— 虚线预览唯一的输入源。
+     *
+     * <p>`button = NONE` 且三个 down 标志全 `false` 是**判据的一部分**：它必须是
+     * "没有键按下"的那一种，否则与 `MOUSE_DRAGGED` 无异，而这条链要证的恰恰是
+     * "**虚线在没有键按下时也跟得上鼠标**"（`MOUSE_DRAGGED` 只在按键期间才有，
+     * 所以只注册它是不够的——那正是 [wireMouse] 多注册一个 `MOUSE_MOVED` 的理由）。
+     */
+    private fun moveTo(fx: Double, fy: Double) {
+        fireMouse(MouseEvent.MOUSE_MOVED, nx(fx), ny(fy), MouseButton.NONE, false, false, 0)
+    }
+
+    /** 按**菜单动作**切图形种类（不是给 `kind` 字段赋值——见 [kindMenuItems] 的说明）。 */
+    private fun fireKind(k: ShapeKind) {
+        kindMenuItems[k]?.fire()
+    }
+
+    /**
+     * 合成一次 `Esc` 按键，**走真实的事件路径**（`stage.scene.setOnKeyPressed` 那个处理器）。
+     * 理由与 [fireDeleteKey] 同：那条接线本身也是被测的东西。
+     */
+    private fun fireEscKey() {
+        val sc = selfTestScene ?: return
+        Event.fireEvent(sc, KeyEvent(KeyEvent.KEY_PRESSED, "", "", KeyCode.ESCAPE, false, false, false, false))
     }
 
     /** 右键框选：按下 → 拖到另一点 → 抬起。**释放点不参与矩形**（`onRelease` 用的是 `marqueeW/H`）。 */
@@ -1847,7 +1937,13 @@ class JfglDemoApp : Application() {
     private fun registrySize(): Int = gcNow()?.pickRegistry?.size() ?: 0
 
     /**
-     * 自检脚本。**一步 = 输出里的一条断言**，顺序与计划 Task 11 那张表一一对应。
+     * 自检脚本。**一步 = 输出里的一条断言**，共 14 条。
+     *
+     * <p><strong>★ 2026-09-25 起手势是"点两下"</strong>（两点式图形：矩形 / 圆 / 椭圆 / 直线），
+     * 拾取选中挪到**右键只按不拖**。所以 ①②③④ 与 ⑩⑫ 都由
+     * `clickAt`（左键，定第一点 / 第二点提交）与 `clickRight`（右键，拾取）驱动，
+     * 而 `dragFromTo` 只剩两处用途：轨迹型，以及 ⑦ 那条"两点式上拖拽什么都不做"的**反面**断言。
+     * 新增的三条是 ⑤（圆的新尺规）、⑥（`Esc` 取消）、⑦（拖拽不做）。
      *
      * <p>坐标全是**比例**（相对画布逻辑尺寸），断言里也按同一套比例算期望值——
      * 于是脚本不会因为系统缩放变了就落到图形外面（125% 下画布是 1113x—，不是 900x700）。
@@ -1855,8 +1951,8 @@ class JfglDemoApp : Application() {
      * <p><strong>★ 但"比例"这条便利恰恰会掩盖一整类缺陷</strong>：所有包含关系在
      * **整体等比缩放**下都不变，所以 `wireMouse` 里那个 `* deviceScale(node)` 被删掉、
      * 或写成 `* s * s`，按比例量的断言**一条都不会倒**（而症状是"点 A 命中 B / 图形画在
-     * 别处，画面完全正常"——本仓库最防的那类）。所以 ① 里额外钉了**设备坐标的绝对值**
-     * （见那一条的断言），那也是全脚本唯一一处不与比例共变形的判据。
+     * 别处，画面完全正常"——本仓库最防的那类）。所以 ① 与 ⑤ 额外钉了**设备坐标的绝对值**
+     * （见那两条的断言），那也是全脚本仅有的不与比例共变形的判据。
      *
      * <p>`Segment(budget, drive = {...})` 里那个数**不是"等几帧"**，而是**帧预算**：
      * 依赖拾取往返的段一律给 `until = { … }`（等"结果已到"），预算只是兜底——
@@ -1865,10 +1961,24 @@ class JfglDemoApp : Application() {
      */
     private fun buildSelfTestSteps(): List<Step> = listOf(
 
-        // ① 拖出一个矩形：状态栏要变成"已画："，shapes 从 0 变 1
+        // ① 点两下画出一个矩形：状态栏要变成"已画："，shapes 从 0 变 1
+        //
+        // ★ 2026-09-25 起两点式图形（矩形/圆/椭圆/直线）是**点两下**，不再是拖拽。
+        //   所以这一段是"点 1 → 移动鼠标 → 点 2"，而**中间那一步单独占一段**：
+        //   虚线预览的探针要在"鼠标已经移动到对角、但还没点第二下"的那个窗口里读
+        //   （提交之后锚点被清、预览分支整条不再跑，计数就停在原地了）。
         Step(
-            "① 拖出矩形",
-            listOf(Segment(3, drive = { dragFromTo(0.06, 0.10, 0.26, 0.34) })),
+            "① 点两下画出矩形（虚线预览真的跟着鼠标）",
+            listOf(
+                // 第一下：定锚点。**等的是"锚点被设上了"**——它与本条断言量的是两回事。
+                Segment(6, drive = { clickAt(0.06, 0.10) }, until = { !anchorX.isNaN() }),
+                // 移动鼠标：虚线预览唯一的输入源。**只给帧预算、不给 `until`**——
+                // 等待条件若取"探针涨了"，那条断言在 verify 时就成了恒真
+                // （本仓库明令禁止：`Segment` 的 KDoc 就是这么写的）。
+                Segment(6, drive = { selfTestPreviewBefore = previewDashedFrames; moveTo(0.26, 0.34) }),
+                // 第二下：提交
+                Segment(6, drive = { clickAt(0.26, 0.34) }),
+            ),
             {
                 val s = shapes.get()
                 selfTestAId = s.firstOrNull()?.pickId ?: 0
@@ -1887,29 +1997,40 @@ class JfglDemoApp : Application() {
                 val expW = (nx(0.26) - nx(0.06)) * scale
                 val geomOk = b != null && abs(b.x - expX) <= 1f && abs(b.y - expY) <= 1f &&
                         abs(b.width - expW) <= 1f
+                // ★ **虚线预览那半的证据**（见 [previewDashedFrames]）：锚点定完、鼠标
+                //   移到对角、**还没有点第二下**的那些帧里，`drawDragPreview` 的两点式分支
+                //   必须真的跑完过。这一项是**独立于几何**的另一条链（事件 → `onMove` →
+                //    `previewX/Y` → 轮廓 → 虚线描边），几何全对而它恒 0 是完全可能的。
+                val previewGrew = previewDashedFrames - selfTestPreviewBefore
                 val ok = s.size == 1 && s[0].shape is Shape.RectShape && status.text.startsWith("已画：") &&
-                        geomOk
+                        geomOk && previewGrew > 0
                 check(
-                    "① 绘图模式拖出矩形（shapes 0→1、状态栏「已画：」、**设备坐标等于局部×缩放**）", ok,
+                    "① 点两下画出矩形（shapes 0→1、状态栏「已画：」、**设备坐标等于局部×缩放**、" +
+                        "**虚线预览真的画了**)",
+                    ok,
                     "shapes.size=${s.size}，第一个=${s.firstOrNull()?.shape?.describe() ?: "无"}" +
                         "（pickId=$selfTestAId），状态栏=「${status.text}」；" +
                         "设备坐标实测=(${b?.x},${b?.y},${b?.width})，期望=($expX,$expY,$expW)" +
-                        "（= 局部 (${nx(0.06)},${ny(0.10)}) × deviceScale $scale），容差 1px"
+                        "（= 局部 (${nx(0.06)},${ny(0.10)}) × deviceScale $scale），容差 1px；" +
+                        "虚线预览画了 $previewGrew 帧（期望 ≥1）"
                 )
             }
         ),
 
-        // ② 点它内部：命中回调必须被交付，且选中集里是它
+        // ② **右键**点它内部：命中回调必须被交付，且选中集里是它
+        //
+        // ★ 2026-09-25 起拾取选中从"左键单击"移到"**右键只按不拖**"（设计文档 §4.2 的手势表）：
+        //   第一下左键现在是"定起点"，不能同时是"选中"。
         //
         // ★ 等待条件（`until`）一律是"**结果已到**"，不是"等 N 帧"：固定帧数是本仓库
         //   `ClickVerifier` 栽过的坑（"帧号判据依赖'提交帧 + N'这条推断，而结果是异步的、
         //   落点会飘"）。`HIT_DONE` 的判据是**交付计数涨了**——它与本条断言量的是两回事
         //   （断言量的是"交给的是哪一个"），所以不会让断言退化成恒真。
         Step(
-            "② 单击选中",
+            "② 右键单击选中",
             listOf(
                 Segment(
-                    12, drive = { selfTestHitBefore = pickHitCount; clickAt(0.16, 0.22) },
+                    12, drive = { selfTestHitBefore = pickHitCount; clickRight(0.16, 0.22) },
                     until = { pickHitCount > selfTestHitBefore }
                 )
             ),
@@ -1918,7 +2039,7 @@ class JfglDemoApp : Application() {
                 val ok = sel == setOf(selfTestAId) && pickHitCount - selfTestHitBefore == 1 &&
                         status.text.startsWith("命中：")
                 check(
-                    "② 单击图形内部 → 命中并选中（回调真的被交付了）", ok,
+                    "② 右键单击图形内部 → 命中并选中（回调真的被交付了）", ok,
                     "selection=$sel（期望 {${selfTestAId}}），命中回调本次 ${pickHitCount - selfTestHitBefore} 次" +
                         "（累计 $pickHitCount）/ 未命中累计 $pickMissCount 次，状态栏=「${status.text}」"
                 )
@@ -1929,9 +2050,10 @@ class JfglDemoApp : Application() {
         Step(
             "③ 重叠处命中的是后画的",
             listOf(
-                Segment(3, drive = { dragFromTo(0.16, 0.22, 0.36, 0.46) }),
+                Segment(6, drive = { clickAt(0.16, 0.22) }, until = { !anchorX.isNaN() }),
+                Segment(6, drive = { clickAt(0.36, 0.46) }),
                 Segment(
-                    12, drive = { selfTestHitBefore = pickHitCount; clickAt(0.20, 0.26) },
+                    12, drive = { selfTestHitBefore = pickHitCount; clickRight(0.20, 0.26) },
                     until = { pickHitCount > selfTestHitBefore }
                 ),
             ),
@@ -1954,18 +2076,19 @@ class JfglDemoApp : Application() {
         Step(
             "④ 只描边的内部点不中",
             listOf(
-                Segment(3, drive = {
+                Segment(6, drive = {
                     // ★ 走菜单动作（`MenuItem.fire()`），不是直接给 `style` 字段赋值——
                     //   菜单里那一行的 `this@JfglDemoApp.style = s` 才是生产路径。
                     styleMenuItems[ShapeStyle.STROKE]?.fire()
-                    dragFromTo(0.50, 0.10, 0.70, 0.34)
-                }),
+                    clickAt(0.50, 0.10)
+                }, until = { !anchorX.isNaN() }),
+                Segment(6, drive = { clickAt(0.70, 0.34) }),
                 // 记基准再点：这个计数器是**全脚本累计**的，写死绝对值会随前面某条也点空过而错
                 //（实测第一版就栽在这里——第 ④ 条自己就是一次未命中）。
                 // 等的是"**未命中回调也交付了一条**"：这一条验的正是"点空了"，
                 // 所以必须等它真的交付，不能拿"没交付"当"没命中"。
                 Segment(
-                    12, drive = { selfTestMissBefore = pickMissCount; clickAt(0.60, 0.22) },   // 离边框 ≥ 8 像素的内部
+                    12, drive = { selfTestMissBefore = pickMissCount; clickRight(0.60, 0.22) },   // 离边框 ≥ 8 像素的内部
                     until = { pickMissCount > selfTestMissBefore }
                 ),
             ),
@@ -1984,14 +2107,119 @@ class JfglDemoApp : Application() {
             }
         ),
 
-        // ⑤ 右键框选全部三个
+        // ⑤ ★ 圆的两点式尺规 —— **与第一版不同**（第一版是"内切于拖拽框"）。
+        //
+        // 为什么单独立一条：这条尺规在 2026-09-25 改过，而**改错的方向是静默的**——
+        // 圆心取两点中点、半径取 `min(|dx|,|dy|)/2`（旧尺规）时，画出来的**仍然是一个
+        // 正常的圆**，半径甚至可能"看着差不多"。所以圆心与半径**两项都要断**：
+        // 只断半径，"圆心取中点"能蒙过去；只断圆心，`min/2` 照样过。
+        //
+        // ★ 第二点**刻意取在对角**（不是同一行）：那样两种尺规给出**都非零但不同**的半径
+        //   （`hypot(dx,dy)` vs `min/2`），差异是"值错了"而不是"退化成零、什么都没画"。
+        //   同一行的话旧尺规会得到 `r = 0` ⇒ 图形压根不出现 ⇒ 断言虽然也倒，
+        //   但倒成了"没画出来"，**指向的是一种与真因不同的病**。
         Step(
-            "⑤ 右键框选全部",
+            "⑤ ★ 圆的尺规：圆心 = 锚点、半径 = 锚点到第二点的距离",
+            listOf(
+                Segment(6, drive = { fireKind(ShapeKind.CIRCLE); clickAt(0.22, 0.58) },
+                    until = { !anchorX.isNaN() }),
+                Segment(6, drive = { clickAt(0.30, 0.70) }),
+            ),
+            {
+                val s = shapes.get()
+                val c = s.lastOrNull()?.shape as? Shape.CircleShape
+                // 期望值按**设备像素**算（与 ① 同一口径）：两点的局部坐标各乘一次 `deviceScale`。
+                val scale = selfTestBridge?.deviceScale(selfTestNode!!) ?: 1.0
+                val ax = nx(0.22) * scale
+                val ay = ny(0.58) * scale
+                val expR = hypot(nx(0.30) * scale - ax, ny(0.70) * scale - ay)
+                val dCenter = if (c == null) Double.NaN else hypot((c.cx - ax).toDouble(), (c.cy - ay).toDouble())
+                val dR = if (c == null) Double.NaN else abs(c.r - expR)
+                val ok = s.size == 4 && c != null && dCenter <= 1.0 && dR <= 1.0
+                check(
+                    "⑤ ★ 圆的尺规：圆心 = **锚点**（不是两点中点）、半径 = **锚点到第二点的距离**" +
+                        "（不是 min(|dx|,|dy|)/2）", ok,
+                    "shapes.size=${s.size}，最后一个=${c?.describe() ?: "无（不是圆）"}；" +
+                        "圆心实测=(${c?.cx},${c?.cy})，期望锚点=($ax,$ay)，偏差=${"%.3f".format(dCenter)}px；" +
+                        "半径实测=${c?.r}，期望=$expR（= hypot 两个设备像素点），偏差=${"%.3f".format(dR)}px；容差 1px"
+                )
+            }
+        ),
+
+        // ⑥ `Esc` 取消"已定第一点"（2026-09-25 新增的手势）。
+        //
+        // ★ 判别式**分两半**，缺一半就会"空转通过"：
+        //   ① `Esc` 之后 `shapes` **不变**——但只断这个的话，"压根没点中、锚点从没设上"
+        //      也满足它（`selfTestSizeBeforeEsc` 就是留着堵这条的：它钉住"按 Esc 之前确实
+        //      有 N 个图形"，而 N 是前面四条真的画出来的）；
+        //   ② 再点一下**不会**接着上一点画出来（`shapes` 仍然不变）。
+        //   ② 才是 `Esc` 真正的语义——`Esc` 若没清掉锚点，这一下就会**提交**一个图形。
+        Step(
+            "⑥ Esc 取消「已定第一点」",
+            listOf(
+                Segment(6, drive = { selfTestSizeBeforeEsc = shapes.get().size; clickAt(0.42, 0.82) },
+                    until = { !anchorX.isNaN() }),
+                Segment(6, drive = { fireEscKey() }, until = { anchorX.isNaN() }),
+                // 再点一下：**不该**接着上一点画东西，而应该只是重新定了个第一点。
+                // 等的是"锚点又被设上了"——它与本条断言量的是两回事（断言量的是 shapes 没涨）。
+                Segment(6, drive = { clickAt(0.56, 0.92) }, until = { !anchorX.isNaN() }),
+            ),
+            {
+                val sizeNow = shapes.get().size
+                val ok = selfTestSizeBeforeEsc > 0 && sizeNow == selfTestSizeBeforeEsc
+                check(
+                    "⑥ Esc 取消：取消后 shapes 不变，且再点一下**不会**接着上一点画出来", ok,
+                    "按 Esc 之前 shapes.size=$selfTestSizeBeforeEsc（期望 >0），" +
+                        "三步走完 shapes.size=$sizeNow（期望与之前相同）；" +
+                        "（此刻锚点已被最后那一下重新设上，收尾会清掉）"
+                )
+                // ★ 把这一条自己留下的锚点收掉。不收的话下一条（⑦）一进 `onRelease`
+                //   就会拿它**提交**一个图形，而 ⑦ 的断言是"拖拽什么都不做"——
+                //   它会因为一个与本条无关的原因倒，读起来像 ⑦ 的实现坏了。
+                cancelAnchor()
+            }
+        ),
+
+        // ⑦ 两点式上做"拖拽"**什么都不做**（设计文档 §4.2.2 的三处细节之三）。
+        //
+        // 这条守的是"同一个图形不能既靠拖又靠点"：手势改了之后，旧习惯（拖着画矩形）
+        // 必须**明确失效并给出提示**，而不是静默地什么都不发生——后者用户会以为程序卡了。
+        // ★ 换回矩形在这一步做（下游的 ⑫ 按 `RectShape` 断言），走的是"切图形"那条
+        //   生产路径，它自己会清锚点。
+        Step(
+            "⑦ 两点式上「拖拽」什么都不做（状态栏提示「请点两下」）",
+            listOf(
+                Segment(6, drive = {
+                    fireKind(ShapeKind.RECT)
+                    selfTestSizeBeforeDrag = shapes.get().size
+                    dragFromTo(0.60, 0.06, 0.78, 0.24)
+                }),
+            ),
+            {
+                val ok = selfTestSizeBeforeDrag > 0 && shapes.get().size == selfTestSizeBeforeDrag &&
+                        status.text.contains("请点两下")
+                check(
+                    "⑦ 两点式上拖拽**什么都不做**（shapes 不变、状态栏提示「请点两下」）", ok,
+                    "拖之前 shapes.size=$selfTestSizeBeforeDrag（期望 >0），拖之后 ${shapes.get().size}；" +
+                        "状态栏=「${status.text}」（期望含「请点两下」）"
+                )
+            }
+        ),
+
+        // ⑧ 右键框选全部四个（2026-09-25 起是四个：多了一个 ⑤ 画出来的圆）
+        Step(
+            "⑧ 右键框选全部",
             listOf(
                 Segment(
-                    12, drive = { marqueeFromTo(0.02, 0.04, 0.80, 0.50) },
+                    // ★ 框选矩形**放大到几乎整块画布**（原来是 `0.02,0.04 → 0.80,0.50`）：
+                    //   ⑤ 那个圆在 y≈0.46~0.70，而 `pickRect` 只要有**一个像素**的几何落在
+                    //   矩形里就算命中——旧矩形会**擦着圆的顶边**，于是"选到几个"取决于
+                    //   圆顶那一两个像素压在 0.50 的哪一侧。那种判据在换字体/换窗口尺寸后
+                    //   会变成"本次只框到 3 个"，而画面看起来完全正常。
+                    //   取整块画布，四个图形**无条件**都在里面。
+                    12, drive = { marqueeFromTo(0.02, 0.02, 0.96, 0.96) },
                     // 等的是"读回**落地**了"（状态栏被那次 runLater 改掉），阈值取"不再是
-                    // 上一帧那句话"——**不能**用"选择集等于这三个号"当等待条件，那正好是
+                    // 上一帧那句话"——**不能**用"选择集等于这几个号"当等待条件，那正好是
                     // 本条的断言，会让它恒真。
                     until = { status.text.startsWith("框选到") }
                 )
@@ -1999,9 +2227,9 @@ class JfglDemoApp : Application() {
             {
                 val ids = shapes.get().map { it.pickId }.toSet()
                 val sel = selection.get()
-                val ok = ids.size == 3 && sel == ids
+                val ok = ids.size == 4 && sel == ids
                 check(
-                    "⑤ 框选到全部 ${ids.size} 个（状态栏「框选到 N 个图形」）", ok,
+                    "⑧ 框选到全部 ${ids.size} 个（状态栏「框选到 N 个图形」）", ok,
                     "selection=$sel（期望 $ids），状态栏=「${status.text}」"
                 )
             }
@@ -2016,51 +2244,55 @@ class JfglDemoApp : Application() {
         //   分不开**，这正是"测试会不会骗人"的形态。修法是把它删之前有几个图形、以及
         //   删除那一刻状态栏说了什么**都记下来并断言**——与 ⑦ 设 `armed` 挡的是同一条。
         Step(
-            "⑥ Delete 删除 + 原位置不命中",
+            "⑨ Delete 删除 + 原位置不命中",
             listOf(
-                Segment(3, drive = {
+                Segment(6, drive = {
                     selfTestDeleteBefore = shapes.get().size
                     fireDeleteKey()
                     // 状态栏要在**这一行**读：下一段那次点击会把状态栏改写成"未命中…"。
                     selfTestDeleteStatus = status.text
                 }),
                 Segment(
-                    12, drive = { selfTestMissBefore = pickMissCount; clickAt(0.16, 0.22) },   // 第一个矩形原来的位置
+                    12, drive = { selfTestMissBefore = pickMissCount; clickRight(0.16, 0.22) },   // 第一个矩形原来的位置
                     until = { pickMissCount > selfTestMissBefore }
                 ),
             ),
             {
-                val ok = selfTestDeleteBefore == 3 &&       // 前面五条真的画出了 3 个
-                        selfTestDeleteStatus.startsWith("已删除 3 个图形") &&   // 删除**真的执行了**
+                val ok = selfTestDeleteBefore == 4 &&       // 前面八条真的画出了 4 个（矩形×3 + 圆）
+                        selfTestDeleteStatus.startsWith("已删除 4 个图形") &&   // 删除**真的执行了**
                         shapes.get().isEmpty() && pickMissCount - selfTestMissBefore == 1 &&
                         status.text.startsWith("未命中")
                 check(
-                    "⑥ 合成 Delete 键删掉选中（走 Scene 的按键处理器），原位置不再命中", ok,
-                    "删除前 shapes.size=${selfTestDeleteBefore}（期望 3），删除那一刻状态栏=「$selfTestDeleteStatus」" +
-                        "（期望以「已删除 3 个图形 · 剩 0 个」开头），删后 shapes.size=${shapes.get().size}，" +
+                    "⑨ 合成 Delete 键删掉选中（走 Scene 的按键处理器），原位置不再命中", ok,
+                    "删除前 shapes.size=${selfTestDeleteBefore}（期望 4），删除那一刻状态栏=「$selfTestDeleteStatus」" +
+                        "（期望以「已删除 4 个图形 · 剩 0 个」开头），删后 shapes.size=${shapes.get().size}，" +
                         "未命中回调本次 ${pickMissCount - selfTestMissBefore} 次（累计 $pickMissCount），" +
                         "状态栏（点击后）=「${status.text}」"
                 )
             }
         ),
 
-        // ⑦ ★ LIFO 复用的判别式 —— 见 consumeMarquee 里那个钩子的长注释
+        // ⑩ ★ LIFO 复用的判别式 —— 见 consumeMarquee 里那个钩子的长注释
         Step(
-            "⑦ ★ 框选读回落地前按 Delete → LIFO 回收的号不该被高亮",
+            "⑩ ★ 框选读回落地前按 Delete → LIFO 回收的号不该被高亮",
             listOf(
                 // 先回到填充+描边（上一步为了第 ④ 条切成了只描边，而只描边的**内部点不中**，
                 // 这一步却要先靠一次单击把 D 选上——所以样式必须能填）。
-                // observe 里记下 D 的号：最后那条断言要判的正是"那个被回收的号"。
-                Segment(3, drive = {
+                Segment(6, drive = {
                     styleMenuItems[ShapeStyle.FILL_AND_STROKE]?.fire()
-                    dragFromTo(0.50, 0.50, 0.70, 0.72)
-                }, observe = { selfTestDId = shapes.get().lastOrNull()?.pickId ?: 0 }),
-                // 单击 D 的内部 → 选中集 = {D}。**这一步的落定要等**（拾取往返 2~3 帧），
+                    clickAt(0.50, 0.50)
+                }, until = { !anchorX.isNaN() }),
+                // 第二下：提交 D。observe 里记下 D 的号——最后那条断言要判的正是
+                // "那个被回收的号"，而它只有在 D **真的被画出来之后**才存在
+                //（所以 observe 挂在这一段，不能挂在定锚点那一段）。
+                Segment(6, drive = { clickAt(0.70, 0.72) },
+                    observe = { selfTestDId = shapes.get().lastOrNull()?.pickId ?: 0 }),
+                // **右键**单击 D 的内部 → 选中集 = {D}。**这一步的落定要等**（拾取往返 2~3 帧），
                 // 所以它单独占一段：`until` 等"命中回调交付了"（**不是**等"选中集等于 {D}"，
                 // 那是 observe 里的 `armed`，是这条链的下一个环节），observe 里记下
                 // "选中集真的落在 D 上了"——不然最后那条断言会在"压根没选中"时**恒真**。
                 Segment(
-                    12, drive = { selfTestHitBefore = pickHitCount; clickAt(0.60, 0.61) },
+                    12, drive = { selfTestHitBefore = pickHitCount; clickRight(0.60, 0.61) },
                     until = { pickHitCount > selfTestHitBefore },
                     observe = { selfTestArmed = selection.get() == setOf(selfTestDId) }
                 ),
@@ -2073,7 +2305,8 @@ class JfglDemoApp : Application() {
                     until = { selfTestDeleteHookRuns >= 1 }
                 ),
                 // 再画一个新图形：它会拿到刚刚被回收的那个号
-                Segment(3, drive = { dragFromTo(0.20, 0.60, 0.36, 0.80) }),
+                Segment(6, drive = { clickAt(0.20, 0.60) }, until = { !anchorX.isNaN() }),
+                Segment(6, drive = { clickAt(0.36, 0.80) }),
             ),
             {
                 val e = shapes.get().lastOrNull()
@@ -2086,7 +2319,7 @@ class JfglDemoApp : Application() {
                 val sawD = selfTestDId in selfTestHookHitIds
                 val ok = selfTestArmed && selfTestDeleteHookRuns >= 1 && sawD && recycled && !highlighted
                 check(
-                    "⑦ ★ 框选读回落地前按 Delete：LIFO 回收的号不该被高亮", ok,
+                    "⑩ ★ 框选读回落地前按 Delete：LIFO 回收的号不该被高亮", ok,
                     "钩子执行 $selfTestDeleteHookRuns 次；那一次读回命中的号=${selfTestHookHitIds}" +
                         "（含被删的 $selfTestDId=$sawD）；点中 D=${selfTestArmed}；" +
                         "新图形=${e?.shape?.describe()}（号=${e?.pickId}，复用了那个号=$recycled）；" +
@@ -2095,13 +2328,13 @@ class JfglDemoApp : Application() {
             }
         ),
 
-        // ⑧ 切文本模式，单击落一段字
+        // ⑪ 切文本模式，单击落一段字
         //
         // 这两段**都是同步**的（菜单动作改 `mode`；TEXT 模式下 `onRelease` 直接
         // `commitText`，不走拾取），所以用帧预算而不是 `until`——但预算仍要够一帧：
         // 模式位是 GL 线程在下一帧读的。
         Step(
-            "⑧ 文本模式落字",
+            "⑪ 文本模式落字",
             listOf(
                 Segment(3, drive = { modeMenuItems[Mode.TEXT]?.fire() }),
                 Segment(3, drive = { clickAt(0.12, 0.60) }),
@@ -2111,34 +2344,35 @@ class JfglDemoApp : Application() {
                 val last = s.lastOrNull()?.shape
                 val ok = last is Shape.TextShape && status.text.startsWith("落字：")
                 check(
-                    "⑧ 文本模式：合成 press+release 落下一个 TextShape", ok,
+                    "⑪ 文本模式：合成 press+release 落下一个 TextShape", ok,
                     "shapes.size=${s.size}，最后一个是 ${last?.describe() ?: "无"}" +
                         "（pickId=${s.lastOrNull()?.pickId ?: -1}），状态栏=「${status.text}」"
                 )
             }
         ),
 
-        // ⑨ 切回绘图模式再拖一次：落下的必须是图形而不是文字（模式没串）
+        // ⑫ 切回绘图模式再**点两下**：落下的必须是图形而不是文字（模式没串）
         Step(
-            "⑨ 切回绘图模式",
+            "⑫ 切回绘图模式",
             listOf(
                 Segment(3, drive = { modeMenuItems[Mode.DRAW]?.fire() }),
-                Segment(4, drive = { dragFromTo(0.60, 0.80, 0.76, 0.92) }),
+                Segment(6, drive = { clickAt(0.60, 0.80) }, until = { !anchorX.isNaN() }),
+                Segment(6, drive = { clickAt(0.76, 0.92) }),
             ),
             {
                 val s = shapes.get()
                 val last = s.lastOrNull()?.shape
                 val ok = last is Shape.RectShape && status.text.startsWith("已画：")
                 check(
-                    "⑨ 切回绘图模式：落下的是**图形**不是文字（模式没有串）", ok,
+                    "⑫ 切回绘图模式：落下的是**图形**不是文字（模式没有串）", ok,
                     "shapes.size=${s.size}，最后一个是 ${last?.describe() ?: "无"}，状态栏=「${status.text}」"
                 )
             }
         ),
 
-        // ⑩ 切到图表模式（**合成菜单动作**，不是改 mode 常量）
+        // ⑬ 切到图表模式（**合成菜单动作**，不是改 mode 常量）
         Step(
-            "⑩ 切到图表模式",
+            "⑬ 切到图表模式",
             listOf(
                 Segment(
                     12, drive = {
@@ -2164,7 +2398,7 @@ class JfglDemoApp : Application() {
                 //   **承重的是 `ids == 2`** —— 它同时挡住"没建出来"与"建了不止一次"。）
                 val ok = mode == Mode.CHART && grew >= 2 && ids == 2
                 check(
-                    "⑩ 图表模式：draw 的末尾探针按帧到达 + gc.charts 被创建（两条系列注册了号）", ok,
+                    "⑬ 图表模式：draw 的末尾探针按帧到达 + gc.charts 被创建（两条系列注册了号）", ok,
                     "mode=${mode.label}，末尾探针 +$grew 帧（等待条件要求 ≥2），拾取号 +$ids（期望恰好 2）"
                 )
                 selfTestIdentityKind0 = DemoChart.selfTestLastChartIdentity
@@ -2182,7 +2416,7 @@ class JfglDemoApp : Application() {
         //   后者在变异 B 下永远等不到，那这条失败就会被报成"工序超预算"，
         //   读起来像测试坏了而不是实现坏了。探针则与缓存对不对无关。
         Step(
-            "⑪ ★ 四种图型遍历",
+            "⑭ ★ 四种图型遍历",
             listOf(
                 Segment(12, drive = { chartKindStep(1) }, until = { chartDrawnAfterStep() },
                     observe = { selfTestKindReadings.add(reading()) }),
@@ -2209,7 +2443,7 @@ class JfglDemoApp : Application() {
                     "${DemoChart.KINDS[it.kind].first}:号${it.ids}/身份${it.identity}"
                 } else "只记到 ${r.size} 步"
                 check(
-                    "⑪ ★ 遍历四种图型：每换一种就重建（身份跳变、号 +2），切回旧的复用（号不变、身份回归）", ok,
+                    "⑭ ★ 遍历四种图型：每换一种就重建（身份跳变、号 +2），切回旧的复用（号不变、身份回归）", ok,
                     "$series ；起点（折线）身份=$selfTestIdentityKind0、号=$selfTestSizeAfterKind0；" +
                         "图表系列一共占 $chartIds 个拾取号（上限 8 = 4 图型 × 2 系列）"
                 )
@@ -2217,14 +2451,14 @@ class JfglDemoApp : Application() {
         ),
     )
 
-    /** 第 ⑪ 条的一段：按菜单切成 [index] 号图型。等待条件见 [chartDrawnAfterStep]。 */
+    /** 第 ⑭ 条的一段：按菜单切成 [index] 号图型。等待条件见 [chartDrawnAfterStep]。 */
     private fun chartKindStep(index: Int) {
         selfTestStepKind = index
         fireChartKind(index)
     }
 
     /**
-     * 第 ⑪ 条那一段的等待条件：**某一帧真的用了这一段要的那个图型**。
+     * 第 ⑭ 条那一段的等待条件：**某一帧真的用了这一段要的那个图型**。
      *
      * <p>**不能用"又画了一帧"当判据**（第一版就是这么写的，实测倒了）：菜单在 JavaFX 线程
      * 改 `selectedKind`，而 GL 线程的那一帧**可能已经跑过 `chart()`** ⇒ 紧接着那帧画的
@@ -2235,7 +2469,7 @@ class JfglDemoApp : Application() {
     private fun chartDrawnAfterStep(): Boolean = DemoChart.selfTestLastDrawnKind == selfTestStepKind
 
     /**
-     * 第 ⑪ 条每步读一次：**图型下标读的是生产状态**（`DemoChart.selectedKind`），
+     * 第 ⑭ 条每步读一次：**图型下标读的是生产状态**（`DemoChart.selectedKind`），
      * 不是脚本"想切成哪一个"。
      *
      * <p>这个区别只在失败报告上体现，而那正是这份输出的全部意义：脚本意图与生产状态
