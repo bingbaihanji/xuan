@@ -533,7 +533,7 @@ class JfglDemoApp : Application() {
         gc.fillRect(0f, 0f, w, h)
 
         if (mode == Mode.CHART) {
-            // Task 9 接上
+            DemoChart.draw(gc)
             return
         }
 
