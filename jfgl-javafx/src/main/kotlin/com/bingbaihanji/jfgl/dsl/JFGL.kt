@@ -122,8 +122,11 @@ class JFGL {
      *
      * <h2>默认 0，而且这是承重的</h2>
      * <p>`msaa > 0` 时**像素回读会失效**：多采样帧缓冲上 `glReadPixels` 是**非法操作**
-     * （实测 `GL_INVALID_OPERATION`，读出来全是 0），而本仓库的**七个像素校验器**
+     * （实测 `GL_INVALID_OPERATION`，读出来全是 0），而本仓库**靠画布 FBO 回读的那六个
+     * 像素校验器**（`Pipeline` / `Path` / `Pick` / `Click` / `Text` / `Chart`）
      * 全部靠它回读 ⇒ 它们会报一大堆"画面全黑"式的**假失败**。
+     * 第七个 `FftVerifier` **不在此列**（它不画像素、读的是 SSBO，`msaa>0` 不影响它），
+     * 但它也挂同一道守卫——那是**纪律**（口径统一），不是必要性。
      * 见 [com.bingbaihanji.jfgl.glview.FXGLTransfer.canReadPixels]——那条守卫是这件事的
      * 唯一判据，而它由 `example/MsaaVerifier.kt` 用 `canReadPixels == (glGetError == 0)`
      * 钉着。（**拾取不受影响**，实测 `msaa=4` 下 `pick` / `pickRect` 与 `msaa=0` 逐项相同。）
@@ -291,7 +294,8 @@ class AntialiasConfig {
      * 典型取值 2 / 4 / 8（本机 `GL_MAX_SAMPLES` = 32）。
      *
      * <p>`> 0` 时像素回读失效（见 [FXGLTransfer.canReadPixels]），
-     * 所以默认是 0：本仓库的七个像素校验器全部靠回读。
+     * 所以默认是 0：本仓库**靠画布 FBO 回读的那六个像素校验器**全部靠回读
+     * （第七个 `FftVerifier` 读的是 SSBO，不受影响，但它也挂同一道守卫——纪律，非必要性）。
      */
     var msaa: Int = 0
 }

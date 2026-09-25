@@ -67,12 +67,21 @@ import kotlin.math.min
  *  ② **线心那 3 行的纯色像素数 = 3W**，两种模式**精确相等**（线心没移位、没变淡）
  *  ③ 窗内**纯色总数**：`msaa=0` = **4W**（硬边走像素中心采样，多覆盖行 n−2）、
  *     `msaa>0` = **3W**（行 n−2 退化成 0.75 的过渡行）
- *  ④ 三类像素之和 == 窗内像素数（**没有漏计的像素**——它是前三条的守门员）
+ *  ④ 三类像素之和 == **窗的解析像素数** `W × 7`（7 是独立字面量 `WINDOW_ROWS`）
  * </pre>
  *
  * <p>★ **② 为什么只取线心 3 行、不取"总纯色数"**：开了 MSAA 之后最外那一圈本来就会
  * 从纯色变成过渡色，总纯色数**必然变**——写成"总数相等"是一条**恒假断言**。
  * 与 `PipelineVerifier` 那条一样，线心那 3 行是两种模式的交集，它们相等是**成立**的。
+ *
+ * <p>★ **④ 的职责要说准，它**不是**"前三条的守门员"**（这里原来写错了）：
+ * 分类用的是一个带 `else` 的 `when` ⇒ "每个像素恰好进一个计数器"是**构造保证**，
+ * 于是"三类之和 == 窗内像素数"**对任何像素内容都成立**——实测把整幅快照填成洋红，
+ * ④ 照样 PASS（6237 == 6237），只有 ①②③ 倒（洋红被 `else` 收进"过渡"那一类）。
+ * 它真正能抓的只有一件事：**计数循环扫过的区域与判据的窗不是同一个**。
+ * 所以它的右边必须是**独立字面量**算出来的 `W × WINDOW_ROWS`——写成循环自己的
+ * `(y1 - y0)` 时，循环少扫一行 ⇒ 两边一起少一行 ⇒ **恒真**（`7a3325b` 修的就是这条）。
+ * 一句话：**它的参照系不是被测对象，而是"循环有没有覆盖整窗"**。
  *
  * <p>★ **③ 是"硬边按像素中心采样"的直接推论**，不是看着像就写的：行 n−2 的像素中心
  * （`n−1.5`）落在带内（带起于 `n−1.75`）⇒ 硬边把它画成纯色；行 n+2 的中心（`n+2.5`）
@@ -105,6 +114,30 @@ import kotlin.math.min
 fun msaaVerifierMain() {
     Application.launch(MsaaVerifierApp::class.java)
 }
+
+/**
+ * 请求的采样数所用的**系统属性名**。
+ *
+ * <p>七个像素校验器与 [MsaaVerifierApp] **共用这一个名字、共用下面那份解析**
+ * ——它们各自 `FXGLTransfer(msaa = readRequestedMsaa())`。理由与本文件里那道守卫相同：
+ * 本仓库吃过"**共用属性名 ≠ 共用判定**"的亏（两侧各写一份 `== "1"` / `== "true"`），
+ * 这里连名字都只留一份，就没得抄漏。
+ */
+internal const val MSAA_PROPERTY = "jfgl.probe.msaa"
+
+/**
+ * 读出**请求的采样数**。格式非法或缺席都按 0（关）处理——0 是唯一不会让校验器
+ * 失去读数能力的值。
+ *
+ * <p>★ 它存在的意义：让"**明确拒绝**"真的承重。**没有它时那道守卫是死代码**——
+ * 七个入口全写 `FXGLTransfer()`（`msaa` 恒为默认 0），于是文档里"用 `msaa=0` 跑"
+ * 之外根本没有第二条路可走，守卫**只在有人改源码时才会触发**（实测过：
+ * 给 `PipelineVerifier` 传 `-Djfgl.probe.msaa=4` 当时**不会有任何拒绝**）。
+ * 现在 `-Djfgl.probe.msaa=4` 会让七个校验器**在 `start()` 里明确拒绝并以 1 退出**。
+ *
+ * @return 系统属性 [MSAA_PROPERTY] 的值；非法或缺席时为 0
+ */
+internal fun readRequestedMsaa(): Int = System.getProperty(MSAA_PROPERTY, "0").toIntOrNull() ?: 0
 
 /**
  * **回读拒绝守卫**：七个像素校验器（`PipelineVerifier` / `PathVerifier` / `PickVerifier` /
@@ -166,7 +199,7 @@ private const val WINDOW_DY1 = 4
  * <p>⚠️ **它必须是一个独立的字面量，不能就地写成 `WINDOW_DY1 - WINDOW_DY0`。**
  * 实测过：那样写时，把上面两个常量一起改成 `4 / 4`（= 空窗）会让**两边同时变成 0**，
  * 于是"窗非空"这条先决条件**恒真**——报的是 `[PASS] … 行数 == 0`，而它存在的
- * 全部理由就是抓这个（空窗下判据 ① 与 ④ 会退化成 `0 == 0`）。
+ * 全部理由就是抓这个（空窗下判据 ① 会退化成 `0 == 0`，②③ 倒）。
  * **期望值不许由被测的那两个常量自己算出来**，否则变异一改就是两边一起改。
  */
 private const val WINDOW_ROWS = 7
@@ -188,8 +221,8 @@ class MsaaVerifierApp : Application() {
     /** 全部失败项。**跨线程累积**（GL 线程那一段与 JavaFX 线程的快照那一段各往同一份里记）。 */
     private val failures = ArrayList<String>()
 
-    /** 要测的采样数。**只在这里读一次**，构造 `FXGLTransfer` 时用掉。 */
-    private val requestedMsaa: Int = System.getProperty("jfgl.probe.msaa", "0").toIntOrNull() ?: 0
+    /** 要测的采样数。**只在这里读一次**，构造 `FXGLTransfer` 时用掉（解析与七个校验器共用）。 */
+    private val requestedMsaa: Int = readRequestedMsaa()
 
     override fun start(stage: Stage) {
         val bridge = FXGLTransfer(msaa = requestedMsaa)
@@ -453,7 +486,13 @@ class MsaaVerifierApp : Application() {
         var white = 0
         var bg = 0
         var coreWhite = 0
+        // ★ 计数循环**真的**扫了几行。它与窗声明的 `y1 - y0` 不是同一个量：
+        //   循环边界被改动时（④ 唯一能抓的那件事），两行不一样，而失败信息里如果
+        //   印的是窗声明值就会**指着错的方向**（实测：循环少扫一行时，按 `y1 - y0` 印出来
+        //   的仍是 7，而真正扫过的是 6）。
+        var scannedRows = 0
         for (y in y0 until y1) {
+            scannedRows++
             val isCore = y >= yBase - 1 && y <= yBase + 1
             var rowWhite = 0
             var rowFringe = 0
@@ -507,11 +546,17 @@ class MsaaVerifierApp : Application() {
             white == expWhite,
             "实测 $white，期望 $expWhite（纯白 $white + 背景 $bg + 过渡 $fringe）"
         )
-        // ④ 守门员：三类像素之和必须等于窗内像素数——少了它就可能是"漏计了某一类"。
+        // ④ 它管的是**计数循环的边界与判据的窗是不是同一个窗**（不是"漏计了某一类"——
+        //    那个由分类的 `else` 分支构造保证，见 KDoc 的说明）。
+        // ★ 右边的期望值必须由**独立字面量**算出（`WINDOW_ROWS`），**不能写 `(y1 - y0)`**：
+        //   写成循环自己的边界时，循环一旦少扫一行，两边一起少一行 ⇒ 恒真（实测过的原版）。
+        val expWindowPixels = winW * WINDOW_ROWS
         report(
-            "★ MSAA④ 三类像素之和 == 窗内像素数（没有漏计的像素）",
-            white + bg + fringe == winW * (y1 - y0),
-            "纯白 $white + 背景 $bg + 过渡 $fringe = ${white + bg + fringe}，窗内 ${winW * (y1 - y0)}"
+            "★ MSAA④ 三类像素之和 == 窗的解析像素数（W × $WINDOW_ROWS）",
+            white + bg + fringe == expWindowPixels,
+            "纯白 $white + 背景 $bg + 过渡 $fringe = ${white + bg + fringe}，期望 $expWindowPixels" +
+                "（= W $winW × 行数 $WINDOW_ROWS；窗声明 ${y1 - y0} 行，" +
+                "计数循环实际扫过 $scannedRows 行）"
         )
 
         // 机器可读读数：跨进程那两条（fringe 变大、core 不变）由 msaa-verify.sh 解析它来判。

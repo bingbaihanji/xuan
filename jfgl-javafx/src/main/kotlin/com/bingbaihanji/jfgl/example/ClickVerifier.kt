@@ -384,7 +384,9 @@ class ClickVerifierApp : Application() {
     // ------------------------------------------------------------------
 
     override fun start(stage: Stage) {
-        val bridge = FXGLTransfer()
+        // 采样数走**同一个系统属性**（`-Djfgl.probe.msaa`，解析与 MsaaVerifier 共用）：
+        // 没有这一行时下面那道守卫是**死代码**——msaa 恒为默认 0，"明确拒绝"只在改源码时才可能触发。
+        val bridge = FXGLTransfer(msaa = readRequestedMsaa())
 
         // ★ 回读拒绝守卫（实现见 MsaaVerifier.kt 的 requirePixelReadback）：本校验器的读数
         //   全部来自 glReadPixels，而多采样画布上那次调用是**非法操作**——它会读回全 0，
@@ -771,6 +773,16 @@ class ClickVerifierApp : Application() {
         if (rendered - robotDispatchFrame > 20) {
             // 结果没来：**判失败**（不是"再等等"）。原因可能是窗口没抢到焦点，
             // 也可能是这一下真的没送到——两种情况都该被人看见。
+            //
+            // ★ **必须与上面那条正常路径一样把 robotProbe 清掉**（这行是 `7a3325b` 的
+            //   范围外顺手修）。不清的后果不是"多一条失败"，而是**一次落空污染七条与它
+            //   无关的断言**：`onMouseEvent` 取的是 `robotProbe ?: firing`，探针不清就
+            //   一直被它抢着 ⇒ 后面两阶段合成的 24 条点击全被打上 `ROBOT` 标签 ⇒
+            //   那两阶段在自己的标签下看到 0 条 ⇒ 各等满帧后各报一堆 FAIL。
+            //   实测（故意把 Robot 点击短路、造出"落空"）：修前 8 条 FAIL（1 条真 + 7 条被污染），
+            //   修后 **1 条 FAIL**（只剩那一条真的），两阶段的断言照常全过。
+            //   **失败信息可读是这些校验器存在的一半理由**，一次落空染红一片正是它最坏的形态。
+            robotProbe = null
             robotDone = true
         }
     }

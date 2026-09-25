@@ -190,9 +190,12 @@ jfgl-render-gl/src/test/.../gpu/        FftWindowTest、FftKernelTest
 ```
 
 （`...` 是 `java/com/bingbaihanji/jfgl`。`jfgl-javafx` 没有 surefire 测试——它的
-`example/` 里那**八个**校验器是**手动跑的 main**，不是单测：七个像素校验器
-（`Pipeline` / `Path` / `Pick` / `Click` / `Text` / `Chart` / `Fft`）加一个 `MsaaVerifier`
-（**要跑两次**，由 `jfgl-javafx/scripts/msaa-verify.sh` 比对）。）
+`example/` 里那**八个**校验器是**手动跑的 main**，不是单测：
+**六个像素校验器**（`Pipeline` / `Path` / `Pick` / `Click` / `Text` / `Chart`
+——靠 `glReadPixels` 从**画布 FBO** 回读）
++ `FftVerifier`（**不画任何东西**，读的是 SSBO，不是像素校验器）
++ `MsaaVerifier`（**要跑两次**，由 `jfgl-javafx/scripts/msaa-verify.sh` 比对）。
+后两者的处境与那六个的区别见「抗锯齿」一节。）
 
 当前 **385 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
 `@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`（跨模块加 `-pl 模块名`）。
@@ -697,6 +700,12 @@ gc.endFrame()
   没有这个场景）。与 Task 3 记的是同一条。
 - **`ChartRenderer` 的 3 参构造无任何调用点** ⇒ "不注入 `antialias` 时恒按 AA 关画"
   这条**没有断言盖着**。
+- **DSL 的 `jfgl { antialias { msaa = N } }` 没有端到端证据**：接线读码正确
+  （`JFGL.antialiasConfig.msaa` → `JFGLApplication.start` 里那次 `FXGLTransfer(...)`，
+  它是**唯一**经 DSL 构造桥接对象的入口），但**没有任何校验器或 demo 走这条路径**
+  （七个校验器与 `MsaaVerifier` 都直接 `new FXGLTransfer(...)`）。
+  ⇒ "DSL 里设的 msaa 真的会生效"是**已声明、未验证**——要验它得写一个
+  `jfgl { antialias { msaa = 4 } }` 的探针应用（或让 demo 支持该配置）。
 - ⚠️ **上面这批实测都在本机（NVIDIA 4.6）**：MSAA 的样本位置、`fwidth` 的行为都是
   **驱动/硬件相关**的量，换机器要把那几条"精确相等"的期望重新量一遍。
 
@@ -895,8 +904,16 @@ gc.endFrame()
    （`msaa=4` 的过渡像素 **1782 > `msaa=0` 的 0**、线心纯色数 **2673 == 2673**）。
    ⚠️ **它的快照必须按设备缩放取**（`SnapshotParameters` 给 `Scale(deviceScale)`）：
    不这么做的话快照是**逻辑尺寸**（892×692），对设备分辨率的纹理做**重采样**，
-   而**重采样自己会产生中间值**——实测那一版的整幅图有 **36 种 RGB 值**（正确版是 3 种），
-   判据分不清"过渡像素"是 MSAA 的还是重采样的。
+   而**重采样自己会产生中间值**——实测那一版的整幅图有 **36 种 RGB 值**，
+   而正确版是 **`msaa=0` 3 种**（纯色三样）、**`msaa=4` 6 种**（多出 0.25/0.5/0.75 三个
+   四分档的中间值）⇒ 判据分不清"过渡像素"是 MSAA 的还是重采样的
+   （⚠️ "3 种"**只在 `msaa=0` 那次成立**，写成无条件就是把两次读数混成了一句）。
+
+   ★ 七个校验器的采样数都从**同一个系统属性** `-Djfgl.probe.msaa` 读（解析与
+   `MsaaVerifier` **共用一份**，见 `example/MsaaVerifier.kt` 的 `readRequestedMsaa`）
+   ⇒ **`-Djfgl.probe.msaa=4` 会让它们在那道守卫上明确拒绝并以 1 退出**。
+   这一条是刻意的：在那之前七个入口全写 `FXGLTransfer()`，`msaa` 恒为默认 0，
+   于是"明确拒绝"**只在有人改源码时才可能触发**——守卫是**死代码**。
 
    改 **FFT / 频谱的数据来源**后跑 `FftVerifier`（退出码 0/1）。
    它**不画任何东西**——要的是 GL 上下文，不是像素：

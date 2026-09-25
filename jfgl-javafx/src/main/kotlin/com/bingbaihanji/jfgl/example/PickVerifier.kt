@@ -143,7 +143,9 @@ class PickVerifierApp : Application() {
     private val clipX = 400; private val clipY = 250; private val clipW = 100; private val clipH = 100
 
     override fun start(stage: Stage) {
-        val bridge = FXGLTransfer()
+        // 采样数走**同一个系统属性**（`-Djfgl.probe.msaa`，解析与 MsaaVerifier 共用）：
+        // 没有这一行时下面那道守卫是**死代码**——msaa 恒为默认 0，"明确拒绝"只在改源码时才可能触发。
+        val bridge = FXGLTransfer(msaa = readRequestedMsaa())
         // ★ 回读拒绝守卫（实现见 MsaaVerifier.kt 的 requirePixelReadback）：本校验器的读数
         //   全部来自 glReadPixels，而多采样画布上那次调用是**非法操作**——它会读回全 0，
         //   然后让下面每一条断言报"画面全黑"式的假失败。
