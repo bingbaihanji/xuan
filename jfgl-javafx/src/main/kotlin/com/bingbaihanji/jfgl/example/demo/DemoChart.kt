@@ -44,6 +44,19 @@ private const val FRAME_MARGIN = 40f
 private const val COLOR_SALES = 0xFF4FC3F7.toInt()
 private const val COLOR_COST = 0xFFFF8A65.toInt()
 
+/**
+ * 本进程是否处于合成事件自检模式（`-Djfgl.demo.selftest=1`）。
+ *
+ * <p>**与 `JfglDemo.kt` 里那个开关是同一个属性名**（[SELFTEST_PROPERTY] 就在那个文件里，
+ * 两处引用同一个常量，不会各写一份字符串）。分成两个 `val` 是刻意的：这里只用来挡住
+ * 下面那两个观测计数器，与 demo 那个开关的其余语义无关。
+ *
+ * <p>挡住而不是无条件自增，是因为那两个计数器**是纯观测**——它们不该让生产路径
+ * 每帧多两次 volatile 写（图型每帧都在画，那是一个真的热路径）。开关关掉之后
+ * `SELFTEST` 是个静态 final 布尔，JIT 会把整个分支消掉。
+ */
+private val SELFTEST: Boolean = System.getProperty(SELFTEST_PROPERTY) == "1"
+
 /** 12 个月。 */
 private val MONTHS = arrayOf(
     "1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"
@@ -78,6 +91,37 @@ internal object DemoChart {
     /** 当前选中的图型下标（菜单在 JavaFX 线程写，绘制在 GL 线程读）。 */
     @Volatile
     var selectedKind: Int = 0
+
+    /**
+     * ★ **只读观测入口**（合成事件自检第 10、11 条用）：[draw] **跑到末尾**的帧数。
+     *
+     * <p>为什么需要它：本项目 GL 线程上的异常是**静默吞掉**的，所以"图表画出来了"
+     * 这句话在画面上和"图表抛异常后被吞掉"长得一模一样。这个计数器放在 [draw] 的
+     * **最后一行**，于是它按帧增长就是"整条绘制路径跑到了末尾"的唯一直接证据
+     * （它跑过的最后一段里包含了 `gc.charts.drawChart` —— 图型渲染器、实例属性、
+     * 拾取号都在那一段里）。
+     *
+     * <p>**只在自检模式下自增**（见 [SELFTEST]）：生产路径一次都不写它。
+     * **它不改变任何绘制行为**——没有一处绘制逻辑读它。
+     */
+    @Volatile
+    var drawnFrames: Int = 0
+        private set
+
+    /**
+     * ★ **只读观测入口**：最近一帧用的那个 [Chart] 的 `identityHashCode`（0 = 还没画过）。
+     *
+     * <p>自检第 11 条拿它当"**真的重建了 `Chart`**"的判据：`ChartRenderer` 按
+     * **`Series` 对象身份**缓存 GPU 缓冲与拾取号，所以"切了图型却仍是同一个 `Chart` 实例"
+     * 就等于"切图型毫无反应"——那是画面完全正常的一类静默失效。
+     * 身份**变了**才说明重建真的发生了；反过来，切回一个已经建过的图型时身份必须
+     * **回到原来那个**（[cachedCharts] 那张表生效），否则每绕一圈就漏两块 GPU 缓冲。
+     *
+     * <p>同样只在自检模式下写（见 [SELFTEST]）。**它不影响绘制**。
+     */
+    @Volatile
+    var lastChartIdentity: Int = 0
+        private set
 
     /**
      * 已建好的图表，**按图型下标各留一份**。
@@ -190,6 +234,9 @@ internal object DemoChart {
         val frame = Rect(FRAME_MARGIN, FRAME_MARGIN, gc.width - 2f * FRAME_MARGIN, gc.height - 2f * FRAME_MARGIN)
 
         val chart = chart()          // ★ 取缓存的，**不是** build()——见 cachedChart 的说明
+        // ★ 只读观测：本帧用的是哪个 Chart 实例（自检第 11 条的身份判据）。
+        //   写在 `chart()` 之后：它回答的是"这一帧画的是谁"，而不是"缓存里有什么"。
+        if (SELFTEST) lastChartIdentity = System.identityHashCode(chart)
         val metrics = GcTextMetrics(gc)
         val layout = ChartLayout.compute(chart, frame, metrics)
         val plot = layout.plotRect()
@@ -273,6 +320,12 @@ internal object DemoChart {
             gc.drawText(t.label(), sx - w / 2f, plot.y + plot.height + TICK_FONT * 1.3f)
         }
         gc.restore()
+
+        // ★★ **末尾探针**（自检模式下才写，见 [drawnFrames]）：这行是"整条绘制路径
+        //    跑到了末尾"的唯一直接证据——本项目 GL 线程上的异常是静默吞掉的，
+        //    少画了东西和抛了异常在画面上长得一样。**它必须在最后一行**：
+        //    放到中间（比如 `drawChart` 之前）就证明不了后面的刻度文字那段跑过。
+        if (SELFTEST) drawnFrames++
     }
 }
 
