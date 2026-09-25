@@ -114,6 +114,15 @@ class JfglDemoApp : Application() {
     private var fontSize = FONT_SIZES[1]
 
     /**
+     * 落字序号，用来按序轮换 [TEXT_SAMPLES]。**只在 JavaFX 线程读写，所以不需要 `@Volatile`。**
+     *
+     * <p>它的唯一读点是 [commitText]，而那是在 JavaFX 线程上被调用的。它**不会**进 GL 线程
+     * ——真正交给 GL 线程的是已经装好的 [Shape.TextShape] 快照（`text` 已经定死），
+     * 序号本身与绘制无关。
+     */
+    private var textSeq = 0
+
+    /**
      * 三个"当前模式是什么"的 JavaFX 属性，**只为菜单的启用/禁用服务**。
      *
      * <p>为什么不直接绑到 [mode] 那个 `@Volatile` 字段：JavaFX 的 `bind` 要的是
@@ -388,12 +397,20 @@ class JfglDemoApp : Application() {
                     resetDragState()
                 }
             }
-            // 文本模式**在 Task 8 接上**：`commitText` 与 `Shape.TextShape` 都是那边的交付物。
-            // 这里先什么都不做——**不放假占位**（占位会让"这个分支有没有实现"无从判断）。
-            // ⚠️ Task 8 把它改成调用 `commitText` 时，**别忘了在末尾也 `resetDragState()`**：
-            //    `onPress` 的 TEXT 分支是 `Unit`（不记起点），所以文本模式下
-            //    `dragStartX` 只可能来自更早的一次 DRAW 拖拽——那正是上面 ③ 说的残留。
-            Mode.TEXT -> Unit
+            // 文本：**在抬起时落字**（`onPress` 的 TEXT 分支是 `Unit`，不记起点），
+            // 所以这里用 `moved` 把"单击落字"与"拖着划了一下什么都没有"分开。
+            //
+            // ★ 这条分支只清 `dragStartX`，**不是** [resetDragState]。两处都写清楚了：
+            //   ① `moved` 在 `dragStartX` 为 NaN 时**恒为 0.0**（见上面的 `moved` 计算），
+            //      所以 `moved >= CLICK_SLOP` 只可能出现在"起点是残留的"那种情形——
+            //      而这里清掉那个残留就够了；
+            //   ② TEXT 模式下 `trajectory` 与 `marqueeW` 都不参与画面：预览框由
+            //      [drawDragPreview] 画，而它在非 DRAW 模式**直接返回**。
+            //   （Task 4 留下的那句"别忘了在末尾也 resetDragState()"是当时 `commitText`
+            //     还不存在时的占位提醒；计划 Task 8 给的是这个更窄的写法，理由如上。）
+            Mode.TEXT -> {
+                if (moved < CLICK_SLOP) commitText(dx, dy) else dragStartX = Float.NaN
+            }
             Mode.CHART -> Unit
         }
     }
@@ -459,6 +476,16 @@ class JfglDemoApp : Application() {
         val id = transfer?.gc()?.pickRegistry?.register(s) ?: 0
         shapes.set(shapes.get() + Placed(s, id))
         status.text = "已画：${s.describe()} · 共 ${shapes.get().size} 个"
+    }
+
+    /** 落一段文字。**在 JavaFX 线程上被调用**（从 onRelease）。 */
+    private fun commitText(x: Float, y: Float) {
+        val sample = TEXT_SAMPLES[textSeq % TEXT_SAMPLES.size]
+        textSeq++
+        shapes.set(shapes.get() + Placed(
+            Shape.TextShape(sample, x, y, fontSize, color), 0   // 文本不参与拾取（Task 8 不做文本拾取）
+        ))
+        status.text = "落字：「$sample」${fontSize.toInt()}px，笔位 ($x,$y)，基线 y=$y"
     }
 
     /**

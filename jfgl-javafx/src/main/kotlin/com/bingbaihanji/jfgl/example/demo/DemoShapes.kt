@@ -4,6 +4,14 @@ import com.bingbaihanji.jfgl.renderer.Gc
 import com.bingbaihanji.jfgl.util.Rect
 import kotlin.math.abs
 
+/**
+ * 笔位十字的颜色（橙）。
+ *
+ * <p>**与选中高亮刻意不同色**（后者是 `JfglDemo.kt` 里的黄）——同一个画面上可能同时有
+ * "选中框"与"笔位标记"，同色就分不出哪个是哪个了。
+ */
+internal const val HIGHLIGHT_CROSS = 0xFFFF6D00.toInt()
+
 /** 新画图形的描边方式。 */
 enum class ShapeStyle { FILL, STROKE, FILL_AND_STROKE }
 
@@ -174,6 +182,47 @@ sealed interface Shape {
         override fun bounds() = boundsOf(points)
         override fun describe() = "贝塞尔曲线 ${points.size / 2} 控制点"
     }
+
+    /**
+     * 一段文本。**`(x, y)` 是基线起点，不是文本框左上角**——这是 [Gc.drawText] 的约定，
+     * 也是全项目最容易被调用方猜错的一条。
+     *
+     * <p>[draw] 除了文字还画一个**十字准星**标在笔位上：猜错基线的表现是"文字位置偏了一点"，
+     * 肉眼分不出是约定错了还是布局错了；把笔位画出来，就不可能隐形。
+     */
+    data class TextShape(
+        val text: String, val x: Float, val y: Float, val size: Float, override val color: Int
+    ) : Shape {
+        override val style = ShapeStyle.FILL
+        override val lineWidth = 1f
+
+        override fun draw(gc: Gc) {
+            gc.save()
+            gc.fontSize = size
+            gc.fill = color
+            gc.drawText(text, x, y)
+            // 笔位十字：横竖各 8px
+            gc.stroke = HIGHLIGHT_CROSS
+            gc.lineWidth = 1f
+            gc.drawLine(x - 8f, y, x + 8f, y)
+            gc.drawLine(x, y - 8f, x, y + 8f)
+            gc.restore()
+        }
+
+        /**
+         * 文本的外接框（设备像素）。
+         *
+         * <p><strong>宽度是按**字符数**估的，不是量出来的</strong>（`size × min(字符数, 8)`）——
+         * CJK 约 1 em/字、拉丁约 0.5 em/字，所以这个框**不会贴着文字**。
+         * 它是给选中高亮用的近似值，够用即可；真要精确就用 `gc.measureText`，
+         * 但那要求在这里持有 `Gc`，而 `Shape` 是纯模型——不值当。
+         *
+         * <p>上下取 `size × 1.3`：基线之下留出降部（`g`/`y` 的尾巴）。
+         * **尺寸项恒非负**（`size > 0`），满足 `Shape.bounds()` 的"尺寸非负"约定。
+         */
+        override fun bounds() = Rect(x, y - size, size * text.length.coerceAtMost(8), size * 1.3f)
+        override fun describe() = "文本「$text」 ${size.toInt()}px @(${x.toInt()},${y.toInt()})"
+    }
 }
 
 /**
@@ -225,7 +274,7 @@ private inline fun strokeWith(gc: Gc, color: Int, lineWidth: Float, body: () -> 
  * <p>**约定**：`points` 是 `[x0,y0, x1,y1, ...]`，**长度为偶数**。长度为奇数时
  * **末尾那个孤立的 float 会被丢掉**——这与 [Shape.BezierShape.draw] 的行为**不一致**
  * （它的 `lineTo(points[size-2], points[size-1])` 会把那个 float 当作 y 读）。
- * 正常路径到不了这里（`ShapeMath` 产出的都是偶数长度），但知道这个不一致比不知道好。
+ * 正常路径产不出奇数长度——**偶数长度由调用方保证**（`JfglDemo` 每个鼠标事件追加 2 个 float）。
  *
  * @return `points.size < 2`（不到一个点）时返回零矩形，由调用方自己判
  */
