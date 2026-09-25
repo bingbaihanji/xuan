@@ -16,9 +16,18 @@ import kotlin.math.hypot
  * 不是"某个被选中的东西"。与选中高亮共用同一个前缀，会让"这两个黄是不是同一个黄"
  * 重新变成"要读注释才知道"的问题——而那正是上面那句话想避免的。
  *
- * <p>`private` 够用：全仓只有 [Shape.TextShape.draw] 一处用它。
+ * <p><strong>2026-09-25 起它是 `internal`，有两处在用</strong>：
+ * ① [Shape.TextShape.draw] 的笔位十字；② `JfglDemo.drawDragPreview` 的**锚点十字**
+ * （两点式"已定第一点"那个标记）。**两处用同一个色是刻意的**——它们都是
+ * "笔位/锚点"这一类**位置标记**，与"某个被选中的东西"要区分开，
+ * 所以共用这一个橙而不是各自发明一个。
+ *
+ * <p>（早先它是 `private`、KDoc 里写着"全仓只有 `Shape.TextShape.draw` 一处用它"。
+ * 那次改动记在提交信息里：`JfglDemo` 原来**另立了一个同值常量** `PREVIEW_CROSS`
+ * 绕开可见性，两处各持一份颜色值——"改一处忘了另一处"是没有任何症状的那类错，
+ * 所以改成了现在这样。）
  */
-private const val PEN_CROSS = 0xFFFF6D00.toInt()
+internal const val PEN_CROSS = 0xFFFF6D00.toInt()
 
 /** 新画图形的描边方式。 */
 enum class ShapeStyle { FILL, STROKE, FILL_AND_STROKE }

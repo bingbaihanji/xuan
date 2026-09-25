@@ -142,19 +142,6 @@ private const val PREVIEW_DASH_OFF = 4f
 /** 预览曲线（圆/椭圆）的折线段数。固定值——预览不追求与 `Gc` 的细分规则一致。 */
 private const val PREVIEW_CURVE_SEGMENTS = 48
 
-/**
- * 锚点十字的颜色（橙，`0xFFFF6D00`）。
- *
- * <p>★ **它与 `DemoShapes.kt` 里那个 `PEN_CROSS` 是同一个颜色值，却是两处各持一份**
- * ——那边那个是**文件级 `private`**（KDoc 里写着"全仓只有 `Shape.TextShape.draw` 一处用它"），
- * 本文件取不到它，而本任务**不改 `DemoShapes.kt`**。
- *
- * <p>**这个重复是已知的、被记下来的**：改颜色时两处都要改，否则"同一支笔的两个十字"
- * 会慢慢变成两个颜色，而**画面上没有任何东西会报错**。真要合掉它，得把
- * `DemoShapes.PEN_CROSS` 改成 `internal`（一个词的改动，属于另一个任务）。
- */
-private const val PREVIEW_CROSS = 0xFFFF6D00.toInt()
-
 /** 八色预设色板。 */
 private val PALETTE = intArrayOf(
     0xFFE53935.toInt(), 0xFFFB8C00.toInt(), 0xFFFDD835.toInt(), 0xFF43A047.toInt(),
@@ -379,10 +366,11 @@ class JfglDemoApp : Application() {
      * 那会让"第二次点击提交之后紧接着的那次抬起"又被当成"第一点"——
      * 因为提交时 `dragStartX` 被清成 NaN、抬起时 `moved` 就是 0。
      *
-     * <p>只有四条路径能清它：**提交**、`Esc`、**切模式**、**切图形**（后三条走 [resetDragState]）。
-     * ★ 但**清它的代码只有 [resetDragState] 一处**，而那条函数还被另外几处调用
-     * （右键释放、两点式上的拖拽释放、文本模式的释放）——那些**也会顺带清掉锚点**，
-     * 见 [resetDragState] 的说明。
+     * <p>只有四条路径能清它：**提交**、`Esc`、**切模式**、**切图形**——四条**全部**
+     * 走 [cancelAnchor]，而那个函数的调用点**恰好也只有这四处**。
+     * （这条曾经**不成立**：清锚点一度寄居在 [resetDragState] 里，而那条函数还被
+     * 右键释放、两点式上的拖拽释放、文本释放调用，于是那三个手势会**顺带把
+     * 用户手里的第一点丢掉**。拆开之后"四条"才是字面成立的。）
      */
     @Volatile private var anchorX = Float.NaN
     @Volatile private var anchorY = Float.NaN
@@ -502,8 +490,10 @@ class JfglDemoApp : Application() {
         stage.scene = Scene(mainView.createMainView(), SCENE_W, SCENE_H)
         stage.scene.setOnKeyPressed { e ->
             if (e.code == KeyCode.ESCAPE) {
-                // 取消"已定第一点"。**走 resetDragState**——它是四条取消路径的唯一落点。
+                // 取消"已定第一点"——这是 [cancelAnchor] 四条语义路径里的一条。
+                // 顺带清掉进行中的这次交互（[resetDragState]），两条各清各的。
                 resetDragState()
+                cancelAnchor()
                 status.text = "已取消"
                 return@setOnKeyPressed
             }
@@ -630,16 +620,14 @@ class JfglDemoApp : Application() {
     }
 
     /**
-     * 清掉"有一次交互正在进行"的全部状态：拖拽起点、轨迹、以及框选的有效性标志。
+     * 清**这一次交互**的临时状态：按下起点、轨迹、框选。
      *
-     * <p><strong>2026-09-25 起它还清"已定第一点"的锚点</strong>：两点式图形改成"点两下"之后
-     * 多了一个跨点击的状态，而它**只有这一条清理路径**（四条调用点都在这儿）。
-     *
-     * <p>★ **"四条"是语义上的四条**（提交 / `Esc` / 切模式 / 切图形），**不是调用点的条数**：
-     * 本方法的调用点比四条多（右键释放、两点式上的拖拽释放、文本模式的释放也都走它），
-     * 于是那几个手势**也会顺带清掉锚点**——这是"清锚点只有一处"的代价，<b>如实记在这里</b>：
-     * 在一个两点式图形"已定第一点"时右键点一下（那是"拾取选中"），
-     * 手里的第一点会被一起丢掉。要分开得让锚点有自己的清理函数，那是另一件事。
+     * <p><strong>它不动"已定第一点"的锚点</strong>——那是一个**跨点击**的状态，
+     * 而本函数会被右键释放（拾取）、两点式上的拖拽释放、文本释放这些
+     * **与锚点无关**的路径调用。曾经把它们混在一起，后果是
+     * "定完第一点、右键点一下去选别的图形 ⇒ **第一点被悄悄丢掉**，状态栏不说"。
+     * 锚点现在有自己的清理入口 [cancelAnchor]，两者**互不越界**：
+     * "清锚点的路径"就是那四条语义路径，一条不多。
      *
      * <p>**必须在每一处"这次交互结束了"调用**（至少下面这三处），否则不变式
      * "`dragStartX` 非 NaN ⟺ 真的有一次 DRAW 拖拽在进行"不被任何东西维护：
@@ -678,8 +666,22 @@ class JfglDemoApp : Application() {
         dragStartY = Float.NaN
         trajectory = FloatArray(0)
         marqueeW = Float.NaN
-        // ★ 锚点也必须清——"切模式会留下脏状态 ⇒ 凭空画一个用户没拖过的图形"那条
-        //   教训的另一半：换了图形种类还在等第二点，用户一点就会画出一个他没想要的东西。
+    }
+
+    /**
+     * 取消**"已定第一点"**。**只在四个语义路径上调用**：提交之后、`Esc`、
+     * 切模式、切图形。这四条是**全部**——别的路径不该动它。
+     *
+     * <p><strong>为什么必须与 [resetDragState] 分开</strong>：锚点是**跨点击**活着的状态，
+     * 而"这次交互结束了"有三条路径与它无关（右键释放＝拾取/框选、两点式上的拖拽释放、
+     * 文本释放）。混在一起时，那些手势会**顺带把用户手里的第一点丢掉**，
+     * 而状态栏一个字都不说——正是本仓库最防的那类"看起来正常、其实没这回事"。
+     *
+     * <p>★ **"四条"现在是字面成立的**（不是"语义上四条、调用点多于四条"）：
+     * `grep` 本方法的调用点只有下面四处，且每处都是真的在"取消第一点"。
+     * 加第五处之前，请先回答"这个手势凭什么取消用户已经定下的第一点"。
+     */
+    private fun cancelAnchor() {
         anchorX = Float.NaN
         anchorY = Float.NaN
     }
@@ -717,10 +719,11 @@ class JfglDemoApp : Application() {
                 // 右键释放也照走这条分支（它只判 NaN）。见 [resetDragState] 的说明：
                 // 顺带取消掉可能在进行的主键拖拽。
                 //
-                // ⚠️ **它顺带清掉"已定第一点"的锚点**（右键这一下既没提交也没取消两点式，
-                //   却会把用户手里的第一点丢掉）。这是"清锚点只有 [resetDragState] 一处"
-                //   的已知代价，如实记在 [resetDragState] 的 KDoc 里——
-                //   **不是** 设计文档说的"只有四条路径"：那四条是**语义**上的四条。
+                // ★ **它不清"已定第一点"的锚点**（2026-09-25 拆分后如此）：右键这一下
+                //   是"拾取选中"或"框选"，两者都与两点式的第一点无关——
+                //   混在一起时，用户定完第一点、右键点一下去选别的图形，
+                //   **手里的第一点会被悄悄丢掉而状态栏不说**。这条正是 [cancelAnchor]
+                //   与 [resetDragState] 分开的理由，见那两个函数的 KDoc。
                 resetDragState()
             }
             return
@@ -743,9 +746,11 @@ class JfglDemoApp : Application() {
                     // 两点式的一次"点击"：没有锚点就定锚点，有锚点就提交。
                     // **判据是 anchorX 是不是 NaN**——不是 dragStartX（按下刚覆盖过它）。
                     if (anchorX.isNaN()) {
-                        // ★ 顺序不能反：先 resetDragState()（清掉这次按下留下的
-                        //   dragStartX / trajectory），**再**把锚点设上。
-                        //   反过来说就是"清掉刚设的锚点"，而那看起来只是"第一点没记住"。
+                        // 先清掉这次按下留下的 dragStartX / trajectory，再把锚点设上。
+                        // ★ **顺序现在已无所谓**（[resetDragState] 不再碰锚点，见 [cancelAnchor]），
+                        //   保持这个写法只是因为它读起来就是意图。这条注记留着是为了说明
+                        //   这里**曾经**有一条顺序要求（那时混在一起，"先设锚点"会被清掉，
+                        //   而症状看起来只是"第一点没记住"）。
                         val ax = dx
                         val ay = dy
                         resetDragState()
@@ -757,6 +762,7 @@ class JfglDemoApp : Application() {
                         val before = shapes.get().size
                         commitTwoPointShape(dx, dy)
                         resetDragState()
+                        cancelAnchor()      // ★ 提交 = 四条语义取消路径之一
                         // 只在**真的画出来了**的时候报"已画"——两点重合会被拒，
                         // 那时 commitTwoPointShape 自己写了原因，别把它盖掉。
                         if (shapes.get().size > before) {
@@ -765,9 +771,19 @@ class JfglDemoApp : Application() {
                         }
                     }
                 } else {
-                    // 两点式上"拖拽"：**刻意什么都不做**（同一个图形不能既靠拖又靠点）
+                    // 两点式上"拖拽"：**取消这次按下、但不取消已定的第一点**
+                    //（同一个图形不能既靠拖又靠点，所以什么都不画）。
+                    // ★ 措辞改准过一次：早先这里写的是"什么都不做"，而那句 `resetDragState()`
+                    //   其实**会清掉按下起点**（现在它不再清锚点，见 [cancelAnchor]）——
+                    //   **注释与代码不是一回事**，这条差异曾经差点被 Task 3 的断言照抄下去。
                     resetDragState()
-                    status.text = "${kind.label}请点两下：第一下定起点、第二下完成"
+                    // 状态栏要分两种情形：**手里已经有第一点时，"第一下定起点"那句是错的**。
+                    if (anchorX.isNaN()) {
+                        status.text = "${kind.label}请点两下：第一下定起点、第二下完成"
+                    } else {
+                        status.text = "${kind.label}：第一点还在 (${anchorX.toInt()},${anchorY.toInt()})，" +
+                            "点第二下完成（Esc 取消）"
+                    }
                 }
             }
             // 文本：**在抬起时落字**（`onPress` 的 TEXT 分支是 `Unit`，不记起点）。
@@ -781,22 +797,17 @@ class JfglDemoApp : Application() {
             //   但照旧注释写出来的断言会是一条**恒假断言**，而本仓库把"被静默跳过的
             //   断言"与失败的断言同等看待。守卫留着（零成本），只是别把它当判据。
             //
-            // ★ **2026-09-25 起这条分支末尾也调 [resetDragState]（以前只清 `dragStartX`）。**
-            //   以前不调的理由是：① 上面那个 else 已不可达，它清的是"万一"；
-            //   ② TEXT 模式下 `trajectory` 与 `marqueeW` 都不参与画面：预览由
-            //   [drawDragPreview] 画，而它在非 DRAW 模式**直接返回**。
-            //   两条今天仍然成立，**但它们都只针对旧的那几样状态**——两点式改"点两下"之后
-            //   多了一个**跨点击**的锚点，而"清锚点"只有 [resetDragState] 一处，
-            //   于是这条分支不调它就等于**给锚点开了一条绕过清理的路**。
+            // ★ **这条分支末尾调 [resetDragState]，且只调它**（不调 [cancelAnchor]）——
+            //   落字与"取消已定的第一点"毫无关系，那四条语义路径里没有它。
+            //
+            //   以前（2026-09-25 之前）它只清 `dragStartX`，理由是：
+            //   ① 上面那个 else 已不可达，它清的是"万一"；② TEXT 模式下 `trajectory` 与
+            //   `marqueeW` 都不参与画面（预览由 [drawDragPreview] 画，而它在非 DRAW 模式
+            //   **直接返回**）。两条今天仍然成立，所以尾部这次整条清理也**不是必需的**，
+            //   它是**防御性**的，与上面那条 `moved` 判据同性质：**谁也不该拿它当判据**。
             //   （早年这里留过一句"别忘了在末尾也 resetDragState()"，那是 `commitText`
             //     还不存在时的占位提醒；后来换成更窄的写法，现在又换回来了——
             //     **新旧写法都各有一半理由，这一句就是它们的交接记录**。）
-            //
-            //   如实记一笔：**"在 TEXT 模式下留下锚点"这件事当前不可达**——
-            //   进 TEXT 的**唯一**途径 `modeItem` 总是调 [resetDragState]，
-            //   而 TEXT 模式下没有任何一处写 `anchorX`。所以这一行是**防御性**的，
-            //   与上面那条 `moved` 判据同性质：**谁也不该拿它当判据**，
-            //   它只是"锚点不能绕过唯一那条清理路径"这条不变式的落点。
             Mode.TEXT -> {
                 if (moved < CLICK_SLOP) commitText(dx, dy) else dragStartX = Float.NaN
                 resetDragState()
@@ -1156,7 +1167,8 @@ class JfglDemoApp : Application() {
             }
             // 锚点十字：与鼠标重合时虚线退化成零长、什么都看不见，
             // 没有它就分不出"还没有第一点"与"第一点正好在鼠标下"。
-            gc.stroke = PREVIEW_CROSS
+            // 颜色用 `DemoShapes.PEN_CROSS`（与文本的笔位十字同一个橙，理由见那个常量的 KDoc）。
+            gc.stroke = PEN_CROSS
             gc.drawLine(ax - 8f, anchorY, ax + 8f, anchorY)
             gc.drawLine(ax, anchorY - 8f, ax, anchorY + 8f)
         } else {
@@ -1338,6 +1350,10 @@ class JfglDemoApp : Application() {
                 // ★ 切模式必须把进行中的交互清掉——否则会**凭空落一个用户没拖过的图形**。
                 //   完整的时序与理由见 [resetDragState] 的说明。
                 resetDragState()
+                // 切模式也是 [cancelAnchor] 四条语义路径里的一条（设计文档 §4.2.2：
+                // "已定第一点 ├─ 切模式 / 切图形 ─► 取消"）——换了模式还在等第二点，
+                // 用户一点就会画出一个他没想要的东西。
+                cancelAnchor()
             }
             modeMenuItems[m] = this     // 只给自检用（第 8~10 条按菜单动作驱动）
         }
@@ -1358,6 +1374,7 @@ class JfglDemoApp : Application() {
                     //   就会用**旧锚点**画出**新图形**。用户没表达过这个意图，
                     //   而画面上该图形一切正常（虚线预览在切的那一刹那也跟着换了形状）。
                     resetDragState()
+                    cancelAnchor()      // ★ 四条语义路径里的"切图形"
                     // 直线没有"填充"这回事（[Shape.LineShape] 恒走描边），
                     // 所以选中直线时把样式菜单灰掉。不灰的话用户选"只填充"再拖一条线，
                     // 会得到一条**实心描边**的线而界面毫无反馈——那是"设了但没用"的静默失效。
