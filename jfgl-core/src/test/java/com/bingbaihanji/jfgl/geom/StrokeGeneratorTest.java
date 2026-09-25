@@ -453,4 +453,90 @@ class StrokeGeneratorTest {
             assertEquals(copy[i], raw[i], 0f, "第 " + i + " 个 float 应与副本一致");
         }
     }
+
+    @Test
+    void 水平直线段的横向边距是正负一() {
+        StrokeGenerator g = new StrokeGenerator();
+        // 一条从 (0,0) 到 (100,0) 的线，线宽 10 ⇒ 半线宽 5
+        g.stroke(new float[]{0f, 0f, 100f, 0f}, 2, false, 10f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 8f, 8);
+        float[] e = g.rawEdges();
+        float min = Float.MAX_VALUE, max = -Float.MAX_VALUE;
+        for (int i = 0; i < g.triangleCount() * 3; i++) {
+            float c = e[i * 2];
+            min = Math.min(min, c);
+            max = Math.max(max, c);
+        }
+        assertEquals(-1f, min, 1e-5f, "一条长边的横向边距应为 -1");
+        assertEquals(1f, max, 1e-5f, "另一条长边的横向边距应为 +1");
+
+        // ★ 上面那对 min/max **抓不住"两侧写反"**：把 +n 侧写成 -1、-n 侧写成 +1 之后，
+        //   顶点集合仍然是 {+1, -1}，min 与 max 逐位不变——实测那条变异在这个方法上
+        //   25 条全绿。所以符号必须与**顶点位置**绑在一起断言：
+        //   本段方向是 +x，n = (-dy/len, dx/len)*half = (0,5)，于是 y > 0 的那一排
+        //   （+n 侧）横向必须是 +1、y < 0 的那一排必须是 -1。
+        //   这里没有"y 落在 0 附近"的顶点（生成的全是 ±5 的角点），所以这条断言不需要容差。
+        float[] t = g.triangles();
+        int probed = 0;
+        for (int v = 0; v < g.triangleCount() * 3; v++) {
+            float y = t[v * 2 + 1];
+            float c = e[v * 2];
+            if (y > 0f) {
+                assertEquals(1f, c, 0f, "y=" + y + " 的顶点在 +n 侧，横向应为 +1");
+                probed++;
+            } else if (y < 0f) {
+                assertEquals(-1f, c, 0f, "y=" + y + " 的顶点在 -n 侧，横向应为 -1");
+                probed++;
+            }
+        }
+        assertEquals(6, probed, "两个四边形共 6 个顶点，都该落在某一侧上");
+    }
+
+    @Test
+    void 开放路径的沿向边距两端为零且中段最大() {
+        StrokeGenerator g = new StrokeGenerator();
+        // ★ 必须是**三**点、(0,0)→(50,0)→(100,0)，不能是两点。
+        //   两点折线只有两端，两端的沿向都是 0（它们各自就在一条端帽线上），
+        //   于是 max 也等于 0——而本条断言要求 10。名字里的"中段"要有顶点才存在：
+        //   实测两点的版本在正确实现下也是 `expected: <10.0> but was: <0.0>`。
+        //   两点共线，MITER 接头在共线同向处直接返回，所以中间那个顶点只经两个四边形过路。
+        g.stroke(new float[]{0f, 0f, 50f, 0f, 100f, 0f}, 3, false, 10f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 8f, 8);
+        float[] e = g.rawEdges();
+        float min = Float.MAX_VALUE, max = -Float.MAX_VALUE;
+        for (int i = 0; i < g.triangleCount() * 3; i++) {
+            min = Math.min(min, e[i * 2 + 1]);
+            max = Math.max(max, e[i * 2 + 1]);
+        }
+        assertEquals(0f, min, 1e-5f, "起点那一排的沿向边距应为 0（它就在端帽线上）");
+        // ★ 这一条不可省：`min(arc, L-arc)` 与 `arc` 在**两端给出相同的值**
+        //   （0 与 L），只有**中段**才分得开。少了它，"沿向算成到远端端帽的距离"
+        //   这个变异会存活。
+        assertEquals(10f, max, 1e-4f, "中段的沿向应为 全长/2/半线宽 = 100/2/5 = 10");
+    }
+
+    @Test
+    void 闭合路径的沿向边距远离零() {
+        StrokeGenerator g = new StrokeGenerator();
+        // 一个 100x100 的方框，周长 400，半线宽 5 ⇒ 沿向应当恒 ≥ 400/5 = 80
+        g.stroke(new float[]{0f, 0f, 100f, 0f, 100f, 100f, 0f, 100f}, 4, true, 10f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 8f, 8);
+        float[] e = g.rawEdges();
+        for (int i = 0; i < g.triangleCount() * 3; i++) {
+            assertTrue(e[i * 2 + 1] >= 80f,
+                    "闭合路径不该有靠近 0 的沿向边距（会在起点凭空造出羽化边），实测 " + e[i * 2 + 1]);
+        }
+    }
+
+    @Test
+    void 边距数组长度与三角形对齐且不含NaN() {
+        StrokeGenerator g = new StrokeGenerator();
+        g.stroke(new float[]{0f, 0f, 10f, 10f, 20f, 0f}, 3, false, 4f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 8f, 8);
+        float[] e = g.rawEdges();
+        assertTrue(e.length >= g.triangleCount() * 6, "边距数组至少要有 三角形数*6 个 float");
+        for (int i = 0; i < g.triangleCount() * 6; i++) {
+            assertTrue(Float.isFinite(e[i]), "边距不该是 NaN/Infinity，实测 " + e[i]);
+        }
+    }
 }
