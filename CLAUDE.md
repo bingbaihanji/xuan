@@ -837,6 +837,32 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
        折线本来就把完整的 min–max 包络画出来了（斜坡实验里那道 6~7 px 宽的墨迹带
        就是证据）。换成每列 min/max 竖条，**画出来是同一张图**。
 
+    **★ 立项时不要拿参考项目当理由。** chart-fx 有**完整的降采样子系统**
+    （`datareduction/`：5 个缩减器实现 + `ReductionType` 枚举；实测两个默认值——
+    `minRequiredReductionSize` = **5 点**、`minPointPixelDistance` = **6px**），
+    所以"看看它怎么做"必然得出"该做"。**但它是<u>有损</u>的**：
+    `DefaultDataReducer` 把**均值**写回几何（`yValues[count] = (int)(meanY / ncount)`），
+    而 min/max 被塞进**误差棒数组**（`yPointErrorsNeg[count] = maxY;
+    yPointErrorsPos[count] = minY`）；**折线只读均值**（`ErrorDataSetRenderer` 的
+    `gc.strokePolyline(points.xValues, points.yValues, points.actualDataCount)`）。
+    ⇒ **折线画的是"取整后的均值"**——被吸收的那一段上，尖峰不再出现在折线上。
+    这与本项目最在意的"缺口不能连过去，那条直线是假的"是同一种病。
+    **所以：真要做 ③-2，必须保留每列 min–max、不许取均值或抽稀，
+    且必须有一条「单样本尖峰不被吃掉」的像素断言。**
+
+    **⚠️ 证据强度照实说（2026-09-25 复核）**：
+    - 上面全部是**从代码路径读出来的，没有跑出像素证据**——据它立规矩之前
+      **应先补一条复现**。
+    - 评审 §4.5.1 的三条支撑里有一条**站不住**：它写"`ErrorStyle.NONE` 是默认"，
+      而实测默认是 **`ErrorStyle.ERRORCOMBO`**，该模式会拿**那两个误差数组**去画
+      误差棒/误差面（`drawErrorSurface` 读的就是 `points.errorYNeg`/`errorYPos`）
+      ⇒ **默认配置下那个尖峰（作为误差面）仍可能画出来，未必"在画面上消失"**。
+      即"折线读均值"成立，"所以尖峰看不见"这条**未证、且已有反证**。
+    - **结论里不变的部分**：它的降采样**是有损的**（几何 = 均值），
+      "照它做"确实会把均值化抄进来。要改的是证据强度，不是结论。
+      出处：`docs/superpowers/specs/2026-09-24-jfgl-architecture-review.md`
+      §4.5.1、§4.5.5。
+
     **什么时候该重新考虑**：可见点到 **3M 就是 7.09 ms**（吃掉近一半预算），那才是
     阈值该出现的地方——那时做的是"可见点 > 某个大于 1M 的值才切竖条"，不是原设计的
     "可见点 > 绘图区像素宽"。③-3 数字荧光是**另一件事**（强度分级的显示是一个产品特性），

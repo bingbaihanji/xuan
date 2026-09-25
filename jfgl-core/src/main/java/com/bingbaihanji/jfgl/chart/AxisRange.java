@@ -8,6 +8,14 @@ package com.bingbaihanji.jfgl.chart;
  * 不去遍历数据。好处有两个：轴与数据解耦；同一个范围能被多个轴共享，
  * 于是<strong>多 Y 轴是自然结果而不是特例</strong>。
  *
+ * <p><strong>名字撞车，引用 chart-fx 时别接错</strong>：本类对应 chart-fx 的
+ * {@code AxisDescription}（按维度给出的 name/unit/min/max，
+ * 由 {@code DataSet.getAxisDescriptions()} 返回），
+ * <strong>不是</strong>它的 {@code AxisRange}——chart-fx 的 {@code AxisRange} 是
+ * <strong>轴的窗口</strong>（min/max + axisLength + scale + tickUnit），
+ * 与它对应的是本项目 {@link Axis} 里那个显示窗口
+ * （{@code windowMin}/{@code windowMax} + {@code displayLength}）。
+ *
  * <h2>这一个类里有两处"稳定化"，它们是全项目唯一的一份</h2>
  * <ul>
  *   <li>{@link #withMinimumSpan()}：跨度为 0 或负时扩成一个最小可视跨度。

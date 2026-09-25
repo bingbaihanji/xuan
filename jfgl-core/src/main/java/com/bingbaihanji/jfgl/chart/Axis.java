@@ -9,6 +9,10 @@ package com.bingbaihanji.jfgl.chart;
  * <strong>当前显示窗口</strong>。轴因此可以脱离数据存在，同一个范围也能被多个轴共享——
  * 多 Y 轴因此是自然结果而不是特例。
  *
+ * <p>（名字有个坑：这里的 {@link AxisRange} 对应 chart-fx 的 {@code AxisDescription}；
+ * chart-fx 自己的 {@code AxisRange} 指的是<strong>轴的窗口</strong>，
+ * 与本类的显示窗口对应——同名而所指相反，详见 {@link AxisRange} 的类文档。）
+ *
  * <h2>窗口的稳定化在这个类的构造与 setWindow 里</h2>
  * <p>窗口起点与终点的差永远为正：退化时走 {@link AxisRange#withMinimumSpan()}，
  * 对数轴上走 {@link AxisRange#withPositiveMin()}。

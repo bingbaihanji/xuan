@@ -131,13 +131,21 @@ package com.bingbaihanji.jfgl.chart;
  * 数据里"变了的那一段"，半开区间 {@code [firstDirty, lastDirty)}。
  *
  * <h2>为什么脏区间是一等公民</h2>
- * <p>chart-fx 的 {@code DataSet} 也有脏位，但那是<strong>图表级的一个全局标志</strong>：
- * 它只说明"要重画"，没说明"重画哪一段"。于是它的渲染器每帧仍要把二分查窗口、
- * 重烘屏幕坐标、重做缩减全部走一遍。
+ * <p>chart-fx 的 {@code DataSet} 也有脏位，但那是<strong>每个 {@code DataSet} 自己的一张
+ * 位掩码</strong>（{@code io.fair_acc.dataset.events.ChartBits}），而且它的维度是
+ * <strong>「类别」（哪一类变了）</strong>，不是<strong>「区间」（哪一段变了）</strong>：
+ * 按类别分成"加/删/范围/名字/样式/元数据/置换/轴布局/画布……"若干位
+ * （位宽另有静态断言钉死 ≤ 32）。于是它的渲染器每帧仍要把二分查窗口、
+ * 重烘屏幕坐标、重做缩减全部走一遍——脏位只说明"要重画"，没说明"重画哪一段"。
  *
  * <p>JFGL 要的是 <strong>GPU 常驻 + 增量上传</strong>：数据上传一次长期驻留，
  * 只有新增的那几十个点走 {@code glBufferSubData}。这要求"变了哪一段"能被精确表达，
- * 而不是一个布尔。
+ * 而不是"哪一类变了"。
+ *
+ * <p><strong>一个该抄没抄的改进方向（是本项目的下一步候选，不是承诺）</strong>：
+ * {@code dirtyRange} 可以升级成<strong>「类别 + 区间」两级判据</strong>——
+ * "只改了颜色"这类变更就根本不必去问区间（问了也只会得到整个区间）。
+ * chart-fx 的类别位在这一层上是对的，缺的只是区间那一级。
  *
  * <h2>空区间的表示</h2>
  * <p>无变化时返回 {@link #EMPTY}（即 {@code (0, 0)}）。判定统一用 {@link #isEmpty()}：
@@ -385,6 +393,14 @@ AxisRange 把范围放在数据侧（抄 chart-fx）：轴只是显示窗口，�
 Co-Authored-By: Claude Code <noreply@anthropic.com>
 EOF
 ```
+
+> **⚠️ 上面这段提交信息里有一句后来被核实为不准确**：
+> 「它（`DirtyRange`）的脏位是图表级的全局标志」。实测 chart-fx 的脏位是
+> **每个 `DataSet` 自己的一张按类别的位掩码**（`ChartBits`），**不是图表级的一个全局标志**。
+> **实质结论不变**（它确实没有"脏区间"这个概念），只是转述失真。
+> 这段提交信息是历史记录（提交 `083e1e6`），**不改**；
+> 新写的文档一律按上面的准确说法。出处见
+> `docs/superpowers/specs/2026-09-24-jfgl-architecture-review.md` §4.5.4。
 
 ---
 
@@ -4285,7 +4301,14 @@ EOF
   ② 的第一件事应该是把 `RenderContext` 的子接口与折线渲染器做出来，
   并且**真的用上 `dirtyRange`**——不然 ① 的脏区间设计就白做了。
 - **系列级的轴选择**：本期约定 `axes[]` 按维度下标对齐，多 Y 轴只能通过"多给几根轴 +
-  系列用第几维"来表达。chart-fx 有 `getXAxisId/getYAxisId`（按 id 选轴），本期不做。
+  系列用第几维"来表达。chart-fx 的机制是**方向 + 第一个匹配 + 对象身份**：
+  `Chart.getFirstAxis(Orientation)` 遍历 `getAxes()` 取指定方向上**第一个** `side` 匹配的轴
+  （没有 id 概念）；多 Y 轴靠**同一批 `Axis` 对象被多个渲染器引用**、
+  `ensureAxisInChart` 把轴塞进 chart 列表、再由 `NoDuplicatesList` 防重来表达。
+  本期不做。
+  **（早先这里写成 chart-fx 有 `getXAxisId`/`getYAxisId`——实测不存在，
+  `AxisId` 全仓零命中。选轴靠方向 + 第一个匹配 + 对象身份。）**
+  出处：`docs/superpowers/specs/2026-09-24-jfgl-architecture-review.md` §4.5.4。
 - **`TEXT` 轴的类目名**：`Tick.label` 是下标字符串，类目名归数据侧。
   要显示"周一/周二"需要 ② 或应用层拿下标去查——本期刻意不让 ① 持有一份类目表副本。
 - **`ColorMapping` 的内置配色只有两个**（`GRAYSCALE`、`INFRARED_4`）。
