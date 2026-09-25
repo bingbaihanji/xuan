@@ -80,10 +80,25 @@ class Gc constructor(private val batch: RenderBatch) {
      * 而本仓库的像素校验器里有一批**精确到 ±0 的期望值**（如蓝圆角矩形描边 = 3084 px），
      * 它们花了整轮才立住。默认关 ⇒ 默认路径逐像素不变。
      *
-     * <p>它只影响**描边**；填充与文本不受影响（它们本来就写 `aEdge = (0,0)`）。
-     * 实现上它落在两处 CPU 侧：几何是否外扩 1 个设备像素（[strokeOutline]），
-     * 以及顶点里写不写真实边距（[emitTriangles]）。**片元那一侧没有 uniform**——
-     * 见 [RenderBatch] 的 FRAGMENT_SHADER：填充/文本与描边靠 `fwidth == 0` 区分。
+     * <p><strong>★ 它有两个消费者，不是一个：</strong>
+     * <ol>
+     *   <li><b>本类自己的描边</b>（[strokeOutline] / [emitTriangles]）——
+     *       <b>只影响描边</b>：`Gc` 自己的填充与文本不受影响（它们本来就写 `aEdge = (0,0)`）；</li>
+     *   <li><b>图表系列</b>（Task 5 接上的第七个消费者）：经 [chartsLazy] 里那个
+     *       supplier 传给 `ChartRenderer`，再由六个渲染器各自作为 `uAntialias`
+     *       传给片段着色器。**这一路里包含填充**（面积图的填充、柱状图的柱）
+     *       与散点的标记点——所以"只影响描边"这句话**只对第 1 条成立**。</li>
+     * </ol>
+     * <p>于是一个应用想给**图表数据系列**开 AA，**设的就是这个属性**；
+     * 不要另加一个"图表专用的 AA 开关"——同一件事摊成两处，迟早一处开一处没开，
+     * 而画面上只表现为"某些图型没那么细腻"。
+     *
+     * <p>实现上第 1 条落在两处 CPU 侧：几何是否外扩 1 个设备像素（[strokeOutline]），
+     * 以及顶点里写不写真实边距（[emitTriangles]）；**那条路径的片元那一侧没有 uniform**
+     * ——见 [RenderBatch] 的 FRAGMENT_SHADER：填充/文本与描边靠 `fwidth == 0` 区分。
+     * 第 2 条（图表）**恰好相反**：顶点几何完全不动，开关就是一个 per-draw 的
+     * `uAntialias`（一个系列一条 draw call，不涉及合批）。两条路的实现选择不同，
+     * 别把其中一条的说明套到另一条上。
      *
      * <p><strong>★ 一个必须写下来的副作用：开了 AA 之后，描边的可拾取范围比可见线宽
      * 大 1 个设备像素。</strong>ID pass 复用同一份顶点缓冲，而那份几何被横向加宽过

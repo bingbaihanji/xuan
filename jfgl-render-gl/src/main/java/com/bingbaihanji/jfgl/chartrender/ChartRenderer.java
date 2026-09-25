@@ -184,6 +184,12 @@ public final class ChartRenderer implements Disposable {
      *
      * <p>默认（不注入时）恒为 {@code false}：<b>AA 关是"什么都不发生"的那一侧</b>，
      * 默认值必须落在它上面（否则既有像素期望会集体移动）。
+     *
+     * <p>⚠️ <b>"不注入时恒为 false"目前没有任何断言盖着</b>（照实说）：真正走那条路的
+     * 只有下面那个 3 参构造，而它**在仓库里一个调用点都没有**——{@code Gc} 走的是 5 参那个
+     * （传它自己的 {@code antialias}）。{@code ChartVerifier} 的 AA 一节证的是"注入之后
+     * 开关真的生效"，证不到"不注入时是关的"。真要盖住它得建一个不注入的渲染器画一帧，
+     * 与本 Task 的判据无关，暂不补。
      */
     private final BooleanSupplier antialias;
 
