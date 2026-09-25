@@ -105,7 +105,19 @@ public final class RenderBatch implements Disposable {
      *
      * <p><strong>两个 {@code w > 0.0} 判别式不可省</strong>：填充与文本的 {@code aEdge}
      * 恒为 {@code (0,0)}，它在整个图元上是常量 ⇒ {@code fwidth} 为 {@code 0}，
-     * 直接拿去做除数会得到 {@code NaN} ⇒ <strong>整片像素变黑</strong>。
+     * 直接拿去做除数会得到 {@code NaN} ⇒ <strong>整片像素消失</strong>
+     * （背景直接透出来），而<strong>不是</strong>"变黑"。
+     *
+     * <p>症状写准很要紧：这里是下一个人会去搜的地方。看到"变黑"的人会对着背景色
+     * 怀疑别的原因。为什么是"消失"——{@code NaN} 乘进预乘色之后 rgb 与 α 一起归零，
+     * 于是那个像素完全透明，混合结果就是它背后的东西。
+     *
+     * <p><strong>实测</strong>（删掉横向那一个判别式，跑 {@code PipelineVerifier}）：
+     * <strong>20 条断言倒</strong>，红矩形填充 <strong>24000 → 0</strong>、
+     * 绿圆 20106 → 0、画面颜色从 7 种掉到 <strong>2 种</strong>（只剩
+     * {@code #00FF80} 与背景——前者是 {@code glClear} 画的即时探针，不经过本着色器）。
+     * 注意<strong>接头也在内</strong>：它的横向恒为 0
+     * （见 {@code StrokeGenerator.emitJoin}），所以判别式保护的不只是填充与文本。
      *
      * <p>它们<strong>同时</strong>是"这里不需要 {@code uAntialias} uniform"的原因：
      * 开关落在 CPU 侧的"写不写真实边距"上（见 {@code Gc.antialias}），
