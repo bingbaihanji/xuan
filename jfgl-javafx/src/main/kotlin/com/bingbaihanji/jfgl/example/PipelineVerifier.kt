@@ -69,8 +69,14 @@ private const val EDGE_FRAME = 10
 /** 闭合路径探针（横向外扩 + 拐角）所在的帧号。 */
 private const val CLOSED_FRAME = 12
 
+/** 抗锯齿探针（§7.1 的四条判据 + 1px 细线）所在的帧号。 */
+private const val AA_FRAME = 16
+
+/** 非等比缩放探针（`gc.scale(1, 10)`）所在的帧号。 */
+private const val ANISO_FRAME = 18
+
 /** 收尾帧：汇总并落退出码。 */
-private const val FINISH_FRAME = 14
+private const val FINISH_FRAME = 20
 
 /**
  * 闭合路径探针：两个**同一几何**的描边矩形，一个 AA 关、一个 AA 开，左右并排。
@@ -123,6 +129,111 @@ private val EDGE_POINTS = floatArrayOf(100f, 300.5f, 400f, 300.5f, 700f, 300.5f)
  * `0.5 * 255 = 127.5`，取 127 还是 128 由实现定，与我们的对错无关。
  */
 private const val CHANNEL_TOLERANCE = 4
+
+// ---------------------------------------------------------------------------
+// ★ 抗锯齿探针的几何（设计文档 §7.1 的四条判据）
+//
+// 两条**同一条几何**的 45° 线，线宽 4，一条 AA 关（对照）、一条 AA 开（被测）：
+//   A（AA 关）：(100,100) → (300,300)，中线 `y = x`
+//   B（AA 开）：(500,100) → (700,300)，中线 `y = x − 400`
+//
+// **B 是 A 的整数平移**（x → x+400）⇒ 两条线与格点的相位**逐项相同**，
+// 于是"同一套期望值换一个 c"就能同时量两条线，读数之间的任何差异都只可能来自开关。
+// 两者在像素上离得很远（垂直间距 400/√2 ≈ 283 px），互不污染。
+//
+// ★ **测量窗为什么是这个形状**：对每一列 x 都取「中线上下各 4 行」，
+// 于是窗对每一列都**完整**包住描边带的横截面（覆盖率非零的只有 `|m| ≤ 3` 那 7 行，
+// 其中 m = y − x − c 在**像素中心**上恰好取整数——两个 `0.5` 相消）。
+// 这个形状让"离散覆盖率之和"与"真实面积"**逐项相等**：
+//   Σ_{|m| ≤ 3} cov(m) = 1 + 2·1 + 2(√2 − 0.5) + 2(√2 − 1) = 4√2
+// 而窗内描边带的真实面积 = W × 4√2（每列 4√2，等于线宽 4 在 45° 下的横向投影）。
+// 换成方形窗就不会有这条等式（多出 O(1) 的角项，见 §7.1 那条"精确相等"的说明）。
+// ---------------------------------------------------------------------------
+
+/** 测量窗的**列数**（x 方向的宽度）。窗内的每条读数都正比于它。 */
+private const val AA_W = 100
+
+/** 对照线（AA 关）的窗左边界；中线 `y = x` ⇒ c = 0。 */
+private const val AA_WX0_OFF = 150
+private const val AA_C_OFF = 0
+
+/** 被测线（AA 开）的窗左边界；中线 `y = x − 400` ⇒ c = −400。 */
+private const val AA_WX0_ON = 550
+private const val AA_C_ON = -400
+
+/** 窗在中线上下各取的行数（半高）：4 行 ⇒ 7 行的横截面全在里面。 */
+private const val AA_WIN_DY = 4
+
+/**
+ * 抗锯齿探针帧里的线色与背景色，以及两者的亮度差。
+ *
+ * <p>背景就是 `glClearColor(0.2, 0.2, 0.2)` 的 `#333333`（与 [PipelineVerifierApp.background] 同值）；
+ * 线一律纯白。帧内**没有别的颜色**，混出来的中间调必然是灰的
+ * ⇒ **红通道就是亮度**，`墨量 = Σ(red − 51)`，而"亮度差"= 255 − 51 = **204**。
+ */
+private const val AA_LINE_RGB = 0xFFFFFF
+private const val AA_BG_LUMA = 0x33
+private const val AA_LUMA_SPAN = 0xFF - AA_BG_LUMA
+
+/** 两条 45° 线的线宽与端点（[drawAntialiasScene]）。 */
+private const val AA_LINE_WIDTH = 4f
+private const val AA_AX0 = 100f
+private const val AA_AX1 = 300f
+private const val AA_BX0 = 500f
+private const val AA_BX1 = 700f
+
+/**
+ * 1px 细线那两条判据的相位。
+ *
+ * <p>线宽 1、恒等变换下 `px = 1` ⇒ **几何**半宽 1.5、**真实**半宽 0.5，
+ * 而覆盖率公式给的是 `cov = clamp(1 − |d|, 0, 1)`（d = 到中线的距离，设备像素）。
+ * - `y = k + 0.25`：覆盖 0.75 / 0.25 两行，和 = **1.00**；
+ * - `y = k + 0.50`：中间那行满覆盖，和 = **1.00**。
+ * 两种相位下"每列一个像素"这条墨量守恒都成立（§4.3 说的"细带可能偏厚"就在这里量）。
+ */
+private const val AA_THIN_Y_P25 = 400.25f
+private const val AA_THIN_Y_P50 = 460.5f
+
+/** 细线的 x 范围，以及墨量比对的窗（列数与行的上下界见 [verifyAntialias]）。 */
+private const val AA_THIN_X0 = 100f
+private const val AA_THIN_X1 = 700f
+private const val AA_THIN_WX0 = 200
+private const val AA_THIN_WX1 = 600
+
+// ---------------------------------------------------------------------------
+// ★ 非等比缩放探针的几何（`Gc.antialias` 的 KDoc 里**声明**过、但一直没有断言的那条降级）
+//
+// `gc.scale(1f, 10f)` 下 `matrixScale() = (1 + 10) / 2 = 5.5` ⇒ `px = 1/5.5 ≈ 0.1818`。
+// 于是"1 个设备像素"的外扩量在两条轴上差 10 倍：
+//   · **压缩轴**（x，scale 1）：几何只到真外缘之外 **0.1818** 个设备像素，
+//     而覆盖率斜坡要 **0.5** 个 ⇒ 斜坡被截断 ⇒ 羽化退化成硬边；
+//   · **拉伸轴**（y，scale 10）：几何到真外缘之外 **1.818** 个设备像素 ⇒ 斜坡完整。
+// ---------------------------------------------------------------------------
+
+private const val ANISO_SCALE_Y = 10f
+
+/**
+ * 竖线（横向 = 压缩轴）的 x 与横线（横向 = 拉伸轴）的 y。
+ *
+ * <p><strong>两个相位都是挑过的</strong>，因为"真外缘之外有没有片元"这件事
+ * 在整数像素网格上是**相位决定**的（斜坡只有 1 个设备像素宽，而像素中心间距也是 1）：
+ * <ul>
+ *   <li>竖线取 `k + 0.25` ⇒ 像素中心到中线的距离是 `0.25 + ℤ`：真外缘 2.0 之外的
+ *       最近一档是 **2.25**，而几何止于 2.1818 ⇒ **那一档没有片元**（要钉的就是它）。</li>
+ *   <li>横线取 `k + 0.025` ⇒ **乘 10 之后**是 `k + 0.25`（设备 y = 200.25），
+ *       真外缘 20.0 之外的最近一档是 **20.25**（覆盖率 0.25）⇒ **有片元**。</li>
+ * </ul>
+ */
+private const val ANISO_VX = 100.25f
+private const val ANISO_HY = 20.025f
+
+/** 两条线各自的真半线宽（设备像素）：线宽 4 的一半，乘各自的缩放。 */
+private const val ANISO_TRUE_HALF_X = 2f
+private const val ANISO_TRUE_HALF_Y = 20f
+
+/** 两条线在设备坐标里的中线位置（x 向 scale 1、y 向 scale 10）。 */
+private const val ANISO_DEVICE_X = 100.25f
+private const val ANISO_DEVICE_Y = 200.25f
 
 /** 状态栈探针三条线的线心 y。刻意都带 `.25`：边缘落在**像素内部**，AA 才看得出来。 */
 private const val LINE_A_Y = 60.25f
@@ -230,6 +341,8 @@ class PipelineVerifierApp : Application() {
             STACK_FRAME -> drawStyleStackScene(gc)
             EDGE_FRAME -> drawEdgeProbeScene(gc)
             CLOSED_FRAME -> drawClosedProbeScene(gc)
+            AA_FRAME -> drawAntialiasScene(gc)
+            ANISO_FRAME -> drawAnisoProbeScene(gc)
             else -> drawMainScene(gc)
         }
     }
@@ -361,6 +474,70 @@ class PipelineVerifierApp : Application() {
 
         gc.antialias = true
         gc.strokeRect(CLOSED_X_AA, CLOSED_Y, CLOSED_SIZE, CLOSED_SIZE)
+        gc.antialias = false
+    }
+
+    /**
+     * ★ 抗锯齿探针：**同一条几何画两遍**（一遍关、一遍开），外加两对 1px 的细线。
+     *
+     * <p>四条判据（① 对照组没有中间值 / ② 实验组有过渡带 / ③ 线心行纯色数相等 /
+     * ④ 墨量守恒）与细线那条方向断言都在 [verifyAntialias] 里，
+     * 几何与窗的形状见 [AA_W] 那段注释。
+     *
+     * <p>四条线的颜色**一律纯白**、背景是 `glClearColor` 的 `#333333`：
+     * 于是"中间值"就是灰色的中间调，而墨量差恰好是 255 − 51 = **204**，
+     * 判据里的每个数都可以手算。
+     */
+    private fun drawAntialiasScene(gc: Gc) {
+        gc.lineWidth = AA_LINE_WIDTH
+        gc.stroke = 0xFFFFFFFF.toInt()
+
+        // A：对照。整帧的其余部分也关着（本探针帧只有这四条线）。
+        gc.antialias = false
+        gc.drawLine(AA_AX0, AA_AX0, AA_AX1, AA_AX1)
+
+        // B：被测。与 A 是同一条几何的整数平移。
+        gc.antialias = true
+        gc.drawLine(AA_BX0, AA_AX0, AA_BX1, AA_AX1)
+
+        // 1px 细线：两种相位各一对（关 / 开）。线宽 1 时**每条线的墨量都是 1.0 px/列**，
+        // 两种模式、两种相位四种组合应当给出同一个数——这条是"细带有没有偏厚"的方向断言。
+        gc.lineWidth = 1f
+        gc.antialias = false
+        gc.drawLine(AA_THIN_X0, AA_THIN_Y_P25, AA_THIN_X1, AA_THIN_Y_P25)
+        gc.antialias = true
+        gc.drawLine(AA_THIN_X0, AA_THIN_Y_P25 + 30f, AA_THIN_X1, AA_THIN_Y_P25 + 30f)
+        gc.antialias = false
+        gc.drawLine(AA_THIN_X0, AA_THIN_Y_P50, AA_THIN_X1, AA_THIN_Y_P50)
+        gc.antialias = true
+        gc.drawLine(AA_THIN_X0, AA_THIN_Y_P50 + 30f, AA_THIN_X1, AA_THIN_Y_P50 + 30f)
+
+        gc.antialias = false
+    }
+
+    /**
+     * ★ 非等比缩放探针：`gc.scale(1f, 10f)` 下画一竖一横两条线（几何见 [ANISO_VX]）。
+     *
+     * <p>它替 `Gc.antialias` 的 KDoc 里那条**声明过却没有断言**的降级立闸门：
+     * 压缩轴上羽化退化成硬边。原文档写的是"未验证：这一条是从代码读出来的
+     * （七个校验器全部跑恒等变换）"——本帧之后它就不是了。
+     *
+     * <p>两条线都开 AA（要量的正是"开着的时候还羽化不羽化"），
+     * 且都在缩放作用域内画——`px` 是在 `strokeOutline` 里按当时的 `matrixScale()` 算的。
+     */
+    private fun drawAnisoProbeScene(gc: Gc) {
+        gc.lineWidth = AA_LINE_WIDTH
+        gc.stroke = 0xFFFFFFFF.toInt()
+        gc.antialias = true
+
+        gc.save()
+        gc.scale(1f, ANISO_SCALE_Y)
+        // 竖线：它的**横向**是 x（scale 1，压缩轴）。设备 y 落在 [200, 600]。
+        gc.drawLine(ANISO_VX, 20f, ANISO_VX, 60f)
+        // 横线：它的**横向**是 y（scale 10，拉伸轴）。设备 x 落在 [150, 700]。
+        gc.drawLine(150f, ANISO_HY, 700f, ANISO_HY)
+        gc.restore()
+
         gc.antialias = false
     }
 
@@ -506,6 +683,8 @@ class PipelineVerifierApp : Application() {
             STACK_FRAME -> if (verifyStyleStack()) frame = f + 1
             EDGE_FRAME -> if (verifyEdgeProbe()) frame = f + 1
             CLOSED_FRAME -> if (verifyClosedStroke()) frame = f + 1
+            AA_FRAME -> if (verifyAntialias()) frame = f + 1
+            ANISO_FRAME -> if (verifyAnisoScale()) frame = f + 1
             FINISH_FRAME -> finish()
             else -> {
                 // 主阶段之后、收尾帧之前的那几帧：主场景照画（只是画，没人读），什么都不校验。
@@ -914,6 +1093,196 @@ class PipelineVerifierApp : Application() {
         return true
     }
 
+    // ------------------------------------------------------------------
+    // ★ 抗锯齿：§7.1 的四条判据 + 细线的方向断言
+    // ------------------------------------------------------------------
+
+    /**
+     * 抗锯齿探针的判定（几何见 [drawAntialiasScene]，窗的形状见 [AA_W] 那段注释）。
+     *
+     * <p><strong>四条判据缺一不可</strong>（设计文档 §7.1）：
+     * <pre>
+     *   ① AA **关**的那条确实没有中间值：既非背景 #333333 也非线色 #FFFFFF 的像素数 = **0**
+     *  ② AA **开**的那条过渡带存在：该像素数 = **4W**（每列 2 侧 × 2 级）
+     *  ③ **线心没移位、没变淡**：`|m| ≤ 1` 那三条对角带上的纯色像素数两种模式**精确相等** = 3W
+     *  ④ **墨量**：窗内墨量 == 窗内描边带的**真实面积** × 亮度差（± 8 位量化界）
+     * </pre>
+     *
+     * <p>★ **③ 为什么只取线心（`|m| ≤ 1`）、不取"总纯色数"**：开了 AA 之后最外那一圈
+     * 纯色像素本来就会变成过渡像素，总纯色数**必然略减**——写成"总数相等"是一条
+     * **恒假断言**，比没有断言更坏。线心那三条带离边缘足够远，两种模式下都是满覆盖，
+     * 它相等是**成立**的：AA 关时是"5 条带全白"，AA 开时"3 条带全白 + 2 条带羽化"，
+     * 交集恰好是那 3 条。
+     *
+     * <p>★ **④ 为什么不写成"AA 开 == AA 关"**（这是本探针最要紧的一句）：
+     * 45° 直线下这两者**本来就不相等，而且不该相等**。硬边是**像素中心采样**——
+     * 只有 `|m| ≤ 2` 那些像素的中心落在真实带内，于是它的"有效宽度"是 2√2 ≈ 2.83 px
+     * 而不是 4（三角形像素的阶梯**内接**于斜带）⇒ 硬边的墨量比真实面积**少 11.6%**。
+     * 而解析式 AA 的覆盖率斜坡是**面积守恒**的：窗内离散覆盖率之和
+     * `Σ_{|m| ≤ 3} cov(m) = 1 + 2·1 + 2(√2−0.5) + 2(√2−1) = 4√2`，
+     * 与真实面积 `4√2` **逐项相等**（这不是巧合，是"斜坡面积 = 真实面积"这条性质
+     * 在这个窗形状上的精确体现）。所以 ④ 的参照系是**真实面积**，不是对照组：
+     * 拿"两者相等"当判据会得到一条**恒假**的断言，而它读起来像是"AA 错了"。
+     * 对照组的墨量照实打印（它是 5W × 亮度差），**它比真实面积少**这件事本身是读数，
+     * 不是缺陷。
+     *
+     * <p>★ ④ 的**量化界**是算出来的，不是"看着差不多"给的：窗内每列有 4 个羽化像素
+     * （`|m| = 2` 与 `3`），8 位取整让每个最多偏离解析值 0.5 ⇒ 每列 ±2、全窗 ±2W。
+     * 实测偏离 **+0.2**（115400 对 115399.8，占总墨量 0.0002%）——但**别把这个界读成余量**：
+     * 那 4 个羽化像素的解析值（`204 × (√2 − 0.5)` = 186.4996、`204 × (√2 − 1)` = 84.4996）
+     * 恰好落在 8 位取整边界**外 0.0004** 处，浮点噪声就够把它推过边界——本机就推过去了
+     * （`|m| = 2` 那些像素读 238 而不是 237，每列因此多 2 luma）。**驱动反向取整时偏离是
+     * −199.8**，两者都在 ±2W 内：这个界是**必需**的，不是留的余量。
+     *
+     * <p>**它窄到能分辨出真缺陷**（变异实测）：把 `clamp` 的 0.5 改成 0.0（覆盖率整体内缩
+     * 一档）墨量 115400 → **74600**（−35%）、改成 1.0 → **156200**（+35%）；
+     * 把外扩量改成 0 → **98400**（−15%）；把 `edges` 恒传 `null` → **183600**（+59%）。
+     * 都远在界外。
+     */
+    private fun verifyAntialias(): Boolean {
+        val f = grabFrame() ?: return false
+
+        val wX0Off = AA_WX0_OFF
+        val wX0On = AA_WX0_ON
+        val yOff0 = wX0Off + AA_C_OFF - AA_WIN_DY
+        val yOff1 = wX0Off + AA_W + AA_C_OFF + AA_WIN_DY
+        val yOn0 = wX0On + AA_C_ON - AA_WIN_DY
+        val yOn1 = wX0On + AA_W + AA_C_ON + AA_WIN_DY
+
+        println("\n-- ★ 抗锯齿：同一条几何画两遍（§7.1 的四条判据） --")
+        // ★ 打印的窗必须**就是**被断言的窗（本文件的规矩，见 verifyClosedStroke 那段）。
+        println("  AA 关 窗 x∈[$wX0Off,$wX0Off + AA_W) y∈[$yOff0,$yOff1)  中线 y = x")
+        println("  AA 开 窗 x∈[$wX0On,$wX0On + AA_W) y∈[$yOn0,$yOn1)  中线 y = x − 400")
+        // 横截面读数：m = y − x − c 在像素中心上取整数，所以"第几级覆盖"完全由它决定。
+        val midOff = wX0Off + AA_W / 2
+        val midOn = wX0On + AA_W / 2
+        println("  AA 关 第 $midOff 列横截面（m = y − x）："
+                + (-4..4).joinToString(" ") { "m$it=#%06X".format(f.rgb(midOff, midOff + AA_C_OFF + it)) })
+        println("  AA 开 第 $midOn 列横截面（m = y − x + 400）："
+                + (-4..4).joinToString(" ") { "m$it=#%06X".format(f.rgb(midOn, midOn + AA_C_ON + it)) })
+        // 整窗的颜色直方图：① ② 的读数就是从这个直方图里来的，打出来让失败可读。
+        println("  AA 关 窗内颜色：${f.aaHistogram(wX0Off, yOff0, wX0Off + AA_W, yOff1)}")
+        println("  AA 开 窗内颜色：${f.aaHistogram(wX0On, yOn0, wX0On + AA_W, yOn1)}")
+
+        val off = f.aaStats(wX0Off, yOff0, wX0Off + AA_W, yOff1, AA_C_OFF)
+        val on = f.aaStats(wX0On, yOn0, wX0On + AA_W, yOn1, AA_C_ON)
+
+        report("★ 抗锯齿① AA 关的线没有过渡像素（既非背景也非线色）", off.fringe == 0,
+            "实测 ${off.fringe} 个（期望 0）")
+        report("★ 抗锯齿② AA 开的线有过渡像素，且恰好 4W（每列 2 侧 × 2 级）",
+            on.fringe == 4 * AA_W,
+            "实测 ${on.fringe} 个，期望 ${4 * AA_W}（= 每列 m=±2 与 m=±3 各两个）")
+        report("★ 抗锯齿③ 线心（|m| ≤ 1）纯色像素数两种模式精确相等，且 = 3W",
+            off.core == on.core && on.core == 3 * AA_W,
+            "关=${off.core}，开=${on.core}，期望 ${3 * AA_W}（AA 关的 |m|=2 那两条带是白的，但不在线心）")
+        // ④ 的参照系是**真实面积**（见 KDoc）。亮度差 204 = 白 255 − 背景 51。
+        val analyticInk = AA_LUMA_SPAN * 4.0 * Math.sqrt(2.0) * AA_W
+        val inkTol = 2.0 * AA_W + 2
+        report("★ 抗锯齿④ 墨量 == 窗内描边带的真实面积 × 亮度差（± 量化界 2W）",
+            Math.abs(on.ink - analyticInk) <= inkTol,
+            "实测 ${on.ink}，解析 ${"%.1f".format(analyticInk)}，允许 ±${"%.0f".format(inkTol)}"
+                    + "（相差 ${"%.1f".format(on.ink - analyticInk)}；2W 是 4 个羽化像素 × 0.5 的 8 位量化界）")
+        // 对照组的墨量：硬边每列只有 |m| ≤ 2 那 5 个像素 ⇒ 5W × 204。
+        // **它必须精确等于这个数**：多一列/多一圈都说明"关着的时候几何被外扩了"，
+        // 而那正是 AA 关时最该逐像素不变的一件事。
+        report("★ 抗锯齿④ 对照：AA 关的墨量 == 5W × 亮度差（硬边几何没有被外扩）",
+            off.ink == 5 * AA_W * AA_LUMA_SPAN,
+            "实测 ${off.ink}，期望 ${5 * AA_W * AA_LUMA_SPAN}"
+                    + "（比解析面积少 ${"%.1f".format(100.0 * (1 - off.ink / analyticInk))}%"
+                    + " —— 这是硬边**像素中心采样**内接于斜带的必然结果，不是缺陷）")
+
+        // ---------------------------------------------------------------
+        // 1px 细线：**方向断言**
+        //
+        // 设计文档 §7.1 对细带留了 ±10% 的容差，因为 §4.3 那条公式**已知可能偏厚**
+        // （斜坡宽度 1 个设备像素、而线本身还不到 1 个像素时，线性斜坡不再等于面积）。
+        // 这条容差要暴露的正是那件事：**一旦它失败，收口是把 aEdge 扩到三分量**，
+        // 而不是"把容差放宽"。实测（两种相位 × 两种模式四种组合）它们的墨量
+        // **恰好都是 400 列 × 204** ⇒ 本条当前不是"勉强通过"，10% 在这里没有兜住任何东西。
+        // ---------------------------------------------------------------
+        println("  1px 细线（窗 x∈[$AA_THIN_WX0,$AA_THIN_WX1) y∈[线心−3,线心+4)，每列墨量的期望 = 1.0 px）：")
+        val thinPhases = listOf("相位 .25" to AA_THIN_Y_P25, "相位 .50" to AA_THIN_Y_P50)
+        val thinInk = Array(thinPhases.size) { IntArray(2) }
+        for ((i, ph) in thinPhases.withIndex()) {
+            for ((j, aa) in listOf(false, true).withIndex()) {
+                val yc = ph.second + if (aa) 30f else 0f
+                val s = f.aaStats(AA_THIN_WX0, yc.toInt() - 3, AA_THIN_WX1, yc.toInt() + 4, 0)
+                thinInk[i][j] = s.ink
+                println("    ${ph.first} AA=${if (aa) "开" else "关"}：线心 ${yc}，被断言的行 ${
+                    yc.toInt() - 3
+                }..${yc.toInt() + 3}，"
+                        + "墨量 ${s.ink}（${"%.3f".format(s.ink.toDouble() / (AA_THIN_WX1 - AA_THIN_WX0) / AA_LUMA_SPAN)} px/列）"
+                        + "，纯色 ${s.white}，过渡 ${s.fringe}")
+            }
+            val offInk = thinInk[i][0].toDouble()
+            val onInk = thinInk[i][1].toDouble()
+            val ratio = onInk / offInk
+            report("★ 抗锯齿④ 1px 细线（${ph.first}）：AA 开 / 关 的墨量在 [0.9, 1.1] 内",
+                ratio in 0.9..1.1,
+                "关=$offInk，开=$onInk，比值 ${"%.4f".format(ratio)}"
+                        + "（失败即 §4.3 那条细带公式确实偏厚 ⇒ 该换三分量 aEdge，不是放宽容差）")
+        }
+        return true
+    }
+
+    // ------------------------------------------------------------------
+    // ★ 非等比缩放：声明的降级（压缩轴上的羽化退化成硬边）
+    // ------------------------------------------------------------------
+
+    /**
+     * 非等比缩放探针的判定（几何见 [drawAnisoProbeScene]）。
+     *
+     * <p><strong>只钉方向，不钉具体数值</strong>——与"旋转 `clipRect` 实际生效的是
+     * 轴对齐包围盒"那条同类：底层手段按定义只有一个标量（`matrixScale()` 取两轴平均），
+     * 于是"1 个设备像素"的外扩量在两条轴上必然差一个倍率。
+     *
+     * <p>两条判据互为对照，缺一不可：
+     * <ul>
+     *   <li><b>压缩轴</b>（x，scale 1）真外缘之外**没有**片元 —— 羽化退化；
+     *       若单独看这一条，它也可能是"AA 整条没生效"，所以——</li>
+     *   <li><b>拉伸轴</b>（y，scale 10）真外缘之外**有**片元 —— 证明同一帧里
+     *       AA 确实开着、几何确实外扩了，于是上面那条是**轴**的降级而不是开关坏了。</li>
+     * </ul>
+     *
+     * <p>两个方向的相位都是挑过的（理由见 [ANISO_VX]），所以这条判据钉的是
+     * "外扩量按哪个量算"这件事，而不是像素中心的运气。
+     */
+    private fun verifyAnisoScale(): Boolean {
+        val f = grabFrame() ?: return false
+
+        val vRow = 400
+        val hCol = 400
+        println("\n-- ★ 非等比缩放（gc.scale(1,10)）：压缩轴上的羽化退化 --")
+        // ★ 打印的剖面**就是**被断言的剖面（整段，不是摘要）。
+        println("  竖线（横向 = 压缩轴 x，scale 1）第 $vRow 行，x∈[90,116)：")
+        println("    " + (90 until 116).joinToString(" ") { "%d:#%06X".format(it, f.rgb(it, vRow)) })
+        println("  横线（横向 = 拉伸轴 y，scale 10）第 $hCol 列，y∈[170,232)：")
+        println("    " + (170 until 232).joinToString(" ") { "%d:#%06X".format(it, f.rgb(hCol, it)) })
+
+        // 压缩轴：真外缘在 xc ± 2（设备像素）。之外一个片元都不该有。
+        val vBeyond = ArrayList<Int>()
+        for (x in 90 until 116) {
+            if (Math.abs(x + 0.5 - ANISO_DEVICE_X) > ANISO_TRUE_HALF_X && f.rgb(x, vRow) != background) {
+                vBeyond.add(x)
+            }
+        }
+        report("★ 非等比缩放 压缩轴（x，scale 1）：真外缘之外的片元数 = 0（羽化退化成硬边）",
+            vBeyond.isEmpty(),
+            "实测 ${vBeyond.size} 个${if (vBeyond.isEmpty()) "" else "：x=$vBeyond"}")
+
+        // 拉伸轴：真外缘在 yc ± 20。之外至少要有**一个**片元。
+        val hBeyond = ArrayList<Int>()
+        for (y in 170 until 232) {
+            if (Math.abs(y + 0.5 - ANISO_DEVICE_Y) > ANISO_TRUE_HALF_Y && f.rgb(hCol, y) != background) {
+                hBeyond.add(y)
+            }
+        }
+        report("★ 非等比缩放 拉伸轴（y，scale 10）：真外缘之外**有**片元（羽化完整）",
+            hBeyond.isNotEmpty(),
+            "实测 ${hBeyond.size} 个${if (hBeyond.isEmpty()) "（这条失败说明同一帧里 AA 没生效，而不是缩放降级）" else "：y=$hBeyond"}")
+        return true
+    }
+
     /** 收尾：汇总 + 落退出码。放在最后单独一帧，好让探针阶段也进同一份摘要。 */
 
     private fun finish() {
@@ -1014,7 +1383,57 @@ class PipelineVerifierApp : Application() {
                     "%06X".format(rgb(it, y))
                 }
             }
+
+        /**
+         * 一块抗锯齿测量窗的读数（口径见 [verifyAntialias]）。
+         *
+         * <p>`m = y − x − c` 在**像素中心**上恰好取整数（两个 `0.5` 相消），
+         * 所以"第几级覆盖"完全由它决定：`|m| ≤ 1` 恒为满覆盖、`|m| = 2 / 3` 是两圈羽化、
+         * `|m| ≥ 4` 恒为背景。线心判据取 `|m| ≤ 1` 而不是"窗中间那几行"，
+         * 正是因为这个量**不随窗的位置漂移**。
+         *
+         * @param fringe 既非背景也非线色的像素个数（① ② 的读数）
+         * @param core   线心那三条对角带（`|m| ≤ 1`）上的**纯色**像素个数（③ 的读数）
+         * @param ink    墨量 `Σ (red − 背景)`，饱和度口径见 [AA_LUMA_SPAN]（④ 的读数）
+         * @param white  窗内纯线色像素总数（**读数，不是判据**：它必然随开不开 AA 而变）
+         */
+        fun aaStats(x0: Int, y0: Int, x1: Int, y1: Int, c: Int): AaStats {
+            var fringe = 0
+            var core = 0
+            var ink = 0
+            var white = 0
+            for (y in y0.coerceAtLeast(0) until y1.coerceAtMost(h)) {
+                for (x in x0.coerceAtLeast(0) until x1.coerceAtMost(w)) {
+                    val lum = r(x, y)
+                    val color = (lum shl 16) or (g(x, y) shl 8) or b(x, y)
+                    if (color == AA_LINE_RGB) {
+                        white++
+                        if (Math.abs(y - x - c) <= 1) core++
+                    } else if (color != (AA_BG_LUMA or (AA_BG_LUMA shl 8) or (AA_BG_LUMA shl 16))) {
+                        fringe++
+                    }
+                    ink += lum - AA_BG_LUMA
+                }
+            }
+            return AaStats(fringe, core, ink, white)
+        }
+
+        /** 一块窗内每种颜色各有多少像素（给报告当读数用，顺序按颜色值）。 */
+        fun aaHistogram(x0: Int, y0: Int, x1: Int, y1: Int): String {
+            val hist = HashMap<Int, Int>()
+            for (y in y0.coerceAtLeast(0) until y1.coerceAtMost(h)) {
+                for (x in x0.coerceAtLeast(0) until x1.coerceAtMost(w)) {
+                    val color = rgb(x, y)
+                    hist[color] = (hist[color] ?: 0) + 1
+                }
+            }
+            return hist.entries.sortedByDescending { it.value }
+                .joinToString(" ") { "#%06X×%d".format(it.key, it.value) }
+        }
     }
+
+    /** [Frame.aaStats] 的结果（`private class` 里也能声明，只是不导出）。 */
+    private class AaStats(val fringe: Int, val core: Int, val ink: Int, val white: Int)
 
     /** 两个同形快照里不同的像素个数。 */
     private fun differingPixels(a: IntArray, b: IntArray): Int {
