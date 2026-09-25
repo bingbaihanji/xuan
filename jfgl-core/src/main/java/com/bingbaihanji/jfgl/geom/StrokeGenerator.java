@@ -267,9 +267,45 @@ public final class StrokeGenerator {
     public void stroke(float[] points, int count, boolean closed, float width,
                        Cap cap, Join join, float miterLimit, int roundSegments,
                        float capExtension) {
+        stroke(points, count, closed, width, cap, join, miterLimit, roundSegments,
+                capExtension, width * 0.5f);
+    }
+
+    /**
+     * 生成描边轮廓，并让**接头**用另一个半线宽 {@code joinHalf} 生成（结果写入本实例）。
+     *
+     * <p><strong>为什么接头要与其余几何分开一个半宽</strong>：调用方（{@code Gc}）为了
+     * 给描边的长边留出外侧片元，会把 {@code width} **加宽 1 个设备像素**——那是对的，
+     * 窄的那一圈会被着色器按覆盖率羽化掉。但接头不同：它的横向边距**恒为 0**
+     * （见 {@link #emitJoin}），也就是说它**不会羽化**，是整块不透明的。
+     * 外扩量加在它身上不会被羽化掉，只会让拐角**实打实地向外多画一圈**（实测约 1 个像素）。
+     * 因此接头要用**真实**半线宽生成：它的风筝形外缘恰好落在真实轮廓上。
+     *
+     * <p>{@code joinHalf} 与 {@code width} 的关系只影响接头：段四边形、端帽、
+     * 以及沿向的归一化都仍用 {@code width / 2}。相邻段四边形被外扩而接头不被外扩，
+     * 两者的并集恰好是"真实墨迹 + 该有的 fringe"——交界处不会留缝。
+     *
+     * <p>{@code miterLimit} 是相对于 {@code joinHalf} 的（尖角的长度本来就是拿它量出来的）。
+     *
+     * @param points        扁平折线顶点数组，布局为 {@code x0,y0,x1,y1,...}
+     * @param count         顶点个数
+     * @param closed        是否闭合
+     * @param width         线宽（局部空间单位），决定段四边形与端帽
+     * @param cap           端点样式
+     * @param join          接头样式
+     * @param miterLimit    miter 接头超限后回退为 bevel 的阈值（相对于 {@code joinHalf}）
+     * @param roundSegments 圆端点与圆角接头的细分段数
+     * @param capExtension  端帽外扩量（局部空间单位，{@code 0} = 不外扩）
+     * @param joinHalf      接头使用的半线宽（局部空间单位）；传"真实半线宽"可让接头
+     *                      不被 {@code width} 里的外扩量撑大。不传时等于 {@code width / 2}
+     * @see #stroke(float[], int, boolean, float, Cap, Join, float, int, float)
+     */
+    public void stroke(float[] points, int count, boolean closed, float width,
+                       Cap cap, Join join, float miterLimit, int roundSegments,
+                       float capExtension, float joinHalf) {
         reset();
         generateOutline(points, count, closed, width, cap, join, miterLimit,
-                roundSegments, capExtension);
+                roundSegments, capExtension, joinHalf);
     }
 
     /**
@@ -399,8 +435,10 @@ public final class StrokeGenerator {
                     seg[1] = ay + uy * cursor;
                     seg[2] = ax + ux * (cursor + step);
                     seg[3] = ay + uy * (cursor + step);
+                    // 虚线每一格都是**两点**开放折线：没有拐点，joinHalf 在这里没有用武之地，
+                    // 传 width/2 让它与 9 参重载的行为逐位一致。
                     generateOutline(seg, 2, false, width, cap, join, miterLimit,
-                            roundSegments, capExtension);
+                            roundSegments, capExtension, width * 0.5f);
                 }
                 cursor += step;
                 consumed += step;
@@ -430,10 +468,15 @@ public final class StrokeGenerator {
      * @param capExtension  端帽外扩量（局部空间单位，{@code 0} = 不外扩）；
      *                      只对 {@link Cap#BUTT} 且非闭合路径生效，见
      *                      {@link #emitCap}
+     * @param joinHalf      接头使用的半线宽；只影响 {@link #emitJoin} 的几何与
+     *                      miter 阈值，其余（段四边形、端帽、沿向归一化）都用
+     *                      {@code width / 2}。理由见 10 参的
+     *                      {@link #stroke(float[], int, boolean, float, Cap, Join,
+     *                      float, int, float, float)}
      */
     private void generateOutline(float[] points, int count, boolean closed, float width,
                                  Cap cap, Join join, float miterLimit, int roundSegments,
-                                 float capExtension) {
+                                 float capExtension, float joinHalf) {
         if (count < 2 || width <= 0f) {
             return;
         }
@@ -489,8 +532,11 @@ public final class StrokeGenerator {
             float aEnd = alongAt(arc + len, totalLength, half, closed);
 
             // 与上一有效段之间补接头
+            // ⚠ 接头拿的是 joinHalf（不是 half）：它的横向恒为 0、不会羽化，
+            //   外扩量加在它身上只会让拐角实打实地多画一圈。见 10 参的 stroke 重载。
             if (hasPrev) {
-                emitJoin(ax, ay, prevDx, prevDy, dx, dy, half, aStart, join, miterLimit, roundSegments);
+                emitJoin(ax, ay, prevDx, prevDy, dx, dy, joinHalf, aStart,
+                        join, miterLimit, roundSegments);
             }
             // 起点封口落在第一段有效段上
             if (!closed && !capStartDone) {
@@ -532,7 +578,7 @@ public final class StrokeGenerator {
                 // 拿到同一个沿向值，而两者本来就在同一个点上。
                 emitJoin(points[first * 2], points[first * 2 + 1], prevDx, prevDy,
                         points[b * 2] - points[first * 2], points[b * 2 + 1] - points[first * 2 + 1],
-                        half, alongAt(0f, totalLength, half, true),
+                        joinHalf, alongAt(0f, totalLength, half, true),
                         join, miterLimit, roundSegments);
             }
         } else if (capStartDone) {
@@ -580,12 +626,15 @@ public final class StrokeGenerator {
      * @param d1y           入段方向向量 y（未归一化）
      * @param d2x           出段方向向量 x（未归一化）
      * @param d2y           出段方向向量 y（未归一化）
-     * @param half          半线宽
+     * @param half          <strong>接头自己的</strong>半线宽（{@code stroke} 的
+     *                      {@code joinHalf}）。调用方为长边留 fringe 而加宽线宽时，
+     *                      这里要传**真实**半线宽：接头的横向恒为 0、不会被羽化，
+     *                      外扩量加在它身上只会让拐角实打实地多画一圈（实测约 1 个像素）
      * @param along         该拐点的沿向边距（{@code alongAt(拐点弧长, …)}）：
      *                      整个接头都落在这一个弧长位置上，所以它<strong>只取决于拐点</strong>，
      *                      与顶点在接头内部的位置无关
      * @param join          接头样式
-     * @param miterLimit    miter 阈值（相对于半线宽）
+     * @param miterLimit    miter 阈值（相对于 {@code half}，也就是相对于 {@code joinHalf}）
      * @param roundSegments 圆角细分段数
      */
     private void emitJoin(float px, float py, float d1x, float d1y,

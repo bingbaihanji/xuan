@@ -1266,6 +1266,12 @@ class Gc constructor(private val batch: RenderBatch) {
         //       传了也是空操作（`generateOutline` 只在 `!closed` 时补端帽）。
         //   混在一起（用同一个 `!closed` 挡掉两者）的后果是闭合描边的长边只拿到
         //   半边羽化，而这**不是**任何人的意图，只是两个判据恰好长得一样。
+        //   ★ 而**接头**要用**真实**半线宽生成（`joinHalf`），不能跟着外扩：
+        //     接头的横向恒为 0（见 StrokeGenerator.emitJoin）⇒ 它**不会被羽化**，
+        //     加宽量落在它身上只会让拐角实打实地向外多画一圈（实测：真外缘之外
+        //     0.25 像素处，直边给 0.25、拐角给 1.0；线宽 8 时就是每个拐角胖 1 像素）。
+        //     接头不被外扩、相邻段四边形被外扩，两者的并集恰好是"真实墨迹 + 该有的 fringe"，
+        //     交界处不会留缝。AA 关时 `half == realHalf`，这个参数是空操作。
         val realHalf = lineWidth * 0.5f
         val px = if (antialias) 1f / matrixScale().coerceAtLeast(1e-6f) else 0f
         val capExt = if (closed) 0f else px
@@ -1275,7 +1281,8 @@ class Gc constructor(private val batch: RenderBatch) {
             StrokeGenerator.Join.MITER,
             MITER_LIMIT,
             ROUND_SEGMENTS,
-            capExt                               // ← capExtension：只对开放路径有效
+            capExt,                              // ← capExtension：只对开放路径有效
+            realHalf                             // ← joinHalf：接头不参与外扩
         )
         val n = strokeGenerator.triangleCount() * 6
         // 生成器是按**它收到的那条线宽**的一半归一化边距的，而那条线宽已经被外扩过

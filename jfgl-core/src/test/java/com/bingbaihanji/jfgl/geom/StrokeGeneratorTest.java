@@ -951,6 +951,43 @@ class StrokeGeneratorTest {
                 "BEVEL 接头同样是横向 0，且只有底边三个顶点");
     }
 
+    /**
+     * 接头半宽（{@code joinHalf}）**只**作用于接头：段四边形与端帽仍按 {@code width} 生成。
+     *
+     * <p>存在的理由：调用方（`Gc`）为了给长边留外侧片元会把线宽加宽 1 个设备像素，
+     * 而接头的横向恒为 0、**不会被羽化**——加宽量落在它身上只会让拐角实打实地多画一圈。
+     * 于是接头要拿**真实**半线宽生成。这条断言把"只有接头用了另一个半宽"钉死：
+     * 若 {@code joinHalf} 被误传给段四边形，第二组读数会从 ±4 掉到 ±3。
+     */
+    @Test
+    void 接头半宽只作用于接头() {
+        // 直角折线 (0,0)→(10,0)→(10,10)。线宽 8 ⇒ 段四边形与端帽的半宽是 4；
+        // 接头半宽显式传 3 ⇒ 风筝形按 3 生成：偏移点 (10,-3) 与 (13,0)、尖角 (13,-3)。
+        StrokeGenerator g = new StrokeGenerator();
+        g.stroke(new float[]{0f, 0f, 10f, 0f, 10f, 10f}, 3, false, 8f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 8f, 8, 0f, 3f);
+        float[] t = g.triangles();
+        int tip = 0;
+        int quadAtFour = 0;
+        int quadAtThree = 0;
+        for (int v = 0; v < g.triangleCount() * 3; v++) {
+            float x = t[v * 2], y = t[v * 2 + 1];
+            if (Math.abs(x - 13f) < 1e-4f && Math.abs(y + 3f) < 1e-4f) {
+                tip++;
+            }
+            if (Math.abs(x) < 1e-4f) {
+                if (Math.abs(Math.abs(y) - 4f) < 1e-4f) quadAtFour++;
+                if (Math.abs(Math.abs(y) - 3f) < 1e-4f) quadAtThree++;
+            }
+        }
+        assertEquals(1, tip, "接头尖角应按 joinHalf=3 落在 (13,-3)，实测 " + tip + " 个");
+        // 第一段四边形的角点在 x = 0 处是 (0,4) 与 (0,-4)；前者出现在该四边形的两个三角形里
+        // （`emitQuad` 的第二个三角形从 v0 起算）⇒ 共 3 个顶点落在 x=0 且 |y|=4 上。
+        assertEquals(3, quadAtFour,
+                "段四边形的角点必须留在 width/2 = 4 上（(0,4) 被两个三角形共用所以是 3 个），实测 " + quadAtFour + " 个");
+        assertEquals(0, quadAtThree, "joinHalf=3 不该漏给段四边形——x=0 处不该出现 |y|=3 的角点");
+    }
+
     /** 统计横向边距**恰好为 0** 的顶点个数。 */
     private static int countZeroCross(StrokeGenerator g) {
         float[] e = g.rawEdges();
