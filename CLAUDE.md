@@ -100,6 +100,28 @@ mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime
 状态更新这四件事；它**没有**证"真实鼠标事件能到达画布"（合成事件绕过 JavaFX 拾取，
 那条由 `ClickVerifier` 的 `Robot` 探针管），也**没有**证画面对不对。
 
+> **★ JavaFX + GL 应用的退出路径：`exitProcess` 会跑关闭钩子，而钩子会与 JavaFX 自己的
+> 关停并发碰 GL/D3D——实测撞出过原生崩溃。** 任何人写这类应用都会踩，与自检无关。
+> **现象**：`Platform.exit()` 之后调 `System.exit(code)`（`exitProcess`），进程以
+> **`0xC0000005`（ACCESS_VIOLATION）** 死掉，maven 报 `Process exited with an error:
+> -1073741819`——**而这一次运行的所有断言都是绿的**。它把"全过"报成了非 0 退出，
+> 正是本仓库最防的"报告与事实相反"。
+> **机制（与代码事实吻合，但未见原生栈）**：此刻 JavaFX 线程正在 `stop()` 之后继续它自己的
+> 关停（`Platform.exit()` 只是**开始**拆），而 `System.exit` 要跑的关闭钩子里有碰
+> GL/JavaFX 的那些——两边**并发**拆同一批 D3D 资源。
+> **证据强度照实说**：`exitProcess` 那条路径 **5 次里崩 1 次**；改成
+> `Runtime.getRuntime().halt(code)` 之后**连跑 8 次全干净**（8/8 退出码 0、8/8 断言全过、
+> 8/8 打出 dispose 已完成）。**这是"支持度足够但未证明"**——没有拿到 `hs_err_pid*.log`，
+> 机制是从"钩子 + 关停并发"推出来的，不是从栈里读出来的。样本也不大（1/5 vs 0/8）。
+> **做法**：退出前先把要自己释放的东西释放掉（这里等 `stop()` → `dispose()` 跑完），
+> **然后用 `halt(code)` 落退出码**——退出码一样，但不跑钩子、也不引入新的并发。
+> 本文件里 `JfglDemo` 的看门狗早就写着同一条理由（"`exitProcess` 会跑关闭钩子，
+> 而钩子里再去碰 GL/JavaFX，就是把一次有报告的失败换成一个没报告的挂死"）；
+> 这条把那个局部经验推广成了退出路径的通用写法。
+> ⚠️ 若哪天要把它升级成"已证明"，取证的入口是**别让 `halt` 把现场抹掉**：
+> 先复现一次崩溃并留下 `hs_err_pid*.log`（JVM 崩溃时默认会写，`halt` 那条路径看不到），
+> 或者用 `-XX:+CreateCoredumpOnCrash`。**在拿到栈之前，别在文档里把它写成定论。**
+
 > **⚠️ 图表 / 文字路径上的异常仍然不可观测（本期只记录，不修）。**
 > GL 线程上的异常被 openglfx 的原生回调吞掉（我们代码里一处 `catch` 都没有），
 > 所以"少画了一帧东西"与"这一帧抛了异常"在画面上长得一样。

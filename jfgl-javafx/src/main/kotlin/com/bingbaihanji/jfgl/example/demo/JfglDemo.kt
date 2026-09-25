@@ -609,9 +609,8 @@ class JfglDemoApp : Application() {
                 //   就当作没框选，**不动选中集**。
                 val dragged = abs(marqueeW) >= CLICK_SLOP || abs(marqueeH) >= CLICK_SLOP
                 if (dragged) {
-                    val r = Rect(minOf(marqueeX, marqueeX + marqueeW), minOf(marqueeY, marqueeY + marqueeH),
-                        abs(marqueeW), abs(marqueeH))
-                    marqueePending.set(r)      // GL 线程在下一帧消费
+                    // 与 [drawMarquee] 共用同一份规范化——读回用的矩形与画出来的框是同一个。
+                    marqueePending.set(normalizedRect(marqueeX, marqueeY, marqueeX + marqueeW, marqueeY + marqueeH))
                 }
                 // 提交与否都要清：不清的话残留的 `marqueeW = 0f` 会让**下一次没有按下的**
                 // 右键释放也照走这条分支（它只判 NaN）。见 [resetDragState] 的说明：
@@ -909,6 +908,23 @@ class JfglDemoApp : Application() {
     }
 
     /**
+     * 把"两个角点"规范化成一个 `Rect`（左 / 上 / 宽 / 高，**后两项非负**）。
+     *
+     * <p>**为什么要有它**（终审的 M4）：同一套 `minOf` / `abs` 规范化在本文件里写了**四遍**，
+     * 而其中两遍是 [drawMarquee] 里**紧邻的两句**——填充用一句、描边用一句。那种写法的
+     * 风险不是"重复"，而是**两遍会分家**：改了一处（比如把 `abs` 写掉、或把某个 `+ w`
+     * 写成 `- w`）就会有半透明填充框与描边框**互相错开**，而画面上两支框都还在、
+     * 看起来只是"框有点歪"，不会有人想到是两处算了两遍。
+     * 抽成一个函数之后，"填充与描边的框**不可能**不一致"就从一句约定变成了**结构性事实**。
+     *
+     * <p>它同时收掉了 [onRelease]（提交给 GL 线程的那个矩形）与 [drawDragPreview]
+     * （拖拽预览框）里的另外两遍——三处共用一份规范化，就没有"某处算得跟别处不一样"的余地。
+     * 这是一个**纯函数**（只有算术，不碰任何状态），所以随便哪个线程调都对。
+     */
+    private fun normalizedRect(x0: Float, y0: Float, x1: Float, y1: Float): Rect =
+        Rect(minOf(x0, x1), minOf(y0, y1), abs(x1 - x0), abs(y1 - y0))
+
+    /**
      * 拖拽预览：两点定义的那四种画一个临时图形；轨迹定义的那两种画原始轨迹。
      *
      * <p>**`gc.pickId = 0` 写在 `save()` 之后，不靠调用方的帧首复位**：`save` 会保存并恢复
@@ -936,8 +952,8 @@ class JfglDemoApp : Application() {
             if (pts.size >= 4) gc.strokePolyline(pts, closed = false)
         } else {
             val last = if (pts.size >= 2) Pair(pts[pts.size - 2], pts[pts.size - 1]) else Pair(sx, sy)
-            gc.strokeRect(minOf(sx, last.first), minOf(sy, last.second),
-                abs(last.first - sx), abs(last.second - sy))
+            val r = normalizedRect(sx, sy, last.first, last.second)
+            gc.strokeRect(r.x, r.y, r.width, r.height)
         }
         gc.restore()
     }
@@ -951,15 +967,19 @@ class JfglDemoApp : Application() {
     private fun drawMarquee(gc: Gc) {
         val w0 = marqueeW
         if (w0.isNaN()) return
+        // ★ 填充与描边**共用同一个规范化结果**（终审 M4）：以前这两句各算一遍
+        //   `minOf` / `abs`，改坏一处就会得到两个互相错开的框，而画面上两支框都在、
+        //   只是"有点歪"。现在它们不可能不一致——那是结构性的，不是靠约定。
+        val r = normalizedRect(marqueeX, marqueeY, marqueeX + w0, marqueeY + marqueeH)
         gc.save()
         gc.pickId = 0
         gc.globalAlpha = 0.25f
         gc.fill = HIGHLIGHT
-        gc.fillRect(minOf(marqueeX, marqueeX + w0), minOf(marqueeY, marqueeY + marqueeH), abs(w0), abs(marqueeH))
+        gc.fillRect(r.x, r.y, r.width, r.height)
         gc.globalAlpha = 1f
         gc.stroke = HIGHLIGHT
         gc.lineWidth = 1f
-        gc.strokeRect(minOf(marqueeX, marqueeX + w0), minOf(marqueeY, marqueeY + marqueeH), abs(w0), abs(marqueeH))
+        gc.strokeRect(r.x, r.y, r.width, r.height)
         gc.restore()
     }
 
