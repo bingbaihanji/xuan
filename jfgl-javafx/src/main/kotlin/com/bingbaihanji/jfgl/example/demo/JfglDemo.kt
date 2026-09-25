@@ -3,6 +3,7 @@ package com.bingbaihanji.jfgl.example.demo
 import com.bingbaihanji.jfgl.glview.FXGLTransfer
 import com.bingbaihanji.jfgl.renderer.Gc
 import com.bingbaihanji.jfgl.renderer.PickHit
+import com.bingbaihanji.jfgl.renderer.PickRegistry
 import com.bingbaihanji.jfgl.util.Rect
 import com.bingbaihanji.jfgl.view.MainView
 import javafx.animation.AnimationTimer
@@ -611,23 +612,37 @@ class JfglDemoApp : Application() {
     private fun deleteSelected() {
         val sel = selection.get()
         if (sel.isEmpty()) { status.text = "没有选中任何图形"; return }
-        removeShapes(sel)
+        // 注册表在**本线程**（JavaFX 线程）解析好再传进去——`transfer` 是个**普通**字段，
+        // 它不是线程安全的载体（见 [start] 里 `bridge.gc()` 那段说明）。
+        removeShapes(sel, transfer?.gc()?.pickRegistry)
         status.text = "已删除 ${sel.size} 个图形 · 剩 ${shapes.get().size} 个"
     }
 
     /**
      * 把给定拾取号对应的图形从画布上摘掉（注销 + 移出列表 + 清空选中集）。
      *
-     * <p>**它只碰三样线程安全的东西**（`pickRegistry` / `shapes` / `selection`），
-     * 所以**GL 线程上也能调**——自检第 7 条正是要在 GL 线程的那一帧里调它
-     * （见 [consumeMarquee] 里那段钩子）。状态栏是 JavaFX 控件，**不在这里写**，
-     * 由调用方负责（[deleteSelected] 在 JavaFX 线程上直接写；钩子那边走 `runLater`）。
+     * <p><strong>★ 注册表走参数，不是在里面读 [transfer] 拿的</strong>——这不是风格问题：
+     * `transfer` 是个**普通字段**（`@Volatile` 都没有），而本文件在 [start] 里明文把这种读法
+     * 称作数据竞争（那边的原话是"读它属于数据竞争"）。本函数**要在 GL 线程上被调**
+     * （自检第 7 条的钩子，见 [consumeMarquee]），所以在里面读 `transfer?.gc()` 就凭空多出
+     * 一处跨线程读——而它的 KDoc 同时声称"只碰线程安全的三样东西"，**文档承诺超过实现**。
+     * 改法是让那句话**为真**，不是给它加一段注解：注册表由**调用方在它自己那一侧**解析。
      *
-     * @param sel 要删掉的拾取号集合
+     * <p>于是它真的只碰三样线程安全的东西（`registry` / `shapes` / `selection`）：
+     * JavaFX 线程的调用方（[deleteSelected]）同线程读 `transfer`，本来就没问题；
+     * GL 线程的钩子手里已经有 `consumeMarquee(gc)` 那个 `gc`，直接交 `gc.pickRegistry`。
+     *
+     * <p>状态栏是 JavaFX 控件，**不在这里写**，由调用方负责
+     * （[deleteSelected] 在 JavaFX 线程上直接写；钩子那边走 `runLater`）。
+     *
+     * @param sel      要删掉的拾取号集合
+     * @param registry 拾取号注册表；**为 null 表示此刻拿不到**（`gc` 还没建好），
+     *                 那就只摘列表、不注销——图形照删，只是注册表里多留一条到进程结束
+     *                 （与 [commitShape] 里"`gc()` 为 null 时 `id = 0`"是同一种降级）
      */
-    private fun removeShapes(sel: Set<Int>) {
+    private fun removeShapes(sel: Set<Int>, registry: PickRegistry?) {
         // 所有权：选定集必须 unregister，否则 pickRegistry 会一直强引用着它们
-        transfer?.gc()?.let { gc -> sel.forEach { gc.pickRegistry.unregister(it) } }
+        registry?.let { r -> sel.forEach { r.unregister(it) } }
         shapes.set(shapes.get().filter { it.pickId !in sel })
         selection.set(emptySet())
     }
@@ -806,7 +821,9 @@ class JfglDemoApp : Application() {
             selfTestDeleteAfterReadback = false
             selfTestDeleteHookRuns++
             val sel = selection.get()
-            removeShapes(sel)
+            // 注册表用**手里这个 `gc`**（本函数的参数，GL 线程上的），不去读 `transfer`
+            // ——见 [removeShapes] 的 KDoc：在里面读 `transfer` 就是一处跨线程读。
+            removeShapes(sel, gc.pickRegistry)
             // 状态栏要回 JavaFX 线程写（GL 线程不能碰控件）。这条 runLater 排在
             // 本函数末尾那条**之前**，所以最后显示的是框选结果——与真实时序一致。
             Platform.runLater { status.text = "（自检）读回落地前删除 ${sel.size} 个 · 剩 ${shapes.get().size} 个" }
