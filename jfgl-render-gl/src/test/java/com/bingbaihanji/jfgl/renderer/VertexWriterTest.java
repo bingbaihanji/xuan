@@ -87,10 +87,10 @@ class VertexWriterTest {
         assertEquals(6, w.vertexCount());
         ByteBuffer b = w.buffer();
         assertEquals(0f, b.getFloat(0), 1e-6f);
-        assertEquals(10f, b.getFloat(24), 1e-6f, "顶点1 的 x 应为右上角 10");
-        assertEquals(0f, b.getFloat(120), 1e-6f, "顶点5 回到左下角 x=0");
-        assertEquals(0f, b.getFloat(120 + 8), 1e-6f, "顶点5 的 u 应为 u0=0");
-        assertEquals(1f, b.getFloat(120 + 12), 1e-6f, "顶点5 的 v 应为 v1=1");
+        assertEquals(10f, b.getFloat(VertexFormat.STRIDE_BYTES), 1e-6f, "顶点1 的 x 应为右上角 10");
+        assertEquals(0f, b.getFloat(5 * VertexFormat.STRIDE_BYTES), 1e-6f, "顶点5 回到左下角 x=0");
+        assertEquals(0f, b.getFloat(5 * VertexFormat.STRIDE_BYTES + 8), 1e-6f, "顶点5 的 u 应为 u0=0");
+        assertEquals(1f, b.getFloat(5 * VertexFormat.STRIDE_BYTES + 12), 1e-6f, "顶点5 的 v 应为 v1=1");
     }
 
     @Test
@@ -303,5 +303,48 @@ class VertexWriterTest {
 
         assertEquals(Material.COLOR, plain.command(0).material(),
                 "五参数重载是给纯色绘制的，必须落成 COLOR 而不是未定义值");
+    }
+
+    @Test
+    void 抗锯齿边距写在偏移24与28处() {
+        VertexWriter writer = new VertexWriter(16);
+        writer.setState(0, 0, 0, 100, 100);
+        writer.vertex(1f, 2f, 0f, 0f, 0xFF00FF00, 0, -1f, 0.25f);
+
+        ByteBuffer b = writer.buffer();
+        assertEquals(-1f, b.getFloat(24), 1e-6f, "横向边距应在偏移 24");
+        assertEquals(0.25f, b.getFloat(28), 1e-6f, "沿向边距应在偏移 28");
+        // 与它相邻的两个字段不能被挤动
+        assertEquals(0xFF00FF00, b.getInt(16), "颜色仍在偏移 16");
+        assertEquals(0, b.getInt(20), "拾取 ID 仍在偏移 20");
+    }
+
+    /**
+     * 六参数重载（填充、文本、关抗锯齿时的一切几何）必须把两个边距分量都写成 0。
+     *
+     * <p>写 0 不是"没填的默认值"，而是<strong>判据本身</strong>：片段着色器靠
+     * {@code fwidth(edge)} 为 0 区分"带真实边距的描边"与"恒 0 的填充"，
+     * 从而对后者走"完全覆盖"的分支。若这个重载漏写（保留上一位使用者的残值、
+     * 或写入 NaN），填充的边缘会被当成描边边界而<strong>半透明地淡出</strong>——
+     * 画面看起来"只是边缘软了一点"，与抗锯齿生效时的样子几乎一样。
+     *
+     * <p>断言取的是"两个分量分别等于 0"，不是"整块 8 字节看着像 0"：
+     * 只比较第一个分量的话，把横向/沿向写反的变异会存活。
+     */
+    @Test
+    void 六参数重载把两个边距分量都写0() {
+        VertexWriter w = new VertexWriter(64);
+        w.setState(1, 0, 0, 100, 100);
+        // 先写一个边距非 0 的顶点，再写六参数顶点：
+        // 这样"复用上一位使用者的残值"这类漏写才会被抓住（若只写一个顶点，缓冲区本来就是 0）。
+        w.vertex(0f, 0f, 0f, 0f, WHITE, 0, 1f, 1f);
+        w.vertex(1f, 1f, 0f, 0f, WHITE, 0);
+
+        ByteBuffer b = w.buffer();
+        int base = VertexFormat.STRIDE_BYTES;
+        assertEquals(0f, b.getFloat(base + 24), 1e-6f,
+                "横向边距必须写 0：fwidth==0 是「完全覆盖」分支的判据，残值会让填充边缘淡出");
+        assertEquals(0f, b.getFloat(base + 28), 1e-6f,
+                "沿向边距必须写 0：只钉住横向的话，两个分量写反的变异会存活");
     }
 }

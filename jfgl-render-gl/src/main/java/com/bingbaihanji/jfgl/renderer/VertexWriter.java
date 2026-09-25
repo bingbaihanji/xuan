@@ -38,7 +38,7 @@ import java.util.List;
  */
 public final class VertexWriter {
 
-    /** 顶点数硬上限，约 24 MB。 */
+    /** 顶点数硬上限，约 32 MB（{@code 1<<20} 个顶点 × 32 字节）。 */
     public static final int MAX_VERTEX_CAPACITY = 1 << 20;
 
     /**
@@ -191,7 +191,11 @@ public final class VertexWriter {
     }
 
     /**
-     * 追加一个顶点。必须先调用 {@link #setState}。
+     * 追加一个顶点，抗锯齿边距写 0。必须先调用 {@link #setState}。
+     *
+     * <p>这个重载给"与抗锯齿无关的几何"用：填充、文本，以及 {@code Gc.antialias} 关时的
+     * 一切几何。写 0 而不是别的值是<strong>有意义的</strong>——它让片段着色器里那两个
+     * {@code fwidth} 为 0，从而走"完全覆盖"的分支（见 {@link VertexFormat#OFFSET_EDGE}）。
      *
      * @param x                位置 x（已烘焙到 NDC）
      * @param y                位置 y（已烘焙到 NDC）
@@ -203,6 +207,25 @@ public final class VertexWriter {
      *                               或缓冲区已写满、消费方始终没有执行帧中途 flush 时
      */
     public void vertex(float x, float y, float u, float v, int premultipliedRgba, int id) {
+        vertex(x, y, u, v, premultipliedRgba, id, 0f, 0f);
+    }
+
+    /**
+     * 追加一个带抗锯齿边距的顶点。必须先调用 {@link #setState}。
+     *
+     * @param x                位置 x（已烘焙到 NDC）
+     * @param y                位置 y（已烘焙到 NDC）
+     * @param u                纹理坐标 u
+     * @param v                纹理坐标 v
+     * @param premultipliedRgba 预乘 alpha 后的 RGBA 颜色
+     * @param id               拾取 ID
+     * @param edgeCross        横向：到中心线的有符号距离 ÷ 半线宽（{@code ±1} = 两条真实外缘）
+     * @param edgeAlong        沿向：到最近端帽的沿路径距离 ÷ 半线宽（<strong>恒 ≥ 0</strong>）
+     * @throws IllegalStateException 尚未调用 {@link #setState} 时；
+     *                               或缓冲区已写满、消费方始终没有执行帧中途 flush 时
+     */
+    public void vertex(float x, float y, float u, float v, int premultipliedRgba, int id,
+                       float edgeCross, float edgeAlong) {
         if (currentFirstVertex == NO_COMMAND) {
             throw new IllegalStateException("写入顶点前必须先调用 setState()");
         }
@@ -224,6 +247,8 @@ public final class VertexWriter {
         buffer.putFloat(offset + 12, v);
         buffer.putInt(offset + 16, premultipliedRgba);
         buffer.putInt(offset + 20, id);
+        buffer.putFloat(offset + 24, edgeCross);
+        buffer.putFloat(offset + 28, edgeAlong);
         if (id != 0) {
             hasPickable = true;
         }

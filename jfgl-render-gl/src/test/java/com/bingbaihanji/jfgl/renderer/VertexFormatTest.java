@@ -8,14 +8,26 @@ import static org.junit.jupiter.api.Assertions.*;
 class VertexFormatTest {
 
     @Test
-    void 步长与偏移自洽() {
-        assertEquals(24, VertexFormat.STRIDE_BYTES);
-        assertEquals(6, VertexFormat.WORDS_PER_VERTEX);
+    void 顶点布局是32字节8字() {
+        assertEquals(32, VertexFormat.STRIDE_BYTES);
+        assertEquals(8, VertexFormat.WORDS_PER_VERTEX);
+        assertEquals(VertexFormat.STRIDE_BYTES, VertexFormat.WORDS_PER_VERTEX * 4);
+
+        // 下面四条偏移断言原先在「步长与偏移自洽」里，改成 32 字节时原样保留：
+        // 它们与步长无关，删掉不会让新布局更容易写错，只会让"已有偏移被挪动了"失去守卫。
+        // 挪动偏移正是本类最典型的静默缺陷——画面只是整体错位或读到垃圾，不报任何错。
         assertEquals(0, VertexFormat.OFFSET_POSITION);
         assertEquals(8, VertexFormat.OFFSET_UV);
         assertEquals(16, VertexFormat.OFFSET_COLOR);
         assertEquals(20, VertexFormat.OFFSET_ID);
-        assertEquals(VertexFormat.STRIDE_BYTES, VertexFormat.WORDS_PER_VERTEX * 4);
+    }
+
+    @Test
+    void 抗锯齿边距在偏移24处() {
+        assertEquals(24, VertexFormat.OFFSET_EDGE);
+        // 它必须紧跟在 20 处的 uint 之后、且恰好占满到 32
+        assertEquals(VertexFormat.OFFSET_EDGE + 8, VertexFormat.STRIDE_BYTES);
+        assertEquals(VertexFormat.OFFSET_ID + 4, VertexFormat.OFFSET_EDGE);
     }
 
     @Test

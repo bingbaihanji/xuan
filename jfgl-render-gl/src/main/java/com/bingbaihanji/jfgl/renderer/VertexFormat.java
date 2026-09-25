@@ -3,12 +3,13 @@ package com.bingbaihanji.jfgl.renderer;
 /**
  * 顶点布局常量与颜色打包工具。
  * <p>
- * 布局（共 24 字节）：
+ * 布局（共 32 字节）：
  * <pre>
  *  偏移  0  vec2 float            位置（已烘焙到 NDC）
  *  偏移  8  vec2 float            纹理坐标
  *  偏移 16  vec4 ubyte normalized 颜色（预乘 alpha）
  *  偏移 20  uint                  拾取 ID
+ *  偏移 24  vec2 float            抗锯齿边距（横向、沿向）
  * </pre>
  *
  * <p>颜色按<strong>地址升序</strong>存放为 {@code R,G,B,A} 四个字节——即偏移 16 处是 R、
@@ -19,11 +20,11 @@ package com.bingbaihanji.jfgl.renderer;
  */
 public final class VertexFormat {
 
-    /** 每个顶点占用的 32 位字数（6 字 = 24 字节）。 */
-    public static final int WORDS_PER_VERTEX = 6;
+    /** 每个顶点占用的 32 位字数（8 字 = 32 字节）。 */
+    public static final int WORDS_PER_VERTEX = 8;
 
     /** 每个顶点占用的字节数。 */
-    public static final int STRIDE_BYTES = 24;
+    public static final int STRIDE_BYTES = 32;
 
     /** 位置（vec2 float）在顶点内的字节偏移。 */
     public static final int OFFSET_POSITION = 0;
@@ -36,6 +37,24 @@ public final class VertexFormat {
 
     /** 拾取 ID（uint）在顶点内的字节偏移。 */
     public static final int OFFSET_ID = 20;
+
+    /**
+     * 抗锯齿边距（vec2 float）在顶点内的字节偏移。
+     *
+     * <p><strong>两个分量分别是"横向"与"沿向"</strong>。简言之：{@code x} 是到中心线的
+     * 有符号距离（归一化到真实半线宽，{@code ±1} 是两条真实外缘），
+     * {@code y} 是到最近端帽的沿路径距离（同样归一化，<strong>恒 ≥ 0</strong>）。
+     *
+     * <p><strong>填充与文本两个分量都写 0</strong>——那时该 vary 在图元上是常量、
+     * 屏幕空间导数为 0，片段着色器据此走"完全覆盖"的分支。
+     * 这条不是特例，是判据本身（见片段着色器里那两个 {@code w > 0.0}）。
+     *
+     * <p>为什么需要"沿向"：{@code Gc} 的描边目前只用平头端（{@code Cap.BUTT}），
+     * 而平头端的端边<strong>垂直于线段</strong>——它的边界上横向坐标从 {@code +1} 连续走到
+     * {@code -1}（中途经过 0），也就是说<strong>平头端的边界由"沿向"描述，横向对它一无所知</strong>。
+     * 只用横向的后果是：一条 4px 横线，上下长边有抗锯齿、左右两端是硬角。
+     */
+    public static final int OFFSET_EDGE = 24;
 
     private VertexFormat() {
     }

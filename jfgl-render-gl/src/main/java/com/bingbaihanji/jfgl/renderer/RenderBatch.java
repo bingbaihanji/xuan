@@ -273,15 +273,17 @@ public final class RenderBatch implements Disposable {
      * 极可能原样发回来。于是 ID 比较会得到"没变"的结论而跳过重配置 ——
      * 正好在需要它的场景下失效。用代数或标志位判断同样是在维护一份容易失同步的平行状态。
      *
-     * <p>每帧多跑 8 次 GL 调用（4 次 VertexAttribPointer + 4 次 EnableVertexAttribArray）
+     * <p>每帧多跑 10 次 GL 调用（5 次 VertexAttribPointer + 5 次 EnableVertexAttribArray）
      * 相对整帧开销完全可以忽略，因此这里选择**无条件重跑**，把问题彻底消掉。
      *
-     * <p>属性布局与 {@link VertexFormat} 的常量一一对应（步长 24 字节）：
+     * <p>属性布局与 {@link VertexFormat} 的常量一一对应（步长 32 字节）：
      * <ul>
      *   <li>location 0：{@code vec2 float}，偏移 {@link VertexFormat#OFFSET_POSITION}＝0</li>
      *   <li>location 1：{@code vec2 float}，偏移 {@link VertexFormat#OFFSET_UV}＝8</li>
      *   <li>location 2：{@code vec4 ubyte normalized}，偏移 {@link VertexFormat#OFFSET_COLOR}＝16</li>
      *   <li>location 3：{@code uint}，偏移 {@link VertexFormat#OFFSET_ID}＝20</li>
+     *   <li>location 4：{@code vec2 float}，偏移 {@link VertexFormat#OFFSET_EDGE}＝24
+     *       （抗锯齿边距：横向、沿向）</li>
      * </ul>
      *
      * <p><strong>location 3 必须用 {@code glVertexAttribIPointer} 而不是
@@ -308,6 +310,12 @@ public final class RenderBatch implements Disposable {
         glVertexAttribIPointer(3, 1, GL_UNSIGNED_INT,
                 VertexFormat.STRIDE_BYTES, VertexFormat.OFFSET_ID);
         glEnableVertexAttribArray(3);
+
+        // 抗锯齿边距：vec2，两个 float。**它必须在这里建立**，否则 stride 变成 32 之后
+        // 显存里那条属性没有任何指针指着它——顶点着色器读到的会是未定义值。
+        glVertexAttribPointer(4, 2, GL_FLOAT, false, VertexFormat.STRIDE_BYTES,
+                VertexFormat.OFFSET_EDGE);
+        glEnableVertexAttribArray(4);
     }
 
     /**
