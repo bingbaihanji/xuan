@@ -460,14 +460,21 @@ class StrokeGeneratorTest {
         // Task 3 起 Gc.emitTriangles 会**每帧**读 rawEdges()，所以"返回副本"不是多一次
         // 可省可不省的复制，而是每帧一次静默分配——而画面上毫无症状。
         // 实测：把 rawEdges() 改成 `return Arrays.copyOf(edges, edges.length);` 之后，
-        // 本类其余 25 条断言**全绿**，所以这一条是唯一守住该契约的地方。
+        // 本类其余断言**全绿**（补这条之前是 25/25 全绿；补完之后是 29/30，倒的只有这一条），
+        // 所以这一条是唯一守住该契约的地方。
         StrokeGenerator g = new StrokeGenerator();
         g.stroke(new float[]{0f, 0f, 10f, 0f}, 2, false, 4f,
                 StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 4f);
 
         float[] raw = g.rawEdges();
+        // 第二次取同一个引用（同一状态下的重复调用）
         assertSame(raw, g.rawEdges(), "不得每次分配新数组，否则热路径省不掉复制");
-        assertSame(raw, g.rawEdges(), "第二次调用同样不得换数组（扩容之外没有理由换）");
+        // 反复调用 stroke() 之后仍应是同一块缓冲：几何不增长就不该换数组。
+        // 这条是**独立**于上一句的——它走的是"reset + 重新生成"这条路径，
+        // 而那正是热路径每帧都在做的事（每帧一次 stroke 调用）。
+        g.stroke(new float[]{0f, 0f, 10f, 0f}, 2, false, 4f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 4f);
+        assertSame(raw, g.rawEdges(), "几何没变大就不该换缓冲——实例要能在热路径上反复复用");
 
         // 与位置数组同一套口径：rawXxx 是内部缓冲且不复制，只有带括号的复制版才复制
         float[] rawTris = g.rawTriangles();
@@ -552,12 +559,18 @@ class StrokeGeneratorTest {
     @Test
     void 开放路径的沿向边距两端为零且中段最大() {
         StrokeGenerator g = new StrokeGenerator();
-        // ★ 必须是**三**点、(0,0)→(50,0)→(100,0)，不能是两点。
-        //   两点折线只有两端，两端的沿向都是 0（它们各自就在一条端帽线上），
-        //   于是 max 也等于 0——而本条断言要求 10。名字里的"中段"要有顶点才存在：
-        //   实测两点的版本在正确实现下也是 `expected: <10.0> but was: <0.0>`。
-        //   两点共线，MITER 接头在共线同向处直接返回，所以中间那个顶点只经两个四边形过路。
-        g.stroke(new float[]{0f, 0f, 50f, 0f, 100f, 0f}, 3, false, 10f,
+        // ★ 必须是**三**点，不能是两点：两点折线只有两端，两端的沿向都是 0
+        //   （它们各自就在一条端帽线上），于是 max 也等于 0——而本条断言要求正数。
+        //   名字里的"中段"要有顶点才存在：实测两点版本在正确实现下是
+        //   `expected: <10.0> but was: <0.0>`。
+        // ★ 而且两段**必须不等长**：(0,0)→(50,0)→(100,0) 这种等长两段下，
+        //   `arc += len` 写成 `arc += 0f` 之后段 2 的 aEnd 恰好与原值重合，min/max
+        //   一字不变（那条变异因此存活）。取 30/70 之后，中段那个顶点的沿向 = 30/5 = 6，
+        //   与"远端复用近端沿向"（会给出 0）和"弧长不推进"（段 2 的近端会给出 0）
+        //   都能分开。
+        // 两点共线，MITER 接头在共线同向处直接返回，所以中间那个顶点只经两个四边形过路。
+        float[] pts = {0f, 0f, 30f, 0f, 100f, 0f};
+        g.stroke(pts, 3, false, 10f,
                 StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 8f, 8);
         float[] e = g.rawEdges();
         float min = Float.MAX_VALUE, max = -Float.MAX_VALUE;
@@ -569,7 +582,231 @@ class StrokeGeneratorTest {
         // ★ 这一条不可省：`min(arc, L-arc)` 与 `arc` 在**两端给出相同的值**
         //   （0 与 L），只有**中段**才分得开。少了它，"沿向算成到远端端帽的距离"
         //   这个变异会存活。
-        assertEquals(10f, max, 1e-4f, "中段的沿向应为 全长/2/半线宽 = 100/2/5 = 10");
+        assertEquals(6f, max, 1e-4f, "中段的沿向应为 30/5 = 6（弧长 30、半线宽 5）");
+
+        // ★★ 上面那对 min/max 仍然只是极值口径——把沿向与**顶点位置**绑起来才抓得住
+        //   两个"局部写错"的变异（实测它们在这对极值下存活）：
+        //     M13 段四边形远端的 alongAt(arc+len,…) 写成 alongAt(arc,…)：每个三角形内
+        //         沿向恒定 ⇒ wa = 0 ⇒ 着色器走"完全覆盖"⇒ 沿向 AA 全灭；
+        //     M14 `arc += len` 写成 `arc += 0f`：段 2 的近端会拿到 0，而它本该是 6。
+        //   本用例的顶点位置只有三排（x=0、30、100），沿向必须分别是 0、6、0。
+        float[] t = g.triangles();
+        int probed = 0;
+        for (int v = 0; v < g.triangleCount() * 3; v++) {
+            float x = t[v * 2];
+            float a = e[v * 2 + 1];
+            if (Math.abs(x) < 1e-5f) {
+                assertEquals(0f, a, 1e-5f, "x=0 那一排就在端线上，沿向应为 0");
+                probed++;
+            } else if (Math.abs(x - 30f) < 1e-5f) {
+                assertEquals(6f, a, 1e-5f, "x=30 那一排（弧长 30、半线宽 5）沿向应为 6");
+                probed++;
+            } else if (Math.abs(x - 100f) < 1e-5f) {
+                assertEquals(0f, a, 1e-5f, "x=100 那一排是另一端线，沿向应为 0");
+                probed++;
+            }
+        }
+        // 两个四边形 × 2 个三角形 × 3 个顶点 = 12 次顶点出现（不是几何上的 8 个角：
+        // 每个四边形拆成两个三角形，共享的两个角各出现两次）
+        assertEquals(12, probed, "两个四边形的全部顶点出现都该落在某一排上");
+    }
+
+    @Test
+    void capExtension外扩使端帽沿向出现负值() {
+        // 沿向的 0 等值线落在端帽线上，而端帽**外侧**本该有一条渐隐带。
+        // 外扩四边形就是那条带：从端线（沿向 0）向外铺 capExtension，
+        // 外缘沿向 = -capExtension/half。本用例：半线宽 5、外扩 2 ⇒ 外缘 -0.4。
+        StrokeGenerator ext = new StrokeGenerator();
+        ext.stroke(new float[]{0f, 0f, 100f, 0f}, 2, false, 10f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 8f, 8, 2f);
+        float[] e = ext.rawEdges();
+        float min = Float.MAX_VALUE;
+        for (int i = 0; i < ext.triangleCount() * 3; i++) {
+            min = Math.min(min, e[i * 2 + 1]);
+        }
+        assertTrue(min < 0f, "外扩后必须有负的沿向（否则带外那条渐隐带不存在），实测 " + min);
+        assertEquals(-2f / 5f, min, 1e-6f, "外缘沿向应为 -capExtension/半线宽 = -2/5");
+
+        // 光有负值还不够：外扩四边形必须真的**铺出去**了。少了这一条，
+        // "把四个顶点都发在端线上"那种写法也能让上面的断言通过。
+        float[] t = ext.triangles();
+        boolean sawOuter = false;
+        for (int v = 0; v < ext.triangleCount() * 3; v++) {
+            float x = t[v * 2];
+            float a = e[v * 2 + 1];
+            if (x < -1e-5f) {
+                assertEquals(-2f, x, 1e-4f, "外缘应铺到端线外 capExtension 处");
+                assertEquals(-2f / 5f, a, 1e-6f, "外缘沿向应为 -0.4");
+                sawOuter = true;
+            } else if (x > 100f + 1e-5f) {
+                assertEquals(102f, x, 1e-4f, "另一端同样外扩");
+                assertEquals(-2f / 5f, a, 1e-6f);
+                sawOuter = true;
+            }
+        }
+        assertTrue(sawOuter, "两端都该有外扩出来的顶点");
+
+        // 既有行为不变：capExtension 缺省（0）时一个负值都不该有，
+        // 而且位置与不传时逐位相同
+        StrokeGenerator noExt = new StrokeGenerator();
+        noExt.stroke(new float[]{0f, 0f, 100f, 0f}, 2, false, 10f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 8f, 8);
+        StrokeGenerator zeroExt = new StrokeGenerator();
+        zeroExt.stroke(new float[]{0f, 0f, 100f, 0f}, 2, false, 10f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 8f, 8, 0f);
+        for (int i = 0; i < noExt.triangleCount() * 3; i++) {
+            assertTrue(noExt.rawEdges()[i * 2 + 1] >= 0f,
+                    "不外扩时沿向不该有负值（端帽外侧本来就没有几何）");
+        }
+        assertEquals(noExt.triangleCount(), zeroExt.triangleCount(),
+                "capExtension = 0 必须与不传这个参数完全等价");
+        assertArrayEquals(noExt.triangles(), zeroExt.triangles(), 0f,
+                "capExtension = 0 的位置必须逐位相同");
+    }
+
+    @Test
+    void 端帽的边距取值() {
+        // 期望值自己从几何推，推导写在下面（不照抄任何文档）。
+        // 直线 (0,0)→(10,0)，w=4 ⇒ 半线宽 2。
+        //
+        // 【SQUARE 端帽】起点封口：emitCap(px=0, py=0, dx=-1, dy=0) ⇒
+        //   u = (-1,0)（向外 = -x），n = (-uy, ux)*half = (0,-1)*2 = (0,-2)。
+        //   四边形 = (0,-2) → (-2,-2) → (-2,2) → (0,2)：
+        //   端线（x=0）沿向 0、外缘（x=-2）沿向 -1（向外半个线宽 ⇒ -half/half）；
+        //   横向 +n 侧（y=-2）为 +1、-n 侧（y=+2）为 -1，外缘同理。
+        StrokeGenerator sq = new StrokeGenerator();
+        sq.stroke(new float[]{0f, 0f, 10f, 0f}, 2, false, 4f,
+                StrokeGenerator.Cap.SQUARE, StrokeGenerator.Join.MITER, 8f, 8);
+        float[] t = sq.triangles();
+        float[] e = sq.rawEdges();
+        int endLine = 0;
+        boolean outerPlusSide = false, outerMinusSide = false;
+        for (int v = 0; v < sq.triangleCount() * 3; v++) {
+            float x = t[v * 2], y = t[v * 2 + 1];
+            float c = e[v * 2], a = e[v * 2 + 1];
+            if (Math.abs(x + 2f) < 1e-5f) {
+                // 起点端帽的外缘（只有起点封口能产生 x = -2 的顶点）。
+                // 注意这里遍历的是**顶点出现次数**（四边形拆成两个三角形，v0/v2 各出现两次），
+                // 所以下面按"两条边都见过"断言，而不是几何上更自然的"4 个角"。
+                assertEquals(-1f, a, 1e-5f, "SQUARE 外边沿向应为 -1（向外半个线宽）");
+                assertEquals(y < 0f ? 1f : -1f, c, 1e-5f, "外边的横向按 ±n 侧取 ±1");
+                if (y < 0f) {
+                    outerPlusSide = true;
+                } else {
+                    outerMinusSide = true;
+                }
+            } else if (Math.abs(x) < 1e-5f) {
+                assertEquals(0f, a, 1e-5f, "端线沿向应为 0（它就是沿向的零点）");
+                // ★ 这一排**不能**断言符号：端帽的内边与段四边形的端点边是同一条线，
+                //   而端帽传进来的 (dx,dy) 是"向外"方向 ⇒ 它的 n 与段四边形的 n 反向，
+                //   于是同一个几何侧从两者拿到相反的符号（见 emitCap 的 KDoc）。
+                //   两边一致的是**大小**与沿向，那才是能断言的东西。
+                assertEquals(1f, Math.abs(c), 1e-5f, "端线的横向应为 ±1（两条外缘）");
+                endLine++;
+            }
+        }
+        assertTrue(outerPlusSide && outerMinusSide, "起点端帽外缘的两条边（y=±2）都该有顶点");
+        assertTrue(endLine >= 3, "端线上应有顶点（端帽内边 3 次出现 + 段四边形端点边），实测 " + endLine);
+
+        // 【ROUND 端帽】同一条线。圆心 = 端点 (0,0)（在端线上）⇒ 横向 0、沿向 0；
+        //   圆周上 dir = (cos a, sin a)，横向 = dir·n（n = (0,-1)）、沿向 = -dir·u（u = (-1,0)）。
+        //   ⇒ 尖端 dir = u = (-1,0)：位置 (-2,0)、横向 0、沿向 -1；
+        //      圆周与端线相交的两点 dir = ±(0,1)：位置 (0,±2)、横向 ∓1、沿向 0。
+        StrokeGenerator rd = new StrokeGenerator();
+        rd.stroke(new float[]{0f, 0f, 10f, 0f}, 2, false, 4f,
+                StrokeGenerator.Cap.ROUND, StrokeGenerator.Join.MITER, 8f, 8);
+        float[] rt = rd.triangles();
+        float[] re = rd.rawEdges();
+        float minAlong = Float.MAX_VALUE;
+        int tip = 0, center = 0, rimEnd = 0;
+        for (int v = 0; v < rd.triangleCount() * 3; v++) {
+            float x = rt[v * 2], y = rt[v * 2 + 1];
+            float c = re[v * 2], a = re[v * 2 + 1];
+            minAlong = Math.min(minAlong, a);
+            if (Math.abs(x + 2f) < 1e-4f && Math.abs(y) < 1e-4f) {
+                // 尖端：起点端帽最外那一点（半圆的中点）
+                assertEquals(-1f, a, 1e-5f, "ROUND 尖端沿向应为 -1（向外半个线宽）");
+                assertEquals(0f, c, 1e-5f, "尖端落在中心线的延长线上，横向应为 0");
+                tip++;
+            }
+            if (Math.abs(x) < 1e-5f && Math.abs(y) < 1e-5f) {
+                // 圆心：端点本身，在端线上
+                assertEquals(0f, c, 1e-5f, "圆心的横向应为 0（它在中心线上）");
+                assertEquals(0f, a, 1e-5f, "圆心在端线上，沿向应为 0");
+                center++;
+            } else if (Math.abs(x) < 1e-5f && Math.abs(y) > 1e-5f) {
+                // 圆周与端线相交的两点：(0,±2)，正是圆弧的两个端点
+                assertEquals(0f, a, 1e-5f, "圆周与端线相交处沿向应为 0");
+                assertEquals(1f, Math.abs(c), 1e-5f, "那里横向应为 ±1（两条外缘）");
+                rimEnd++;
+            }
+        }
+        assertEquals(-1f, minAlong, 1e-5f, "ROUND 端帽的沿向最小值为 -1");
+        // 计数按**顶点出现次数**（三角扇的相邻三角形共享圆周顶点）：
+        // roundSegments=8 ⇒ 8 个三角形 ⇒ 圆心出现 8 次（每个三角形各一次）；
+        // 尖端落在 k=4，被第 4、5 两个三角形共用 ⇒ 出现 2 次。
+        assertEquals(8, center, "圆心应由 8 个扇形三角形各发一次");
+        assertEquals(2, tip, "尖端被相邻两个扇形三角形共用，应出现 2 次");
+        assertTrue(rimEnd >= 2, "圆周与端线相交处应有 2 个顶点（k=0 与 k=8，各出现一次），实测 " + rimEnd);
+    }
+
+    @Test
+    void 接头的边距取值() {
+        // 直角折线 (0,0)→(10,0)→(10,10)，w=4 ⇒ half=2，全长 20，拐点弧长 10。
+        // 拐点处的沿向 = alongAt(10, 20, 2, false) = min(10,10)/2 = 5。
+        // u1 = (1,0)、u2 = (0,1) ⇒ cross = 1 > 0（左转）⇒ s = -1，
+        // 偏移点 o1 = (-u1y*half*s, u1x*half*s) = (0,-2) ⇒ p+o1 = (10,-2)；
+        // 偏移点 o2 = (-u2y*half*s, u2x*half*s) = (2,0) ⇒ p+o2 = (12,0)。
+        //
+        // 【MITER 尖角】limit 8 ⇒ 阈值 16，miter 长度 = half*√2 ≈ 2.83 < 16 ⇒ 走完整风筝形。
+        //   两条偏移线的交点 m：t = ((o2x-o1x)*u2y - (o2y-o1y)*u2x)/cross = 2 ⇒
+        //   m = p + o1 + u1*t = (12,-2)。它只可能由尖角那个三角形产生
+        //   （x=12 落在两段四边形的范围之外），横向取凸侧符号 s = -1（而不是它到中心线的
+        //   真实距离 √2），沿向与拐点相同 = 5。
+        StrokeGenerator g = new StrokeGenerator();
+        g.stroke(new float[]{0f, 0f, 10f, 0f, 10f, 10f}, 3, false, 4f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 8f, 8);
+        float[] t = g.triangles();
+        float[] e = g.rawEdges();
+        int tip = 0;
+        for (int v = 0; v < g.triangleCount() * 3; v++) {
+            float x = t[v * 2], y = t[v * 2 + 1];
+            if (Math.abs(x - 12f) < 1e-5f && Math.abs(y + 2f) < 1e-5f) {
+                assertEquals(-1f, e[v * 2], 1e-5f,
+                        "miter 尖角横向应取凸侧符号 s = -1（取 0 会让尖角被当成外缘之外而羽化掉）");
+                assertEquals(5f, e[v * 2 + 1], 1e-5f, "尖角沿向应与拐点相同");
+                tip++;
+            }
+        }
+        assertEquals(1, tip, "尖角 (12,-2) 只应有 1 个顶点");
+
+        // 【圆角接头】同一折线换成 Join.ROUND。圆弧以拐点 p 为心、半径 half=2，
+        //   从 o1 方向扫过转向角 π/2（o1 = (0,-2) 相对 p ⇒ 起始角 -90°，扫到 0°）。
+        //   取扫过一半处 dir = (cos(-45°), sin(-45°)) = (√2/2, -√2/2)：
+        //   位置 = (10 + √2, -√2) ≈ (11.4142, -1.4142)——这点两段四边形都盖不到
+        //   （段 1 的 x ≤ 10、段 2 的 y ≥ 0），所以只可能来自圆角盘。
+        //   横向 = dir·(入段左法线 (-u1y,u1x) = (0,1)) = -√2/2；
+        //   沿向 = alongBase（整盘恒定）= 5。
+        StrokeGenerator r = new StrokeGenerator();
+        // ⚠ 这里必须用 8 参重载。写成 `…, 8f, 8, 16` 会绑到 9 参那个（第 9 个参数是
+        //   float capExtension，int 字面量 16 加宽成 float 正好合法），于是
+        //   roundSegments 停在 8 而 capExtension 变成 16——编译通过、断言全绿，错的是意图。
+        r.stroke(new float[]{0f, 0f, 10f, 0f, 10f, 10f}, 3, false, 4f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.ROUND, 8f, 16);
+        float[] rt = r.triangles();
+        float[] re = r.rawEdges();
+        float px = 10f + (float) Math.sqrt(2), py = -(float) Math.sqrt(2);
+        int mid = 0;
+        for (int v = 0; v < r.triangleCount() * 3; v++) {
+            if (Math.abs(rt[v * 2] - px) < 1e-3f && Math.abs(rt[v * 2 + 1] - py) < 1e-3f) {
+                assertEquals(-(float) (Math.sqrt(2) / 2), re[v * 2], 1e-3f,
+                        "圆角盘上的横向应是到入段中心线的有符号垂直距离（-√2/2）");
+                assertEquals(5f, re[v * 2 + 1], 1e-5f,
+                        "圆角盘整个落在拐点这一个弧长位置上，沿向应恒为 5");
+                mid++;
+            }
+        }
+        assertTrue(mid > 0, "圆角盘扫过一半处应有顶点（只可能来自圆角盘）");
     }
 
     @Test

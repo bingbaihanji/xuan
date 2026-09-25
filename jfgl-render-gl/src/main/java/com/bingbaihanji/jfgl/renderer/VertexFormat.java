@@ -47,8 +47,10 @@ public final class VertexFormat {
      * 带内为正，带外为负</strong>——片段着色器正是靠这个符号区分"在线内"与"在线外"，
      * 描边的端帽羽化就是靠带外那一圈负值做出来的。
      * （这里曾经写的是"恒 ≥ 0"，那是错的：沿向要能表示"越过了端帽线"，
-     * 否则端帽外侧那圈 fringe 与带内无法区分。平头端也不因此需要特判——
-     * 见 {@code StrokeGenerator.rawEdges()}。）
+     * 否则端帽外侧那圈 fringe 与带内无法区分——而平头端那圈 fringe 的沿向
+     * 只能由 {@code StrokeGenerator} 的 {@code capExtension} 显式要出来，
+     * <strong>不能靠把折线两端延长</strong>：延长点会成为折线自己的弧长端点，
+     * 那里 {@code min(arc, totalLength - arc)} 恒为 0。见其 {@code rawEdges()}。）
      *
      * <p><strong>填充与文本两个分量都写 0</strong>——那时该 vary 在图元上是常量、
      * 屏幕空间导数为 0，片段着色器据此走"完全覆盖"的分支。

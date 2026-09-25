@@ -152,15 +152,18 @@ public final class StrokeGenerator {
      *   <li><strong>沿向</strong>：到最近端帽的沿路径距离，同样除以半线宽。
      *       <strong>{@code 0} 就是端帽线：带内为正，带外为负</strong>——
      *       片段着色器正是靠这个符号区分"在线内"与"在线外"。
-     *       开放路径取 {@code min(到起点, 到终点)} ⇒ 端线处恰为 0、中段最大；
+     *       开放路径取 {@code min(到起点, 到终点)} ⇒ 端线处恰为 0、中段最大
+     *       （最大值 = {@code totalLength/2/half}）；
      *       闭合路径没有端帽，取 {@code 弧长 + 全长}，从而<strong>没有靠近 0 的顶点</strong>
      *       （否则会在路径起点凭空造出一条羽化边）。
-     *       端帽几何（SQUARE / ROUND）自己的顶点沿向可以小于 0——见 {@link #emitCap}。
-     *       <p>还有一条值得写下来的性质：<strong>平头端的"带外"不需要任何特判</strong>。
-     *       着色器要的那圈端帽 fringe，只要把折线在两端各延长一点再交给本类即可——
-     *       延长部分的弧长大于全长，{@code min(arc, totalLength - arc)} 自然落到负区间。
-     *       这也是"端点外侧"在本类里唯一的表达方式：{@link #stroke} 本身从不发射端线以外的几何
-     *       （{@link Cap#BUTT} 直接不发射，SQUARE / ROUND 发射的端帽另有自己的沿向口径）。</li>
+     *       端帽几何（SQUARE / ROUND 与外扩四边形）自己的顶点沿向可以小于 0——见
+     *       {@link #emitCap}。
+     *       <p><strong>"带外"只能由 {@code capExtension} 显式要，不能靠折线形状碰运气</strong>：
+     *       把折线两端各延长一点是<strong>没用</strong>的——延长点会成为所传折线的弧长端点，
+     *       {@code min(arc, totalLength - arc)} 在那里恒为 0，而真实端线反而拿到
+     *       {@code +e/half}（实测两点线两端各延长 1 局部单位后，沿向集合是 {@code {0.0, 0.2}}，
+     *       一个负值都没有）。根因是任何折线的顶点弧长都不可能超过它自己所在折线的全长。
+     *       要用带外的负值，请传 {@code capExtension}。</li>
      * </ul>
      *
      * <p><strong>不变量</strong>：所有值都是有限值，不会出现 {@code NaN} / {@code Infinity}。
@@ -215,8 +218,55 @@ public final class StrokeGenerator {
      */
     public void stroke(float[] points, int count, boolean closed, float width,
                        Cap cap, Join join, float miterLimit, int roundSegments) {
+        stroke(points, count, closed, width, cap, join, miterLimit, roundSegments, 0f);
+    }
+
+    /**
+     * 生成描边轮廓，并把端帽沿向外扩出 {@code capExtension}（结果写入本实例）。
+     *
+     * <p><strong>为什么要外扩</strong>：沿向边距的 {@code 0} 等值线落在端帽线上，
+     * 而端帽<strong>外侧</strong>没有任何几何，于是端线外侧那片像素拿不到沿向梯度
+     * （{@code wa = 0} ⇒ 着色器走"完全覆盖"分支）——一条 4px 横线的两端就成了硬角。
+     * 这里发出的正是一圈<strong>从端线向外到 {@code -capExtension/half}</strong> 的四边形：
+     * 它让沿向在端线两侧都有梯度，端帽因此真的能羽化。
+     *
+     * <p><strong>⚠ 它必须配合着色器的沿向羽化</strong>：这圈几何在顶点色上是满不透明的，
+     * 让它在端线外侧变透明是<strong>着色器</strong>的责任（按沿向算覆盖率）。
+     * 在着色器落地之前调用它，只会把描边画长 {@code capExtension}——所以默认值是 {@code 0}，
+     * 既有调用点与既有行为完全不受影响。
+     *
+     * <p><strong>不要用"把折线两端各延长一点"来替代它</strong>：延长点会成为所传折线的
+     * 弧长端点，{@code min(arc, totalLength - arc)} 在那里恒为 0，而真实端线反而拿到
+     * {@code +e/half}——实测两端各延长 1 局部单位后，沿向集合是 {@code {0.0, 0.2}}，
+     * <strong>一个负值都没有</strong>，端线外侧照样是 {@code ≥ 0.5} ⇒ 端帽照样不羽化，
+     * 同时还把描边实打实地画长了。任何折线的顶点弧长都不可能超过它自己所在折线的全长，
+     * 所以"靠折线形状碰运气"这条路根本不成立。
+     *
+     * @param points        扁平折线顶点数组，布局为 {@code x0,y0,x1,y1,...}
+     * @param count         顶点个数
+     * @param closed        是否闭合
+     * @param width         线宽（局部空间单位）
+     * @param cap           端点样式；<strong>只有 {@link Cap#BUTT} 会外扩</strong>
+     *                      （SQUARE / ROUND 自己就是端帽几何，再外扩会画到端帽之外）
+     * @param join          接头样式
+     * @param miterLimit    miter 接头超限后回退为 bevel 的阈值（相对于半线宽）
+     * @param roundSegments 圆端点与圆角接头的细分段数
+     * @param capExtension  端帽外扩量（局部空间单位，{@code 0} = 不外扩）。
+     *                      调用方（{@code Gc}）应传"1 设备像素折成的局部单位数"
+     * @see #stroke(float[], int, boolean, float, Cap, Join, float, int)
+     *
+     * <p><strong>⚠ 重载陷阱</strong>：{@code roundSegments} 是 {@code int}、{@code capExtension}
+     * 是 {@code float}，而 {@code int} 可以加宽成 {@code float}——所以
+     * {@code stroke(p, n, closed, w, cap, join, lim, 8, 16)} 里的 {@code 16} 会被当成
+     * <strong>capExtension</strong>（{@code roundSegments} 仍是 8），编译通过、毫无提示。
+     * 只想改细分段数请用 8 参重载；两个都要传就把它们都写全（{@code …, 16, 0f}）。
+     */
+    public void stroke(float[] points, int count, boolean closed, float width,
+                       Cap cap, Join join, float miterLimit, int roundSegments,
+                       float capExtension) {
         reset();
-        generateOutline(points, count, closed, width, cap, join, miterLimit, roundSegments);
+        generateOutline(points, count, closed, width, cap, join, miterLimit,
+                roundSegments, capExtension);
     }
 
     /**
@@ -227,6 +277,13 @@ public final class StrokeGenerator {
      *
      * <p>每一格实线的描边直接追加进本实例（见 {@link #generateOutline}），
      * 不分配临时对象，也不复制已有顶点，因此可在每帧的热路径上调用。
+     *
+     * <p><strong>每一格的沿向恒为 0</strong>：每格都是两点开放折线，而
+     * {@code min(arc, totalLength - arc)} 在两点折线的<strong>两端都是 0</strong>
+     * ——也就是说虚线格子里没有任何沿向梯度（{@code wa = 0}），端帽羽化只有靠
+     * {@code capExtension} 外扩那一圈几何才做得出来（见本类的
+     * {@code strokeDashed(…, capExtension)} 重载）。当前 {@code Gc} 不暴露虚线描边，
+     * 所以这一条暂时没有生产后果。
      *
      * @param points        扁平折线顶点数组，布局为 {@code x0,y0,x1,y1,...}
      * @param count         顶点个数
@@ -243,9 +300,30 @@ public final class StrokeGenerator {
     public void strokeDashed(float[] points, int count, boolean closed, float width,
                              Cap cap, Join join, float miterLimit,
                              float[] dashPattern, float dashPhase, int roundSegments) {
+        strokeDashed(points, count, closed, width, cap, join, miterLimit,
+                dashPattern, dashPhase, roundSegments, 0f);
+    }
+
+    /**
+     * 生成虚线描边轮廓，并把每一格实线的端帽沿向外扩 {@code capExtension}。
+     *
+     * <p><strong>每一格都是独立的开放两点折线</strong>，所以它的两个端点各自就是一条端线，
+     * 沿向在整格上是常量 {@code 0}（{@code min(arc, totalLength - arc)} 在两点折线的两端
+     * 都是 0）——外扩四边形（见 {@link #stroke(float[], int, boolean, float, Cap, Join,
+     * float, int, float)}）正是让这些格子两端能羽化的唯一手段。
+     *
+     * <p><strong>⚠ 当前没有消费者</strong>：{@code Gc} 不暴露虚线描边
+     * （{@code StrokeGenerator} 的虚线能力有单测，但 {@code Gc} 的描边路径只调实线）。
+     *
+     * @see #stroke(float[], int, boolean, float, Cap, Join, float, int, float)
+     */
+    public void strokeDashed(float[] points, int count, boolean closed, float width,
+                             Cap cap, Join join, float miterLimit,
+                             float[] dashPattern, float dashPhase, int roundSegments,
+                             float capExtension) {
         if (dashPattern == null || dashPattern.length == 0) {
             // 无模式即实线
-            stroke(points, count, closed, width, cap, join, miterLimit, roundSegments);
+            stroke(points, count, closed, width, cap, join, miterLimit, roundSegments, capExtension);
             return;
         }
         float patternLength = 0f;
@@ -318,7 +396,8 @@ public final class StrokeGenerator {
                     seg[1] = ay + uy * cursor;
                     seg[2] = ax + ux * (cursor + step);
                     seg[3] = ay + uy * (cursor + step);
-                    generateOutline(seg, 2, false, width, cap, join, miterLimit, roundSegments);
+                    generateOutline(seg, 2, false, width, cap, join, miterLimit,
+                            roundSegments, capExtension);
                 }
                 cursor += step;
                 consumed += step;
@@ -345,9 +424,13 @@ public final class StrokeGenerator {
      * @param join          接头样式
      * @param miterLimit    miter 接头超限后回退为 bevel 的阈值（相对于半线宽）
      * @param roundSegments 圆端点与圆角接头的细分段数
+     * @param capExtension  端帽外扩量（局部空间单位，{@code 0} = 不外扩）；
+     *                      只对 {@link Cap#BUTT} 且非闭合路径生效，见
+     *                      {@link #emitCap}
      */
     private void generateOutline(float[] points, int count, boolean closed, float width,
-                                 Cap cap, Join join, float miterLimit, int roundSegments) {
+                                 Cap cap, Join join, float miterLimit, int roundSegments,
+                                 float capExtension) {
         if (count < 2 || width <= 0f) {
             return;
         }
@@ -360,7 +443,10 @@ public final class StrokeGenerator {
         // 沿向边距要用到总弧长：开放路径取 min(到起点, 到终点)，闭合路径取 弧长+全长。
         // 前者让"远离两端"的顶点沿向很大（覆盖率恒 1），后者保证闭合路径**没有**靠近 0 的
         // 顶点——否则会在路径起点凭空造出一条羽化边。
-        // 退化段（长度 < 1e-6）贡献的弧长近似为 0，所以这里不必像主循环那样跳过它们。
+        // 退化段（长度 < 1e-6）在这里也被累加，而主循环会把它们跳过——这是两个累加器唯一的
+        // 分叉点：totalLength 含退化段、arc 不含。两者的差因此有上界
+        // （退化段数 × 1e-6），落到沿向上是 (退化段数 × 1e-6)/half；远小于一个像素的
+        // 覆盖率变化，所以这里不必像主循环那样跳过它们（跳过了反而要多一趟判断）。
         float totalLength = 0f;
         for (int i = 0; i < segmentCount; i++) {
             int b = (i + 1) % count;
@@ -377,6 +463,10 @@ public final class StrokeGenerator {
         boolean hasPrev = false;
         boolean capStartDone = false;
         float lastX = 0f, lastY = 0f, lastDx = 0f, lastDy = 0f;
+        // 最后一段有效段终点处的沿向，终点封口要用它当"端线"的基准——
+        // 端线外侧那圈外扩四边形与它所贴的段四边形共用同一条几何线，沿向必须取同一个值，
+        // 否则接缝两侧各插各的，会在那一圈里插出不连续。
+        float lastAlong = 0f;
 
         for (int i = 0; i < segmentCount; i++) {
             int a = i;
@@ -401,14 +491,18 @@ public final class StrokeGenerator {
             }
             // 起点封口落在第一段有效段上
             if (!closed && !capStartDone) {
-                emitCap(ax, ay, -dx, -dy, half, cap, roundSegments);
+                emitCap(ax, ay, -dx, -dy, half, cap, roundSegments, aStart, capExtension);
                 capStartDone = true;
             }
 
             // 每段是一个四边形（两个三角形）。
             // 横向：+n 侧恒为 +1、-n 侧恒为 -1（n 是本段行进方向的左法线）；
-            // 沿向：两端各取自己那一端的弧长（段内是线性的，于是插值出来的沿向
-            // 恰好等于"到最近端帽的沿路径距离"）。
+            // 沿向：两端各取自己那一端的弧长。**端帽附近**这样插值出来的沿向就等于
+            // "到最近端帽的沿路径距离"（那里的弧长正是较小的那一项）；**中段会偏小**，
+            // 极端情形可以小到 0（整条路径只有一段时，它两端的 alongAt 都是 0）。
+            // 这不影响结果：着色器看的是 `0.5 + 沿向 / fwidth(沿向)`——中段的梯度小、
+            // 比值大，仍然算出"完全覆盖"，而 0 等值线始终落在**真实端线**上。
+            // 反过来说，中段的绝对值不可用于任何手算期望值。
             emitQuad(ax + nx, ay + ny, aStart, 1f,
                     bx + nx, by + ny, aEnd, 1f,
                     bx - nx, by - ny, aEnd, -1f,
@@ -422,6 +516,7 @@ public final class StrokeGenerator {
             lastY = by;
             lastDx = dx;
             lastDy = dy;
+            lastAlong = aEnd;
         }
 
         if (closed && hasPrev) {
@@ -439,7 +534,7 @@ public final class StrokeGenerator {
             }
         } else if (capStartDone) {
             // 终点封口落在最后一段有效段的终点上
-            emitCap(lastX, lastY, lastDx, lastDy, half, cap, roundSegments);
+            emitCap(lastX, lastY, lastDx, lastDy, half, cap, roundSegments, lastAlong, capExtension);
         }
     }
 
@@ -575,17 +670,28 @@ public final class StrokeGenerator {
     }
 
     /**
-     * 在折线端点处补出封口三角形。
+     * 在折线端点处补出封口几何：{@link Cap#BUTT} 的外扩四边形，或
+     * {@link Cap#SQUARE} / {@link Cap#ROUND} 的端帽。
      *
      * <p><strong>{@code (dx,dy)} 是"向外"方向</strong>（由端点指向线段<strong>外</strong>侧），
      * 两个调用点都是这么传的：起点传 {@code (-dx,-dy)}（段方向的取反）、终点传段方向本身。
      * 半圆的圆心角因此从 {@code u} 逆转 90° 扫到顺转 90°，整个半圆盘都在 {@code +u} 一侧。
      *
-     * <p><strong>沿向</strong>：端线（过端点、垂直于 {@code u} 的那条线）上沿向为 0，
-     * 向外为负——SQUARE 的外边沿向 {@code -1}，ROUND 圆周上按
-     * {@code -dot(圆周方向, u)} 连续变化（尖端 {@code -1}、两端 {@code 0}）。
-     * 零点与 BUTT 端取的是同一个：平头端的端线沿向恰好为 0，而它不发射几何，
-     * 端线<strong>就是最后一段四边形的边</strong>。
+     * <p><strong>沿向的零点与方向</strong>：{@code 0} 就是端线（过端点、垂直于 {@code u}
+     * 的那条线），向外为负。三种端帽都守这一条：
+     * <ul>
+     *   <li><strong>BUTT</strong>（{@code capExtension > 0} 时）：端线沿向取
+     *       {@code along}（就是相邻段四边形那条边的沿向，接缝两侧因此同一个值），
+     *       外扩那一条取 {@code along - capExtension/half}。</li>
+     *   <li><strong>SQUARE</strong>：端线沿向 {@code along}，外边向外半个线宽 ⇒ 沿向
+     *       {@code along - 1}。</li>
+     *   <li><strong>ROUND</strong>：圆心在端线上 ⇒ 沿向 {@code along}；圆周上按
+     *       {@code along - dot(圆周方向, u)} 连续变化（最外那点 {@code along - 1}、
+     *       圆周与端线相交的两点 {@code along}）。</li>
+     * </ul>
+     * 这里的 {@code along} 在正常情况下恰好是 {@code 0}（{@code alongAt} 在开放路径两端
+     * 都返回 0）；传参而不是写字面量 {@code 0f}，是为了让"折线首尾有退化段"这种边角情形
+     * 下接缝两侧仍然取同一个值（那里 {@code alongAt} 给出的是 {@code 10⁻⁶} 量级而非精确 0）。
      *
      * <p><strong>横向</strong>：{@code +n} 侧为 {@code +1}、{@code -n} 侧为 {@code -1}，
      * 其中 {@code n} 是<strong>本方向的</strong>左法线。因为这里传进来的是"向外"方向，
@@ -593,10 +699,16 @@ public final class StrokeGenerator {
      * 也就是说同一侧的两个图元会拿到相反的符号。着色器只用 {@code |横向|} 判覆盖，
      * 所以这没有后果；写下来是因为"两处的 ±1 是同一套"这个假设看上去太自然了。
      *
+     * <p><strong>⚠ BUTT 的外扩四边形是为端帽羽化而生的，不是"把线画长"</strong>：
+     * 它从端线向外铺 {@code capExtension}，而让它在端线外侧变透明是<strong>着色器</strong>
+     * 的责任（按沿向算覆盖率）。所以 {@code capExtension} 默认 {@code 0}，
+     * 不传就退化成"什么都不发射"——与本方法加这个参数之前逐位相同。
+     *
      * <p><strong>⚠ 本方法当前在生产代码里没有消费者</strong>：{@code Gc} 的描边只用
-     * {@link Cap#BUTT}，而 BUTT 在这里直接 {@code return}。所以 SQUARE / ROUND 这两条
-     * 分支目前只有 {@code StrokeGeneratorTest} 在跑——它们的几何由单测钉着，
-     * 但"着色器怎么读这两个端帽的边距"还没有任何真实调用方。
+     * {@link Cap#BUTT} + {@code capExtension = 0}，此时这里直接 {@code return}。
+     * 所以 SQUARE / ROUND 两条分支、以及外扩四边形，目前都只有
+     * {@code StrokeGeneratorTest} 在跑——它们的<strong>几何与边距取值</strong>由单测钉着，
+     * 但"着色器怎么读它们"还没有任何真实调用方。
      *
      * @param px            端点坐标 x
      * @param py            端点坐标 y
@@ -605,10 +717,14 @@ public final class StrokeGenerator {
      * @param half          半线宽
      * @param cap           端点样式
      * @param roundSegments 圆端点细分段数
+     * @param along         端线的沿向（正常情况下恰为 0，见上面的说明）
+     * @param capExtension  端帽外扩量（局部空间单位）；只对 {@link Cap#BUTT} 有意义，
+     *                      {@code ≤ 0} 且是 BUTT 时本方法直接返回
      */
     private void emitCap(float px, float py, float dx, float dy, float half,
-                         Cap cap, int roundSegments) {
-        if (cap == Cap.BUTT) {
+                         Cap cap, int roundSegments, float along, float capExtension) {
+        if (cap == Cap.BUTT && capExtension <= 0f) {
+            // 平头端 + 不外扩：什么都不发射（这是既有行为，逐位不变）
             return;
         }
         float len = (float) Math.sqrt(dx * dx + dy * dy);
@@ -618,20 +734,34 @@ public final class StrokeGenerator {
         float ux = dx / len, uy = dy / len;
         float nx = -uy * half, ny = ux * half;
 
+        if (cap == Cap.BUTT) {
+            // 端帽外扩：从端线（沿向 along）向外铺 capExtension，外缘沿向 along - capExtension/half。
+            // 它是**半透明的**一圈（透明度由着色器按沿向算），目的是让端线两侧都有沿向梯度：
+            // 没有它，端线外侧一片几何都没有，沿向在那里是常量 ⇒ fwidth = 0 ⇒ 着色器走
+            // "完全覆盖"分支 ⇒ 端帽是硬角；而端线内侧同样没有梯度，端线本身也拿不到 50%。
+            // 四个顶点的横向仍按 +n 侧 +1、-n 侧 -1，与它所贴的段四边形一致。
+            float outerAlong = along - capExtension / half;
+            emitQuad(px + nx, py + ny, along, 1f,
+                    px + nx + ux * capExtension, py + ny + uy * capExtension, outerAlong, 1f,
+                    px - nx + ux * capExtension, py - ny + uy * capExtension, outerAlong, -1f,
+                    px - nx, py - ny, along, -1f);
+            return;
+        }
+
         if (cap == Cap.SQUARE) {
-            // 端线（贴线段那一侧）沿向 0，向外那一条 -1
-            emitQuad(px + nx, py + ny, 0f, 1f,
-                    px + nx + ux * half, py + ny + uy * half, -1f, 1f,
-                    px - nx + ux * half, py - ny + uy * half, -1f, -1f,
-                    px - nx, py - ny, 0f, -1f);
+            // 端线（贴线段那一侧）沿向 along，向外那一条 along - 1（外扩量恰好半个线宽）
+            emitQuad(px + nx, py + ny, along, 1f,
+                    px + nx + ux * half, py + ny + uy * half, along - 1f, 1f,
+                    px - nx + ux * half, py - ny + uy * half, along - 1f, -1f,
+                    px - nx, py - ny, along, -1f);
             return;
         }
 
         // ROUND：以端点为中心、朝外（沿 +u 方向）的半圆扇，从 u 逆转 90° 扫到顺转 90°。
-        // 圆心（端点）在端线上 ⇒ 沿向 0；圆周顶点按 -dot(圆周方向, u) 变化
-        // （最外那一点沿向 -1）。
+        // 圆心（端点）在端线上 ⇒ 沿向 along；圆周顶点按 -dot(圆周方向, u) 变化
+        // （最外那一点 along - 1，圆周与端线相交的两点 along）。
         float start = (float) Math.atan2(uy, ux) - (float) (Math.PI / 2);
-        emitArc(px, py, half, start, (float) Math.PI, roundSegments, 0f,
+        emitArc(px, py, half, start, (float) Math.PI, roundSegments, along,
                 -uy, ux, ux, uy);
     }
 
@@ -653,12 +783,18 @@ public final class StrokeGenerator {
      * {@code radius} 都恰好是半线宽（圆端点与圆角接头的半径按定义就是它），比值恒为 1。
      * 若将来要传别的半径，这两个投影必须补上那个比值，否则边距会被整体缩放而不报错。
      *
-     * <p><strong>已声明的降级（不是算错了）</strong>：圆周与参照中心线的交点处横向为 0，
-     * 而 180° 折回的圆角接头<strong>尖端恰好就在那个交点上</strong>——那里圆弧本身就是
-     * 可见外缘，却因横向为 0 而拿不到羽化，成了一条硬边（圆弧两端仍正常，因为它们横向为 ±1）。
-     * 根因是"横向"这一维在拐点处不够用：尖端到最近中心线的距离确实是 0（它落在入段中心线
-     * 的延长线上），而它同时也是外缘。要区分这两种身份得再加一个坐标，本期不做；
-     * 实测影响范围只有那一个点，且 Gc 走不到这条路径（见下）。
+     * <p><strong>已声明的降级（不是算错了）</strong>：圆周与参照中心线相交的地方横向为 0，
+     * 而那一处有时<strong>同时</strong>是可见外缘，于是拿不到羽化：
+     * <ul>
+     *   <li><strong>180° 折回的圆角接头</strong>：尖端就是那个交点（{@code dir = u1}，
+     *       落在入段中心线的延长线上），远端点的横向为 0 而不是 -1 ⇒ 尖端是一条硬边。
+     *       圆弧两端仍正常（横向 ±1）。</li>
+     *   <li><strong>直角圆角接头</strong>：圆弧的收尾端（{@code p + o2}）横向也是 0
+     *       （实测 90° 接头处读数为 {@code +0.000}），而同一位置在 BEVEL 分支下取 {@code s}。
+     *       这里<strong>没有可见后果</strong>：该点正落在出段四边形的那条边上，被它的 ±1 盖住。</li>
+     * </ul>
+     * 根因是"横向"这一维在拐点处不够用：这些点到最近中心线的距离确实是 0，而它们同时也是
+     * 外缘。要区分这两种身份得再加一个坐标，本期不做；且 {@code Gc} 走不到这条路径（见下）。
      *
      * <p><strong>⚠ 本方法当前在生产代码里没有消费者</strong>：{@code Gc} 的描边只用
      * {@link Cap#BUTT} 与 {@link Join#MITER}，而这两条路径都不发射圆弧（BUTT 不发射几何、
@@ -700,6 +836,11 @@ public final class StrokeGenerator {
      * {@link #emitTriangle} 的"位置在前、边距在后且横向在前"不同，是为了让
      * {@code (x, y, a, c)} 四个一组、读调用点时能一眼看出哪个数字属于哪个顶点。
      * 本方法只做转置，没有别的逻辑。
+     *
+     * <p><strong>⚠ 防呆</strong>：这条差异意味着 {@code (a, c)} 与 {@code (c, a)}
+     * <strong>写反了照样编译</strong>（全是 {@code float}，没有类型能拦），后果是两个分量
+     * 互换——画面上是"边距全乱"而不是编译错误。签名刻意不改（一改 7 个调用点全要跟着动），
+     * 所以读到这里的调用方请把"本方法 a 在前、{@link #emitTriangle} c 在前"记牢。
      */
     private void emitQuad(float x0, float y0, float a0, float c0,
                           float x1, float y1, float a1, float c1,
