@@ -1236,7 +1236,13 @@ class Gc constructor(private val batch: RenderBatch) {
      * @param closed 是否闭合
      */
     private fun strokeOutline(points: FloatArray, count: Int, closed: Boolean) {
-        if (count < 2) {
+        // ★ 线宽 ≤ 0 也在这里返回，不能只挡 `count < 2`：开了 AA 之后
+        //   `width = lineWidth + 2px` 是**正的**，于是生成器不再返回空，
+        //   一条本该"什么都不画"的描边会变成一条淡淡的带子；`edgeScale` 还要除以
+        //   真实半线宽 0。加这一行之后两个开关下行为一致（都不画），
+        //   而它对 AA 关的路径是**逐位无操作**的：那时生成器反正一个三角形都不发射，
+        //   连 `flushIfNeeded` / `syncState` 都走不到。
+        if (count < 2 || lineWidth <= 0f) {
             return
         }
         // ★ 开 AA 时描边带要**两个方向都外扩**：
@@ -1271,10 +1277,8 @@ class Gc constructor(private val batch: RenderBatch) {
         val n = strokeGenerator.triangleCount() * 6
         // 生成器是按**它收到的那条线宽**的一半归一化边距的，而那条线宽已经被外扩过
         // ⇒ 这里要把横向分量换算回"真实半线宽"这个分母（推理与实测见 emitTriangles 的
-        // `edgeScale`）。线宽 ≤ 0 时生成器一个三角形都不发射（`width <= 0` 直接返回），
-        // 但这个除法仍要先避开 0——`0/0` 与 `x/0` 在浮点里不抛异常，
-        // 它们会安静地把 NaN/Infinity 传给下一层。
-        val edgeScale = if (realHalf > 0f) (realHalf + px) / realHalf else 1f
+        // `edgeScale`）。上面那道 `lineWidth <= 0f` 的守卫已经保证了这里不会除以 0。
+        val edgeScale = (realHalf + px) / realHalf
         // ★ 关着的时候必须传 null（= 全写 0），**不能**只把外扩量置 0 就算了：
         //   生成器给的边距本身非零，写进顶点就会让 fwidth ≠ 0 ⇒ 片元走羽化分支
         //   ⇒ 一条本该逐像素不变的描边会自己长出半透明边缘、还会多出几种新颜色。
