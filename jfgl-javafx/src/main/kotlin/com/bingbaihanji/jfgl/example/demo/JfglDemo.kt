@@ -26,7 +26,9 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.sin
 import kotlin.system.exitProcess
 
 /** 窗口的**逻辑**尺寸。绘制区是设备像素，比它大（125% 缩放下 900 → 1113）。 */
@@ -99,11 +101,11 @@ private val SELFTEST_ON: Boolean = run {
  *
  * <p>为什么要有它：这个 demo **没有像素校验器**（画面取决于用户点了哪儿，没有可断言的
  * 判据），所以"画出来的图形对不对、点得中不中"**只有静态证据**。
- * 合成事件走的是 `wireMouse` 接的那三条真实处理器（`ClickVerifier` 已证明这条路通），
+ * 合成事件走的是 `wireMouse` 接的那四条真实处理器（`ClickVerifier` 已证明这条路通），
  * 于是交互闭环第一次有了运行时证据。
  *
  * <p><strong>★ 它到底证了哪几环（说准，别多承诺）</strong>：它证的是**合成事件真能到达
- * `wireMouse` 那三个处理器**，以及**那三个处理器里的四件事**——坐标换算（由 ① 里那条
+ * `wireMouse` 那四个处理器**，以及**那四个处理器里的四件事**——坐标换算（由 ① 里那条
  * **设备坐标绝对值**钉住；按比例量的断言在整体等比缩放下不变，删掉或写成 `* s * s`
  * 都照样全绿）、拾取往返、回调交付、状态更新。
  *
@@ -132,6 +134,26 @@ private const val HIGHLIGHT = 0xFFFFEB3B.toInt()
 
 /** 小于这个位移（设备像素）的一次按下-抬起算**单击**，否则算拖拽。 */
 private const val CLICK_SLOP = 4.0
+
+/** 虚线预览的实段/空段长度（设备像素）。见设计文档 §4.2.2 的"预览的虚线参数"。 */
+private const val PREVIEW_DASH_ON = 6f
+private const val PREVIEW_DASH_OFF = 4f
+
+/** 预览曲线（圆/椭圆）的折线段数。固定值——预览不追求与 `Gc` 的细分规则一致。 */
+private const val PREVIEW_CURVE_SEGMENTS = 48
+
+/**
+ * 锚点十字的颜色（橙，`0xFFFF6D00`）。
+ *
+ * <p>★ **它与 `DemoShapes.kt` 里那个 `PEN_CROSS` 是同一个颜色值，却是两处各持一份**
+ * ——那边那个是**文件级 `private`**（KDoc 里写着"全仓只有 `Shape.TextShape.draw` 一处用它"），
+ * 本文件取不到它，而本任务**不改 `DemoShapes.kt`**。
+ *
+ * <p>**这个重复是已知的、被记下来的**：改颜色时两处都要改，否则"同一支笔的两个十字"
+ * 会慢慢变成两个颜色，而**画面上没有任何东西会报错**。真要合掉它，得把
+ * `DemoShapes.PEN_CROSS` 改成 `internal`（一个词的改动，属于另一个任务）。
+ */
+private const val PREVIEW_CROSS = 0xFFFF6D00.toInt()
 
 /** 八色预设色板。 */
 private val PALETTE = intArrayOf(
@@ -350,6 +372,33 @@ class JfglDemoApp : Application() {
     @Volatile private var trajectory = FloatArray(0)
 
     /**
+     * **已定第一点**的锚点（两点式图形专用）。`NaN` 表示没有。
+     *
+     * <p><strong>为什么是独立的字段、不复用 [dragStartX]</strong>：`onPress` 会**覆盖**
+     * `dragStartX`，而锚点必须**跨两次点击活着**。初稿把它挂在 `dragStartX` 上，
+     * 那会让"第二次点击提交之后紧接着的那次抬起"又被当成"第一点"——
+     * 因为提交时 `dragStartX` 被清成 NaN、抬起时 `moved` 就是 0。
+     *
+     * <p>只有四条路径能清它：**提交**、`Esc`、**切模式**、**切图形**（后三条走 [resetDragState]）。
+     * ★ 但**清它的代码只有 [resetDragState] 一处**，而那条函数还被另外几处调用
+     * （右键释放、两点式上的拖拽释放、文本模式的释放）——那些**也会顺带清掉锚点**，
+     * 见 [resetDragState] 的说明。
+     */
+    @Volatile private var anchorX = Float.NaN
+    @Volatile private var anchorY = Float.NaN
+
+    /**
+     * 当前鼠标位置（设备像素）。**只为虚线预览存在。**
+     *
+     * <p>它由新注册的 `MOUSE_MOVED` 写——**没有键按下时也要能跟着鼠标走**，
+     * 而 `MOUSE_DRAGGED` 只在按键期间才有。鼠标移动事件可以高达 1000 Hz，
+     * 但**一次 volatile float 写是零成本的**，不构成热路径问题。
+     * 只在"已定第一点"时被读；其余时候写了没人看。
+     */
+    @Volatile private var previewX = Float.NaN
+    @Volatile private var previewY = Float.NaN
+
+    /**
      * 待框选的矩形（左, 上, 宽, 高，设备像素）。`marqueeW` 为 NaN 表示没有框选在进行。
      *
      * <p>这四个是**分别发布**的（见类顶部第 ③ 类），所以 GL 线程可能读到
@@ -452,6 +501,12 @@ class JfglDemoApp : Application() {
         stage.title = "JFGL 交互式 Demo"
         stage.scene = Scene(mainView.createMainView(), SCENE_W, SCENE_H)
         stage.scene.setOnKeyPressed { e ->
+            if (e.code == KeyCode.ESCAPE) {
+                // 取消"已定第一点"。**走 resetDragState**——它是四条取消路径的唯一落点。
+                resetDragState()
+                status.text = "已取消"
+                return@setOnKeyPressed
+            }
             if (e.code == KeyCode.DELETE || e.code == KeyCode.BACK_SPACE) deleteSelected()
         }
         stage.show()
@@ -466,16 +521,33 @@ class JfglDemoApp : Application() {
     // ---- 鼠标接线（JavaFX 线程） ----
 
     /**
-     * 接上按下 / 拖拽 / 抬起。
+     * 接上按下 / 拖拽 / 抬起 / **移动**。
      *
      * <p>**每一次都要乘 [FXGLTransfer.deviceScale]**：鼠标事件给的是节点的**逻辑**局部坐标，
      * 而 [Gc] 要的是**设备像素**。漏乘的表现是"图形画在别的地方"或"点 A 命中 B"，
      * 而画面本身完全正常——在 100% 缩放的机器上还一切正常。
+     * `MOUSE_MOVED` **也不例外**（见 [onMove]）：它是虚线预览唯一的输入源，
+     * 漏乘的话预览轮廓会整体缩到 1/缩放 的位置上，而**提交的图形是对的**——
+     * "只是预览偏了一点"正是最难发现的那一类。
      */
     private fun wireMouse(bridge: FXGLTransfer, node: Node) {
         node.addEventHandler(MouseEvent.MOUSE_PRESSED) { e -> onPress(bridge, node, e) }
         node.addEventHandler(MouseEvent.MOUSE_DRAGGED) { e -> onDrag(bridge, node, e) }
         node.addEventHandler(MouseEvent.MOUSE_RELEASED) { e -> onRelease(bridge, node, e) }
+        // 虚线预览要"没有键按下也跟着鼠标走"，所以必须再注册 MOUSE_MOVED——
+        // MOUSE_DRAGGED 只在按键期间才有。
+        node.addEventHandler(MouseEvent.MOUSE_MOVED) { e -> onMove(bridge, node, e) }
+    }
+
+    /**
+     * 鼠标移动（**没有键按下时也来**）。只做一件事：把当前位置记给虚线预览。
+     *
+     * <p>它**不改任何绘制状态**，所以无论此刻在哪个模式、哪个阶段都安全。
+     */
+    private fun onMove(bridge: FXGLTransfer, node: Node, e: MouseEvent) {
+        val s = bridge.deviceScale(node)
+        previewX = (e.x * s).toFloat()
+        previewY = (e.y * s).toFloat()
     }
 
     private fun onPress(bridge: FXGLTransfer, node: Node, e: MouseEvent) {
@@ -495,6 +567,7 @@ class JfglDemoApp : Application() {
             Mode.DRAW -> {
                 dragStartX = dx; dragStartY = dy
                 trajectory = floatArrayOf(dx, dy)
+                previewX = dx; previewY = dy      // 按下时预览立刻定住，不等下一次 MOUSE_MOVED
             }
             Mode.TEXT -> Unit          // 文本在抬起时落字
             Mode.CHART -> Unit         // 图表模式不吃鼠标
@@ -559,8 +632,17 @@ class JfglDemoApp : Application() {
     /**
      * 清掉"有一次交互正在进行"的全部状态：拖拽起点、轨迹、以及框选的有效性标志。
      *
-     * <p>**必须在三处调用**，否则不变式"`dragStartX` 非 NaN ⟺ 真的有一次 DRAW 拖拽在进行"
-     * 不被任何东西维护：
+     * <p><strong>2026-09-25 起它还清"已定第一点"的锚点</strong>：两点式图形改成"点两下"之后
+     * 多了一个跨点击的状态，而它**只有这一条清理路径**（四条调用点都在这儿）。
+     *
+     * <p>★ **"四条"是语义上的四条**（提交 / `Esc` / 切模式 / 切图形），**不是调用点的条数**：
+     * 本方法的调用点比四条多（右键释放、两点式上的拖拽释放、文本模式的释放也都走它），
+     * 于是那几个手势**也会顺带清掉锚点**——这是"清锚点只有一处"的代价，<b>如实记在这里</b>：
+     * 在一个两点式图形"已定第一点"时右键点一下（那是"拾取选中"），
+     * 手里的第一点会被一起丢掉。要分开得让锚点有自己的清理函数，那是另一件事。
+     *
+     * <p>**必须在每一处"这次交互结束了"调用**（至少下面这三处），否则不变式
+     * "`dragStartX` 非 NaN ⟺ 真的有一次 DRAW 拖拽在进行"不被任何东西维护：
      * ① 拖拽正常结束（[onRelease] 的 DRAW 分支）；
      * ② 框选正常结束（[onRelease] 的 SECONDARY 分支）——**顺带取消可能在进行的主键拖拽**。
      *    双键同时按下是个语义含糊的手势，**而这半边只闭合了一半**，两种松开顺序不同：
@@ -596,45 +678,96 @@ class JfglDemoApp : Application() {
         dragStartY = Float.NaN
         trajectory = FloatArray(0)
         marqueeW = Float.NaN
+        // ★ 锚点也必须清——"切模式会留下脏状态 ⇒ 凭空画一个用户没拖过的图形"那条
+        //   教训的另一半：换了图形种类还在等第二点，用户一点就会画出一个他没想要的东西。
+        anchorX = Float.NaN
+        anchorY = Float.NaN
     }
 
     private fun onRelease(bridge: FXGLTransfer, node: Node, e: MouseEvent) {
+        // 设备坐标在**两个键的分支都要**（右键那条也要：只按不拖 = 拾取选中，
+        // 而 [onPick] 的状态栏与 `pickAsync` 的口径都是设备像素），所以提到最前面算。
+        val s = bridge.deviceScale(node)
+        val dx = (e.x * s).toFloat()
+        val dy = (e.y * s).toFloat()
+
         if (e.button == MouseButton.SECONDARY) {
             if (!marqueeW.isNaN()) {
                 // ★ **只按不拖的右键不算框选**（终审指出的不对称：主键那条有 `CLICK_SLOP`
                 //   闸门，次级这条没有）。按下时 `marqueeW` 被置成 **`0f` 而不是 NaN**，
                 //   所以"按下即松开"会照走一遍**零尺寸**框选：它要么把光标那一个像素下的
-                //   图形选上、要么在空白处把选中集**清空**——两种都是用户没表达过的意图
-                //   （右键在本 demo 里只表示"框选"）。闸门与主键同款：位移小于 `CLICK_SLOP`
-                //   就当作没框选，**不动选中集**。
+                //   图形选上、要么在空白处把选中集**清空**——两种都是用户没表达过的意图。
+                //   闸门与主键同款：位移小于 `CLICK_SLOP` 就当作没框选。
                 val dragged = abs(marqueeW) >= CLICK_SLOP || abs(marqueeH) >= CLICK_SLOP
                 if (dragged) {
                     // 与 [drawMarquee] 共用同一份规范化——读回用的矩形与画出来的框是同一个。
                     marqueePending.set(normalizedRect(marqueeX, marqueeY, marqueeX + marqueeW, marqueeY + marqueeH))
+                } else {
+                    // ★★ **只按不拖 = 拾取选中**（2026-09-25 从"左键单击"移到这里，
+                    //   见设计文档 §4.2 的手势表与 §4.2.1 ①）。
+                    //   为什么必须在**右键**上：第一下左键现在是"定起点"，
+                    //   不能同时是"选中"；而右键**已经**有"拖 = 框选"，
+                    //   于是"只按不拖 = 拾取"就是**同一个 4 像素判据在右键上复刻一遍**，
+                    //   与左键的"拖 = 轨迹型 / 点 = 两点式"完全同构。
+                    //   **判据同样只能在抬起时做**——按下那一刻不知道后面会不会拖。
+                    //   未命中时 [onPick] 会把选中集清空，这正是"点空白处取消选中"。
+                    bridge.clickAsyncAtNode(node, e.x, e.y) { hit -> onPick(hit, dx, dy) }
                 }
                 // 提交与否都要清：不清的话残留的 `marqueeW = 0f` 会让**下一次没有按下的**
                 // 右键释放也照走这条分支（它只判 NaN）。见 [resetDragState] 的说明：
                 // 顺带取消掉可能在进行的主键拖拽。
+                //
+                // ⚠️ **它顺带清掉"已定第一点"的锚点**（右键这一下既没提交也没取消两点式，
+                //   却会把用户手里的第一点丢掉）。这是"清锚点只有 [resetDragState] 一处"
+                //   的已知代价，如实记在 [resetDragState] 的 KDoc 里——
+                //   **不是** 设计文档说的"只有四条路径"：那四条是**语义**上的四条。
                 resetDragState()
             }
             return
         }
         if (e.button != MouseButton.PRIMARY) return
-
-        val s = bridge.deviceScale(node)
-        val dx = (e.x * s).toFloat()
-        val dy = (e.y * s).toFloat()
         val moved = if (dragStartX.isNaN()) 0.0 else hypot((dx - dragStartX).toDouble(), (dy - dragStartY).toDouble())
 
         when (mode) {
             Mode.DRAW -> {
-                if (moved < CLICK_SLOP) {
-                    // 单击：拾取选中。**把换算后的设备坐标一起带进回调**——见 [onPick] 的说明。
-                    resetDragState()
-                    bridge.clickAsyncAtNode(node, e.x, e.y) { hit -> onPick(hit, dx, dy) }
+                if (kind.isTrajectory) {
+                    // 轨迹型：与第一版完全一致
+                    if (moved < CLICK_SLOP) {
+                        resetDragState()
+                        bridge.clickAsyncAtNode(node, e.x, e.y) { hit -> onPick(hit, dx, dy) }
+                    } else {
+                        commitShape(dx, dy)
+                        resetDragState()
+                    }
+                } else if (moved < CLICK_SLOP) {
+                    // 两点式的一次"点击"：没有锚点就定锚点，有锚点就提交。
+                    // **判据是 anchorX 是不是 NaN**——不是 dragStartX（按下刚覆盖过它）。
+                    if (anchorX.isNaN()) {
+                        // ★ 顺序不能反：先 resetDragState()（清掉这次按下留下的
+                        //   dragStartX / trajectory），**再**把锚点设上。
+                        //   反过来说就是"清掉刚设的锚点"，而那看起来只是"第一点没记住"。
+                        val ax = dx
+                        val ay = dy
+                        resetDragState()
+                        anchorX = ax
+                        anchorY = ay
+                        status.text = "${kind.label}：已定第一点 (${ax.toInt()},${ay.toInt()})，" +
+                            "再点一下完成（Esc 取消）"
+                    } else {
+                        val before = shapes.get().size
+                        commitTwoPointShape(dx, dy)
+                        resetDragState()
+                        // 只在**真的画出来了**的时候报"已画"——两点重合会被拒，
+                        // 那时 commitTwoPointShape 自己写了原因，别把它盖掉。
+                        if (shapes.get().size > before) {
+                            status.text = "已画：${shapes.get().last().shape.describe()} · " +
+                                "共 ${shapes.get().size} 个"
+                        }
+                    }
                 } else {
-                    commitShape(dx, dy)
+                    // 两点式上"拖拽"：**刻意什么都不做**（同一个图形不能既靠拖又靠点）
                     resetDragState()
+                    status.text = "${kind.label}请点两下：第一下定起点、第二下完成"
                 }
             }
             // 文本：**在抬起时落字**（`onPress` 的 TEXT 分支是 `Unit`，不记起点）。
@@ -648,14 +781,25 @@ class JfglDemoApp : Application() {
             //   但照旧注释写出来的断言会是一条**恒假断言**，而本仓库把"被静默跳过的
             //   断言"与失败的断言同等看待。守卫留着（零成本），只是别把它当判据。
             //
-            // ★ 这条分支只清 `dragStartX`，**不是** [resetDragState]。理由：
-            //   ① 上面那个 else 已不可达，它清的是"万一"；
-            //   ② TEXT 模式下 `trajectory` 与 `marqueeW` 都不参与画面：预览框由
-            //      [drawDragPreview] 画，而它在非 DRAW 模式**直接返回**。
+            // ★ **2026-09-25 起这条分支末尾也调 [resetDragState]（以前只清 `dragStartX`）。**
+            //   以前不调的理由是：① 上面那个 else 已不可达，它清的是"万一"；
+            //   ② TEXT 模式下 `trajectory` 与 `marqueeW` 都不参与画面：预览由
+            //   [drawDragPreview] 画，而它在非 DRAW 模式**直接返回**。
+            //   两条今天仍然成立，**但它们都只针对旧的那几样状态**——两点式改"点两下"之后
+            //   多了一个**跨点击**的锚点，而"清锚点"只有 [resetDragState] 一处，
+            //   于是这条分支不调它就等于**给锚点开了一条绕过清理的路**。
             //   （早年这里留过一句"别忘了在末尾也 resetDragState()"，那是 `commitText`
-            //     还不存在时的占位提醒，早已换成这个更窄的写法。）
+            //     还不存在时的占位提醒；后来换成更窄的写法，现在又换回来了——
+            //     **新旧写法都各有一半理由，这一句就是它们的交接记录**。）
+            //
+            //   如实记一笔：**"在 TEXT 模式下留下锚点"这件事当前不可达**——
+            //   进 TEXT 的**唯一**途径 `modeItem` 总是调 [resetDragState]，
+            //   而 TEXT 模式下没有任何一处写 `anchorX`。所以这一行是**防御性**的，
+            //   与上面那条 `moved` 判据同性质：**谁也不该拿它当判据**，
+            //   它只是"锚点不能绕过唯一那条清理路径"这条不变式的落点。
             Mode.TEXT -> {
                 if (moved < CLICK_SLOP) commitText(dx, dy) else dragStartX = Float.NaN
+                resetDragState()
             }
             Mode.CHART -> Unit
         }
@@ -722,6 +866,52 @@ class JfglDemoApp : Application() {
         val id = transfer?.gc()?.pickRegistry?.register(s) ?: 0
         shapes.set(shapes.get() + Placed(s, id))
         status.text = "已画：${s.describe()} · 共 ${shapes.get().size} 个"
+    }
+
+    /**
+     * 用**锚点 + 这一下**提交一个两点式图形。**只在 JavaFX 线程调用。**
+     *
+     * <p>尺规见设计文档 §4.2 的那张表。**与第一版的差别只有圆**：
+     * 它是"**圆心 + 半径**"（`r = 锚点到这一下的距离`），而第一版是"内切于拖拽框"。
+     * 那是刻意的改动，不是回归。
+     *
+     * <p>★ **本函数与 [twoPointPreviewOutline] 是"同一条尺规的两份实现"**——
+     * 改一处必须同时改另一处，否则**预览与提交结果不是同一个图形**，
+     * 而"预览只是稍微偏一点"是画面上一眼看不出来的那类错误。
+     *
+     * <p>**它不设 `status.text`**——那句话由调用方按"已画：…"的既有格式写
+     * （见 [onRelease] 里那两处 `status.text`），避免两处各写一半。
+     */
+    private fun commitTwoPointShape(x1: Float, y1: Float) {
+        val x0 = anchorX
+        val y0 = anchorY
+        val w = x1 - x0
+        val h = y1 - y0
+        val s: Shape? = when (kind) {
+            ShapeKind.RECT ->
+                if (abs(w) > 0f && abs(h) > 0f)
+                    Shape.RectShape(minOf(x0, x1), minOf(y0, y1), abs(w), abs(h), color, style, lineWidth)
+                else null
+
+            ShapeKind.CIRCLE -> {
+                val r = hypot((x1 - x0).toDouble(), (y1 - y0).toDouble()).toFloat()
+                if (r > 0f) Shape.CircleShape(x0, y0, r, color, style, lineWidth) else null
+            }
+
+            ShapeKind.ELLIPSE ->
+                if (abs(w) > 0f && abs(h) > 0f)
+                    Shape.EllipseShape(x0, y0, abs(w), abs(h), color, style, lineWidth)
+                else null
+
+            ShapeKind.LINE -> Shape.LineShape(x0, y0, x1, y1, color, style, lineWidth)
+            else -> null       // 轨迹型不走这条路
+        }
+        if (s == null) {
+            status.text = "两点重合，没有形成图形（${kind.label} 要求两点不重合）"
+            return
+        }
+        val id = transfer?.gc()?.pickRegistry?.register(s) ?: 0
+        shapes.set(shapes.get() + Placed(s, id))
     }
 
     /**
@@ -925,7 +1115,9 @@ class JfglDemoApp : Application() {
         Rect(minOf(x0, x1), minOf(y0, y1), abs(x1 - x0), abs(y1 - y0))
 
     /**
-     * 拖拽预览：两点定义的那四种画一个临时图形；轨迹定义的那两种画原始轨迹。
+     * 预览。**两种形态**：
+     * - **两点式**（矩形/圆/椭圆/直线）在"已定第一点"时画**虚线轮廓** + 锚点上的十字；
+     * - **轨迹型**按住拖拽时画**实线轨迹**（与第一版一致）。
      *
      * <p>**`gc.pickId = 0` 写在 `save()` 之后，不靠调用方的帧首复位**：`save` 会保存并恢复
      * `pickId`，所以"块内不设"等于**继承外层的值**。Task 6 之后图形循环会给每个图形发号，
@@ -937,25 +1129,88 @@ class JfglDemoApp : Application() {
      * `FXGLTransfer` 的 `endFrame()` **整个被跳过**、`frameActive` 停在 true、此后每帧都抛
      * （见 `DemoShapes` 里那段 ⚠️）。既然挡不住，就不写一段**看着像有防护**的代码。
      * 这条差异是**有意的**，写出来免得下一个人以为是漏了。
+     *
+     * <p>★ **`save()`/`restore()` 在两条分支上都必须配对**：轨迹型那条在
+     * "`dragStartX` 是 NaN"时**提前返回**，所以那句 `restore()` 是复制的重点
+     * ——漏了它，一次未闭合的 `save()` 会把预览的 `pickId = 0` 与画笔泄漏到
+     * 同一帧后面所有图元上（而画面只是"高亮没了/颜色串了"）。
      */
     private fun drawDragPreview(gc: Gc) {
         if (mode != Mode.DRAW) return
-        val sx = dragStartX
-        val sy = dragStartY
-        if (sx.isNaN()) return
-        val pts = trajectory
         gc.save()
         gc.pickId = 0
         gc.stroke = HIGHLIGHT
         gc.lineWidth = 1f
-        if (kind.isTrajectory) {
-            if (pts.size >= 4) gc.strokePolyline(pts, closed = false)
+
+        val ax = anchorX
+        if (!ax.isNaN() && !kind.isTrajectory) {
+            // ① 两点式：虚线轮廓。鼠标位置取 previewX/Y；
+            //    还没收到过 MOUSE_MOVED（刚进这个状态）时退回锚点本身，
+            //    此时轮廓退化成一个点——**锚点十字就是那个状态下唯一的可见反馈**。
+            val px = if (previewX.isNaN()) ax else previewX
+            val py = if (previewY.isNaN()) anchorY else previewY
+            val outline = twoPointPreviewOutline(kind, ax, anchorY, px, py)
+            if (outline != null) {
+                strokeDashedPolyline(gc, outline, closed = kind != ShapeKind.LINE,
+                    dashOn = PREVIEW_DASH_ON, dashOff = PREVIEW_DASH_OFF)
+            }
+            // 锚点十字：与鼠标重合时虚线退化成零长、什么都看不见，
+            // 没有它就分不出"还没有第一点"与"第一点正好在鼠标下"。
+            gc.stroke = PREVIEW_CROSS
+            gc.drawLine(ax - 8f, anchorY, ax + 8f, anchorY)
+            gc.drawLine(ax, anchorY - 8f, ax, anchorY + 8f)
         } else {
-            val last = if (pts.size >= 2) Pair(pts[pts.size - 2], pts[pts.size - 1]) else Pair(sx, sy)
-            val r = normalizedRect(sx, sy, last.first, last.second)
-            gc.strokeRect(r.x, r.y, r.width, r.height)
+            // ② 轨迹型：与第一版一致
+            val sx = dragStartX
+            if (sx.isNaN()) { gc.restore(); return }
+            val pts = trajectory
+            if (pts.size >= 4) gc.strokePolyline(pts, closed = false)
         }
         gc.restore()
+    }
+
+    /**
+     * 两点式的预览轮廓。**中心/半径/半轴的尺规必须与 [commitTwoPointShape] 一致**——
+     * 两处各持一半解释的话，预览与提交结果会不一样，而"预览只是稍微偏一点"最难发现。
+     *
+     * <p>★ 尤其**圆**：这里是"**圆心 + 到鼠标的距离**"，与 [commitTwoPointShape] 逐字同一条
+     * 公式（`hypot` 也是同一份实现，所以两者**逐位相同**，不是"差不多"）。
+     * 第一版那个"内切于拖拽框"的尺规在这里**不能出现**——它已经是历史了。
+     *
+     * @return `[x0,y0, x1,y1, ...]`；退化输入返回 null
+     */
+    private fun twoPointPreviewOutline(
+        kind: ShapeKind, x0: Float, y0: Float, x1: Float, y1: Float
+    ): FloatArray? = when (kind) {
+        ShapeKind.RECT -> if (abs(x1 - x0) > 0f && abs(y1 - y0) > 0f)
+            floatArrayOf(x0, y0, x1, y0, x1, y1, x0, y1) else null
+
+        ShapeKind.CIRCLE -> {
+            val r = hypot((x1 - x0).toDouble(), (y1 - y0).toDouble()).toFloat()
+            if (r <= 0f) null else circlePoints(x0, y0, r)
+        }
+
+        ShapeKind.ELLIPSE -> if (abs(x1 - x0) > 0f && abs(y1 - y0) > 0f)
+            ellipsePoints(x0, y0, abs(x1 - x0), abs(y1 - y0)) else null
+
+        ShapeKind.LINE -> if (x1 != x0 || y1 != y0) floatArrayOf(x0, y0, x1, y1) else null
+        else -> null
+    }
+
+    /** 预览用的圆周折线。段数是**固定的**（预览不追求与 `Gc` 的细分规则一致，见 `strokeDashedPolyline` 的说明）。 */
+    private fun circlePoints(cx: Float, cy: Float, r: Float): FloatArray =
+        ellipsePoints(cx, cy, r, r)
+
+    /** 预览用的椭圆折线。 */
+    private fun ellipsePoints(cx: Float, cy: Float, rx: Float, ry: Float): FloatArray {
+        val seg = PREVIEW_CURVE_SEGMENTS
+        val out = FloatArray(seg * 2)
+        for (i in 0 until seg) {
+            val a = (2.0 * Math.PI * i / seg).toFloat()
+            out[i * 2] = cx + rx * cos(a)
+            out[i * 2 + 1] = cy + ry * sin(a)
+        }
+        return out
     }
 
     /**
@@ -1096,6 +1351,13 @@ class JfglDemoApp : Application() {
                 setOnAction {
                     kind = k
                     status.text = "当前图形：${k.label}"
+                    // ★ **切图形也必须清掉进行中的交互**（与 [modeItem] 那一行同理，也是设计
+                    //   文档 §4.2.2 状态机里明写的一条："已定第一点 ├─ 切模式 / 切图形 ─► 取消"）。
+                    //   两点式改"点两下"之后，"已定第一点"这个状态**能跨过切图形活下来**——
+                    //   不清的话：定下第一点 → 菜单换成另一种图形 → 再点一下，
+                    //   就会用**旧锚点**画出**新图形**。用户没表达过这个意图，
+                    //   而画面上该图形一切正常（虚线预览在切的那一刹那也跟着换了形状）。
+                    resetDragState()
                     // 直线没有"填充"这回事（[Shape.LineShape] 恒走描边），
                     // 所以选中直线时把样式菜单灰掉。不灰的话用户选"只填充"再拖一条线，
                     // 会得到一条**实心描边**的线而界面毫无反馈——那是"设了但没用"的静默失效。
@@ -1228,7 +1490,7 @@ class JfglDemoApp : Application() {
     // **库**（各自另搭一个场景），这一个验的是**这个 demo 自己的接线**。
     //
     // 它证明不了"画面对"（那是像素校验器的活，而本 demo 没有——画面取决于用户点了哪儿）。
-    // 它证明的是**另一件事**：合成事件真的走到了 `wireMouse` 接的那三个处理器上，
+    // 它证明的是**另一件事**：合成事件真的走到了 `wireMouse` 接的那四个处理器上，
     // 坐标换算、拾取、回调、状态更新这一整条链在真 GL 上下文里接通了。
     // 本项目的 GL 线程异常是**静默吞掉**的（吞在 openglfx 的原生回调那层，
     // 我们代码里一处 catch 都没有），所以"没崩"是弱证据；这里的证据形态是
