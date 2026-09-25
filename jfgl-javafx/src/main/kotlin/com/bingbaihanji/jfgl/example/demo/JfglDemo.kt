@@ -482,6 +482,10 @@ class JfglDemoApp : Application() {
         } else {
             "命中：${item.describe()}（设备像素 ${dx.toInt()},${dy.toInt()}）"
         }
+        // **再打一行 stdout**：状态栏画在 GL 画布上，截图抓不到它；这行日志是
+        // "鼠标真的点下去、且命中了对的东西"**唯一能被自动核对**的出口。
+        // 仓库既有的 `ClickDslExample.kt` 正是为这个理由这么做的（见它的类文档）。
+        println("[点击] ${status.text}")
     }
 
     private fun deleteSelected() {
