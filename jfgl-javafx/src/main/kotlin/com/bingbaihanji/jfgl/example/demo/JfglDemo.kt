@@ -22,6 +22,8 @@ import javafx.scene.input.KeyEvent
 import javafx.scene.input.MouseButton
 import javafx.scene.input.MouseEvent
 import javafx.stage.Stage
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -51,10 +53,37 @@ internal const val SELFTEST_PROPERTY = "jfgl.demo.selftest"
  * <p>为什么要有它：这个 demo **没有像素校验器**（画面取决于用户点了哪儿，没有可断言的
  * 判据），所以"画出来的图形对不对、点得中不中"到 Task 10 为止**只有静态证据**。
  * 合成事件走的是 `wireMouse` 接的那三条真实处理器（`ClickVerifier` 已证明这条路通），
- * 于是交互闭环第一次有了运行时证据。它**不能**替代像素校验器（它断言的是状态，
- * 不是画面），但它能证明"事件 → 换算 → 拾取 → 回调 → 状态"这条链真的接通了。
+ * 于是交互闭环第一次有了运行时证据。
+ *
+ * <p><strong>★ 它到底证了哪几环（说准，别多承诺）</strong>：它证的是**合成事件真能到达
+ * `wireMouse` 那三个处理器**，以及**那三个处理器里的四件事**——坐标换算（由 ① 里那条
+ * **设备坐标绝对值**钉住；按比例量的断言在整体等比缩放下不变，删掉或写成 `* s * s`
+ * 都照样全绿）、拾取往返、回调交付、状态更新。
+ *
+ * <p>它**没有**证、也不该被当成证了的：<br>
+ * ① **真实鼠标事件能否到达画布**——`fireEvent` 不做命中测试，合成事件绕过 JavaFX 的拾取；
+ * 那一条由 `ClickVerifier` 的 `Robot` 探针管（走操作系统事件）。<br>
+ * ② **画面对不对**——这里断言的全是状态，本 demo 也没有像素校验器。<br>
+ * ③ hover 那条（`pickAsync`）路径——本脚本只驱动点击与拖拽。
  */
-private val SELFTEST: Boolean = System.getProperty(SELFTEST_PROPERTY) == "1"
+private val SELFTEST: Boolean = run {
+    val raw = System.getProperty(SELFTEST_PROPERTY)
+    // 认 `1` 与 `true`（大小写不敏感）。**认不出来的值要出声**：`-Djfgl.demo.selftest=yes`
+    // 那种写法下自检一条都不跑、进程进交互模式永不退出——症状与"看门狗没兜住的挂死"
+    // 一模一样（没输出、不退出），而这条路径**看门狗也兜不到**（它根本没被启动）。
+    // 所以这里把"认不出来的值"打成一行刺眼的 stderr，而不是静默地当没开。
+    val on = raw != null && (raw == "1" || raw.equals("true", ignoreCase = true))
+    if (raw != null && !on) {
+        System.err.println(
+            "[自检-合成] 属性 $SELFTEST_PROPERTY=$raw 不是能识别的真值（用 1 或 true）；" +
+                "**自检不会运行**，窗口会进入正常交互模式（不会自己退出）"
+        )
+    }
+    on
+}
+
+/** 自检的看门狗超时（秒）。见 [JfglDemoApp.startSelfTestWatchdog]。 */
+private const val SELFTEST_TIMEOUT_SECONDS = 60L
 
 /** 背景色。**不能**用 0xFF333333：`FXGLTransfer` 的 `glClearColor` 就是 (0.2,0.2,0.2)。 */
 private const val BG = 0xFF23262B.toInt()
@@ -213,6 +242,26 @@ class JfglDemoApp : Application() {
     @Volatile private var selfTestDeleteHookRuns = 0
 
     /**
+     * 第 ⑦ 条：**那一次读回到底命中了哪些号**（钩子在 GL 线程上顺手记下的）。
+     *
+     * <p>没有它，⑦ 的判别力挂在一个没人断言的前提上：`gc.pickRect` 这次若返回**空**，
+     * "活快照过滤"根本没参与运算（`ids` 空 ⇒ `selection` 空 ⇒ "新图形没被高亮"真），
+     * 而钩子执行过、号复用过、点中过 D 全都成立 ⇒ **⑦ 空转通过**。所以 `ok` 里必须有
+     * "读回里含 `selfTestDId`"这一项——它把"过滤把号滤掉了"与"这次压根没读到号"分开。
+     */
+    @Volatile private var selfTestHookHitIds: List<Int> = emptyList()
+
+    /** 第 ⑥ 条的两个前提：删之前有几个图形、删除那一刻状态栏说了什么。 */
+    private var selfTestDeleteBefore = -1
+    private var selfTestDeleteStatus = ""
+
+    /** 被测的桥接器（① 要拿它算 `deviceScale`，见那条断言的说明）。 */
+    private var selfTestBridge: FXGLTransfer? = null
+
+    /** 看门狗的收工信号（正常收尾与超时各一次）。 */
+    private val selfTestDone = CountDownLatch(1)
+
+    /**
      * 每一步开始前记下的交付计数基准，用来判**这一次**交付了几条。
      *
      * <p>为什么不用累计值的绝对值：这个计数器是全脚本累计的，写死期望值会随"前面某条
@@ -325,7 +374,7 @@ class JfglDemoApp : Application() {
         //   画布节点才有 `scene`/`window`（[FXGLTransfer.deviceScale] 从 `scene.window.outputScaleY`
         //   取缩放系数，没 show 之前恒为 1.0——那时合成事件算出来的设备坐标与真实点击
         //   不是同一个口径，第 1 条之后全会落到别的地方）。
-        if (SELFTEST) startSelfTest(view, stage.scene)
+        if (SELFTEST) startSelfTest(bridge, view, stage.scene)
     }
 
     // ---- 鼠标接线（JavaFX 线程） ----
@@ -820,6 +869,9 @@ class JfglDemoApp : Application() {
         if (SELFTEST && selfTestDeleteAfterReadback) {
             selfTestDeleteAfterReadback = false
             selfTestDeleteHookRuns++
+            // 顺手记下**这次读回命中了哪些号**（零成本，就是一次 map）。第 ⑦ 条的 `ok`
+            // 要断言"里面含被删的那个号"——否则读回为空时那条断言会空转通过，见字段说明。
+            selfTestHookHitIds = hits.map { it.id() }
             val sel = selection.get()
             // 注册表用**手里这个 `gc`**（本函数的参数，GL 线程上的），不去读 `transfer`
             // ——见 [removeShapes] 的 KDoc：在里面读 `transfer` 就是一处跨线程读。
@@ -996,8 +1048,22 @@ class JfglDemoApp : Application() {
     // 我们代码里一处 catch 都没有），所以"没崩"是弱证据；这里的证据形态是
     // **每条断言都打印量到的实际值**——断了哪一环，读出来的数就与期望不一样。
 
-    /** 自检脚本的一段：注入 → 等 [frames] 帧 → （可选）读一次数。 */
-    private class Segment(val frames: Int, val drive: () -> Unit, val observe: (() -> Unit)? = null)
+    /**
+     * 自检脚本的一段：注入 → **等结果**（`until` 成立，或等满 [budget] 帧）→（可选）读一次数。
+     *
+     * @param budget 帧预算。`until == null` 时它就是"等这么多帧"；非 null 时它只是兜底，
+     *               用满即**记一条失败**（"结果已到"在预算内没成立 ⇒ 这一段之后的断言是在
+     *               **还没到**的状态上求值，那正是"被静默跳过的断言"的变体）
+     * @param until  "结果已到"的判据。**它必须是与该段断言不同的一个量**——用断言本身当
+     *               等待条件会让那条断言退化成恒真（例如第 ⑤ 条等的是"状态栏说框选到了"，
+     *               断的是"选择集等于这三个号"）
+     */
+    private class Segment(
+        val budget: Int,
+        val drive: () -> Unit,
+        val until: (() -> Boolean)? = null,
+        val observe: (() -> Unit)? = null
+    )
 
     /** 自检脚本的一步 = 若干段 + **一条**断言（一步正好对应输出里的一行）。 */
     private class Step(val title: String, val segments: List<Segment>, val verify: () -> Unit)
@@ -1027,14 +1093,19 @@ class JfglDemoApp : Application() {
     private var selfTestSizeAfterKind0 = 0
     private var selfTestIdentityKind0 = 0
     private var selfTestDrawnBefore = 0
+
+    /** 第 ⑪ 条每一段要等的那个图型（等待条件见 [chartDrawnAfterStep]）。 */
+    private var selfTestStepKind = 0
     private val selfTestKindReadings = ArrayList<KindReading>()
 
     /** 起自检：[start] 在 `stage.show()` 之后调它。 */
-    private fun startSelfTest(node: Node, scene: Scene) {
+    private fun startSelfTest(bridge: FXGLTransfer, node: Node, scene: Scene) {
+        selfTestBridge = bridge
         selfTestNode = node
         selfTestScene = scene
         selfTestSteps = buildSelfTestSteps()
         println("[自检-合成] 开始：${selfTestSteps.size} 条断言，由合成事件驱动（不需要人工操作窗口）")
+        startSelfTestWatchdog()
         val timer = object : AnimationTimer() {
             override fun handle(now: Long) = selfTestTick()
         }
@@ -1075,7 +1146,25 @@ class JfglDemoApp : Application() {
             selfTestBaseFrame = frameCount
             return
         }
-        if (frameCount - selfTestBaseFrame < seg.frames) return
+        val elapsed = frameCount - selfTestBaseFrame
+        val ready = if (seg.until != null) {
+            if (seg.until.invoke()) {
+                true
+            } else if (elapsed >= seg.budget) {
+                // 预算用满而"结果已到"仍不成立：**判失败**，不能继续当没事发生——
+                // 后面的断言会在"还没到"的状态上求值，而那种失败读起来像是断言本身错了。
+                check(
+                    "${step.title} —— 等待超预算", false,
+                    "等了 $elapsed 帧（预算 ${seg.budget}）「结果已到」仍不成立；这一段的断言会在**还没到**的状态上求值，读数不可信"
+                )
+                true
+            } else {
+                false
+            }
+        } else {
+            elapsed >= seg.budget
+        }
+        if (!ready) return
         seg.observe?.invoke()
         selfTestSeg++
         if (selfTestSeg < step.segments.size) {
@@ -1091,8 +1180,15 @@ class JfglDemoApp : Application() {
     private fun selfTestFinish() {
         selfTestTimer?.stop()
         selfTestTimer = null
+        // 让看门狗线程收工（见 [startSelfTestWatchdog]）——**必须在这条路径上放下**，
+        // 否则正常跑完也会被 60 秒后那一下 halt(1) 打断。
+        selfTestDone.countDown()
         println()
-        println("[自检-合成] 断言 ${selfTestSteps.size} 条，失败 $selfTestFailures 项")
+        // ★ **分母是"已评估"而不是"总共"**：超时/挂死那条路径走到这里时，后面的断言
+        //   一次都没跑。写成"断言 11 条，失败 1 项"读起来像"11 条里只坏了 1 条"，
+        //   而实际可能是"只跑了 4 条、剩下 7 条从没被评估"——本仓库那条判据（"被静默
+        //   跳过的断言比失败的断言更坏"）说的就是这种报告。
+        println("[自检-合成] 已评估 ${selfTestStep}/${selfTestSteps.size} 条断言，失败 $selfTestFailures 项")
         if (selfTestFailures == 0) {
             println("[自检-合成] 全部通过")
         } else {
@@ -1101,6 +1197,33 @@ class JfglDemoApp : Application() {
         // 退出放在 JavaFX 线程上（本函数就在 AnimationTimer 里跑）——与 demo 既有的启动自检
         // 同一条理由：GL 回调里直接 exit 是一条没人测过的路径（见 [start] 的 `onInit`）。
         exitProcess(if (selfTestFailures == 0) 0 else 1)
+    }
+
+    /**
+     * 看门狗：**脉冲停了就没人再调 [selfTestTick]，那时既不退出也不报失败、进程就那么挂着**
+     * （窗口被 iconify 时 JavaFX 会暂停主定时器，正是这个形态），而挂死会留下孤儿 JVM。
+     * 所以另起一个 daemon 线程，60 秒还没跑完就打两行然后**硬停**。
+     *
+     * <p>**必须是 `Runtime.halt(1)` 而不是 `exitProcess(1)`**：后者要跑关闭钩子，
+     * 而此刻我们可能正卡在 GL 回调里（那正是"脉冲停了"的另一种形态）——钩子里再去碰
+     * GL/JavaFX，就是把一次有报告的失败换成一个没报告的挂死。`halt` 跳过钩子，直接停。
+     *
+     * <p>daemon 属性是必须的：主线程（JavaFX）先退出时它不该拖住 JVM。
+     */
+    private fun startSelfTestWatchdog() {
+        val watchdog = Thread({
+            if (!selfTestDone.await(SELFTEST_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                println(
+                    "[自检-合成] 超时：${SELFTEST_TIMEOUT_SECONDS} 秒内没跑完，且**脉冲已经停了**" +
+                        "（窗口被最小化/遮挡时 JavaFX 会暂停主定时器，`selfTestTick` 一次都不会再被调）"
+                )
+                println("[自检-合成] 已评估 $selfTestStep/${selfTestSteps.size} 条断言，失败 $selfTestFailures 项")
+                System.out.flush()
+                Runtime.getRuntime().halt(1)
+            }
+        }, "jfgl-selftest-watchdog")
+        watchdog.isDaemon = true
+        watchdog.start()
     }
 
     /** 记一条断言。**每条都打印量到的实际值**：只打印"通过"的话，断言写反了也照样通过。 */
@@ -1211,16 +1334,17 @@ class JfglDemoApp : Application() {
      *
      * <p>坐标全是**比例**（相对画布逻辑尺寸），断言里也按同一套比例算期望值——
      * 于是脚本不会因为系统缩放变了就落到图形外面（125% 下画布是 1113x—，不是 900x700）。
-     */
-    /**
-     * 自检脚本。**一步 = 输出里的一条断言**，顺序与计划 Task 11 那张表一一对应。
      *
-     * <p>坐标全是**比例**（相对画布逻辑尺寸），断言里也按同一套比例算期望值——
-     * 于是脚本不会因为系统缩放变了就落到图形外面（125% 下画布是 1113x—，不是 900x700）。
+     * <p><strong>★ 但"比例"这条便利恰恰会掩盖一整类缺陷</strong>：所有包含关系在
+     * **整体等比缩放**下都不变，所以 `wireMouse` 里那个 `* deviceScale(node)` 被删掉、
+     * 或写成 `* s * s`，按比例量的断言**一条都不会倒**（而症状是"点 A 命中 B / 图形画在
+     * 别处，画面完全正常"——本仓库最防的那类）。所以 ① 里额外钉了**设备坐标的绝对值**
+     * （见那一条的断言），那也是全脚本唯一一处不与比例共变形的判据。
      *
-     * <p>`Segment(n, drive = {...})` 里的 `n` 是"注入之后等几帧再断言"：单击/框选这类
-     * 要走拾取往返的给 3~4 帧（请求在下一帧提交给 PBO、再下一帧读回，最后经
-     * `Platform.runLater` 回到 JavaFX 线程），纯同步的动作（拖拽提交）给 2~3 帧也够。
+     * <p>`Segment(budget, drive = {...})` 里那个数**不是"等几帧"**，而是**帧预算**：
+     * 依赖拾取往返的段一律给 `until = { … }`（等"结果已到"），预算只是兜底——
+     * 用固定帧数是本仓库 `ClickVerifier` 栽过的坑（"帧号判据依赖'提交帧 + N'这条推断，
+     * 而结果是异步的、落点会飘"），而"等条件"比它强：能区分"交付了"与"还没交付"。
      */
     private fun buildSelfTestSteps(): List<Step> = listOf(
 
@@ -1231,19 +1355,47 @@ class JfglDemoApp : Application() {
             {
                 val s = shapes.get()
                 selfTestAId = s.firstOrNull()?.pickId ?: 0
-                val ok = s.size == 1 && s[0].shape is Shape.RectShape && status.text.startsWith("已画：")
+                // ★★ **全脚本唯一一处不与比例共变形的判据**：图形落到**设备像素**的哪里。
+                //    `nx/ny` 给的是节点**局部**坐标，而 `wireMouse` 的契约是"把局部坐标乘
+                //    `deviceScale(node)` 变成设备像素"（`Gc` 只认设备像素）。只按比例量的
+                //    包含关系在**整体等比缩放**下不变 ⇒ 那个 `* deviceScale(node)` 被删掉
+                //    （或写成 `* s * s`）时，前面那些断言**一条都不会倒**——而症状是
+                //    "图形画在别处 / 点 A 命中 B，画面完全正常"。所以这里把**绝对值**钉住：
+                //    期望 = 注入的局部坐标 × `deviceScale`，容差 1px。
+                //    （实测：`0.06 × 884 × 1.25 = 66.3`，实测 x=66.0 —— 见每次运行的读数。）
+                val scale = selfTestBridge?.deviceScale(selfTestNode!!) ?: 1.0
+                val b = s.firstOrNull()?.shape?.bounds()
+                val expX = nx(0.06) * scale
+                val expY = ny(0.10) * scale
+                val expW = (nx(0.26) - nx(0.06)) * scale
+                val geomOk = b != null && abs(b.x - expX) <= 1f && abs(b.y - expY) <= 1f &&
+                        abs(b.width - expW) <= 1f
+                val ok = s.size == 1 && s[0].shape is Shape.RectShape && status.text.startsWith("已画：") &&
+                        geomOk
                 check(
-                    "① 绘图模式拖出矩形（shapes 0→1、状态栏「已画：」）", ok,
+                    "① 绘图模式拖出矩形（shapes 0→1、状态栏「已画：」、**设备坐标等于局部×缩放**）", ok,
                     "shapes.size=${s.size}，第一个=${s.firstOrNull()?.shape?.describe() ?: "无"}" +
-                        "（pickId=$selfTestAId），状态栏=「${status.text}」"
+                        "（pickId=$selfTestAId），状态栏=「${status.text}」；" +
+                        "设备坐标实测=(${b?.x},${b?.y},${b?.width})，期望=($expX,$expY,$expW)" +
+                        "（= 局部 (${nx(0.06)},${ny(0.10)}) × deviceScale $scale），容差 1px"
                 )
             }
         ),
 
         // ② 点它内部：命中回调必须被交付，且选中集里是它
+        //
+        // ★ 等待条件（`until`）一律是"**结果已到**"，不是"等 N 帧"：固定帧数是本仓库
+        //   `ClickVerifier` 栽过的坑（"帧号判据依赖'提交帧 + N'这条推断，而结果是异步的、
+        //   落点会飘"）。`HIT_DONE` 的判据是**交付计数涨了**——它与本条断言量的是两回事
+        //   （断言量的是"交给的是哪一个"），所以不会让断言退化成恒真。
         Step(
             "② 单击选中",
-            listOf(Segment(3, drive = { selfTestHitBefore = pickHitCount; clickAt(0.16, 0.22) })),
+            listOf(
+                Segment(
+                    12, drive = { selfTestHitBefore = pickHitCount; clickAt(0.16, 0.22) },
+                    until = { pickHitCount > selfTestHitBefore }
+                )
+            ),
             {
                 val sel = selection.get()
                 val ok = sel == setOf(selfTestAId) && pickHitCount - selfTestHitBefore == 1 &&
@@ -1261,7 +1413,10 @@ class JfglDemoApp : Application() {
             "③ 重叠处命中的是后画的",
             listOf(
                 Segment(3, drive = { dragFromTo(0.16, 0.22, 0.36, 0.46) }),
-                Segment(4, drive = { clickAt(0.20, 0.26) }),
+                Segment(
+                    12, drive = { selfTestHitBefore = pickHitCount; clickAt(0.20, 0.26) },
+                    until = { pickHitCount > selfTestHitBefore }
+                ),
             ),
             {
                 val s = shapes.get()
@@ -1290,7 +1445,12 @@ class JfglDemoApp : Application() {
                 }),
                 // 记基准再点：这个计数器是**全脚本累计**的，写死绝对值会随前面某条也点空过而错
                 //（实测第一版就栽在这里——第 ④ 条自己就是一次未命中）。
-                Segment(4, drive = { selfTestMissBefore = pickMissCount; clickAt(0.60, 0.22) }),   // 离边框 ≥ 8 像素的内部
+                // 等的是"**未命中回调也交付了一条**"：这一条验的正是"点空了"，
+                // 所以必须等它真的交付，不能拿"没交付"当"没命中"。
+                Segment(
+                    12, drive = { selfTestMissBefore = pickMissCount; clickAt(0.60, 0.22) },   // 离边框 ≥ 8 像素的内部
+                    until = { pickMissCount > selfTestMissBefore }
+                ),
             ),
             {
                 val s = shapes.get()
@@ -1310,11 +1470,19 @@ class JfglDemoApp : Application() {
         // ⑤ 右键框选全部三个
         Step(
             "⑤ 右键框选全部",
-            listOf(Segment(4, drive = { marqueeFromTo(0.02, 0.04, 0.80, 0.50) })),
+            listOf(
+                Segment(
+                    12, drive = { marqueeFromTo(0.02, 0.04, 0.80, 0.50) },
+                    // 等的是"读回**落地**了"（状态栏被那次 runLater 改掉），阈值取"不再是
+                    // 上一帧那句话"——**不能**用"选择集等于这三个号"当等待条件，那正好是
+                    // 本条的断言，会让它恒真。
+                    until = { status.text.startsWith("框选到") }
+                )
+            ),
             {
                 val ids = shapes.get().map { it.pickId }.toSet()
                 val sel = selection.get()
-                val ok = ids.size == 3 && sel == ids && status.text.startsWith("框选到")
+                val ok = ids.size == 3 && sel == ids
                 check(
                     "⑤ 框选到全部 ${ids.size} 个（状态栏「框选到 N 个图形」）", ok,
                     "selection=$sel（期望 $ids），状态栏=「${status.text}」"
@@ -1323,19 +1491,38 @@ class JfglDemoApp : Application() {
         ),
 
         // ⑥ 合成 Delete 键删掉选中，再点原位置：不命中
+        //
+        // ★★ **这一条曾经会"空转通过"**：若 ①~⑤ 连锁失败（图形压根没画出来、框选没选中
+        //   任何东西），`deleteSelected()` 会在"选中集为空"处**提前 return**（只写一句
+        //   "没有选中任何图形"），而那次点击当然也不命中 ⇒ `isEmpty` + 未命中计数 +1 +
+        //   状态栏"未命中" **三项全真** ⇒ ⑥ 打印 PASS。**"什么都没做"与"做对了"在读数上
+        //   分不开**，这正是"测试会不会骗人"的形态。修法是把它删之前有几个图形、以及
+        //   删除那一刻状态栏说了什么**都记下来并断言**——与 ⑦ 设 `armed` 挡的是同一条。
         Step(
             "⑥ Delete 删除 + 原位置不命中",
             listOf(
-                Segment(2, drive = { fireDeleteKey() }),
-                Segment(4, drive = { selfTestMissBefore = pickMissCount; clickAt(0.16, 0.22) }),   // 第一个矩形原来的位置
+                Segment(3, drive = {
+                    selfTestDeleteBefore = shapes.get().size
+                    fireDeleteKey()
+                    // 状态栏要在**这一行**读：下一段那次点击会把状态栏改写成"未命中…"。
+                    selfTestDeleteStatus = status.text
+                }),
+                Segment(
+                    12, drive = { selfTestMissBefore = pickMissCount; clickAt(0.16, 0.22) },   // 第一个矩形原来的位置
+                    until = { pickMissCount > selfTestMissBefore }
+                ),
             ),
             {
-                val ok = shapes.get().isEmpty() && pickMissCount - selfTestMissBefore == 1 &&
+                val ok = selfTestDeleteBefore == 3 &&       // 前面五条真的画出了 3 个
+                        selfTestDeleteStatus.startsWith("已删除 3 个图形") &&   // 删除**真的执行了**
+                        shapes.get().isEmpty() && pickMissCount - selfTestMissBefore == 1 &&
                         status.text.startsWith("未命中")
                 check(
                     "⑥ 合成 Delete 键删掉选中（走 Scene 的按键处理器），原位置不再命中", ok,
-                    "shapes.size=${shapes.get().size}，未命中回调本次 ${pickMissCount - selfTestMissBefore} 次" +
-                        "（累计 $pickMissCount），状态栏=「${status.text}」"
+                    "删除前 shapes.size=${selfTestDeleteBefore}（期望 3），删除那一刻状态栏=「$selfTestDeleteStatus」" +
+                        "（期望以「已删除 3 个图形 · 剩 0 个」开头），删后 shapes.size=${shapes.get().size}，" +
+                        "未命中回调本次 ${pickMissCount - selfTestMissBefore} 次（累计 $pickMissCount），" +
+                        "状态栏（点击后）=「${status.text}」"
                 )
             }
         ),
@@ -1352,12 +1539,22 @@ class JfglDemoApp : Application() {
                     dragFromTo(0.50, 0.50, 0.70, 0.72)
                 }, observe = { selfTestDId = shapes.get().lastOrNull()?.pickId ?: 0 }),
                 // 单击 D 的内部 → 选中集 = {D}。**这一步的落定要等**（拾取往返 2~3 帧），
-                // 所以它单独占一段，并在 observe 里记下"选中集真的落在 D 上了"——
-                // 不然最后那条断言会在"压根没选中"的情况下**恒真**。
-                Segment(4, drive = { clickAt(0.60, 0.61) },
-                    observe = { selfTestArmed = selection.get() == setOf(selfTestDId) }),
-                // 框选 D + **在读回之后、活快照之前**删掉它（钩子）
-                Segment(4, drive = { marqueeFromTo(0.46, 0.46, 0.76, 0.76); selfTestDeleteAfterReadback = true }),
+                // 所以它单独占一段：`until` 等"命中回调交付了"（**不是**等"选中集等于 {D}"，
+                // 那是 observe 里的 `armed`，是这条链的下一个环节），observe 里记下
+                // "选中集真的落在 D 上了"——不然最后那条断言会在"压根没选中"时**恒真**。
+                Segment(
+                    12, drive = { selfTestHitBefore = pickHitCount; clickAt(0.60, 0.61) },
+                    until = { pickHitCount > selfTestHitBefore },
+                    observe = { selfTestArmed = selection.get() == setOf(selfTestDId) }
+                ),
+                // 框选 D + **在读回之后、活快照之前**删掉它（钩子）。
+                // 等的是"钩子跑过了"= 那一帧的读回已经发生、且删除已经作用在活快照上；
+                // 断言再去看它到底读到了什么、以及新图形有没有被高亮。
+                Segment(
+                    12,
+                    drive = { marqueeFromTo(0.46, 0.46, 0.76, 0.76); selfTestDeleteAfterReadback = true },
+                    until = { selfTestDeleteHookRuns >= 1 }
+                ),
                 // 再画一个新图形：它会拿到刚刚被回收的那个号
                 Segment(3, drive = { dragFromTo(0.20, 0.60, 0.36, 0.80) }),
             ),
@@ -1365,22 +1562,32 @@ class JfglDemoApp : Application() {
                 val e = shapes.get().lastOrNull()
                 val recycled = e != null && e.pickId != 0 && e.pickId == selfTestDId
                 val highlighted = e?.pickId in selection.get()
-                val ok = selfTestArmed && selfTestDeleteHookRuns >= 1 && recycled && !highlighted
+                // ★ **`hookHitIds` 那一项堵的是"空转通过"**：读回若是空的（`pickRect` 什么都没
+                //   读到），"活快照过滤"根本没参与运算，而 `armed`/`hookRuns`/`recycled` 全成立
+                //   ⇒ ⑦ 会通过。要求"读回里含被删的那个号"，才把"过滤把它滤掉了"与
+                //   "这次压根没读到号"分开。
+                val sawD = selfTestDId in selfTestHookHitIds
+                val ok = selfTestArmed && selfTestDeleteHookRuns >= 1 && sawD && recycled && !highlighted
                 check(
                     "⑦ ★ 框选读回落地前按 Delete：LIFO 回收的号不该被高亮", ok,
-                    "钩子执行 $selfTestDeleteHookRuns 次；点中 D=${selfTestArmed}；" +
-                        "被删的号=$selfTestDId；新图形=${e?.shape?.describe()}（号=${e?.pickId}，" +
-                        "复用了那个号=$recycled）；selection=${selection.get()}"
+                    "钩子执行 $selfTestDeleteHookRuns 次；那一次读回命中的号=${selfTestHookHitIds}" +
+                        "（含被删的 $selfTestDId=$sawD）；点中 D=${selfTestArmed}；" +
+                        "新图形=${e?.shape?.describe()}（号=${e?.pickId}，复用了那个号=$recycled）；" +
+                        "selection=${selection.get()}"
                 )
             }
         ),
 
         // ⑧ 切文本模式，单击落一段字
+        //
+        // 这两段**都是同步**的（菜单动作改 `mode`；TEXT 模式下 `onRelease` 直接
+        // `commitText`，不走拾取），所以用帧预算而不是 `until`——但预算仍要够一帧：
+        // 模式位是 GL 线程在下一帧读的。
         Step(
             "⑧ 文本模式落字",
             listOf(
                 Segment(3, drive = { modeMenuItems[Mode.TEXT]?.fire() }),
-                Segment(4, drive = { clickAt(0.12, 0.60) }),
+                Segment(3, drive = { clickAt(0.12, 0.60) }),
             ),
             {
                 val s = shapes.get()
@@ -1416,25 +1623,34 @@ class JfglDemoApp : Application() {
         Step(
             "⑩ 切到图表模式",
             listOf(
-                Segment(5, drive = {
-                    selfTestChartBaseline = registrySize()
-                    selfTestDrawnBefore = DemoChart.drawnFrames
-                    modeMenuItems[Mode.CHART]?.fire()
-                })
+                Segment(
+                    12, drive = {
+                        selfTestChartBaseline = registrySize()
+                        selfTestDrawnBefore = DemoChart.selfTestDrawnFrames
+                        modeMenuItems[Mode.CHART]?.fire()
+                    },
+                    // 等"图表**画过两帧**"（末尾探针涨了 2）。用探针当等待条件是**与被测
+                    // 实现无关**的一个量：无论缓存对不对，图表模式每帧都会跑完 `draw`。
+                    // 拿"拾取号涨了 2"当等待条件就糟了——那正是本条的断言（变异 B 下它会
+                    // 一直等不到，于是这条失败会被报成"工序超预算"而不是"重建没发生"）。
+                    until = { DemoChart.selfTestDrawnFrames >= selfTestDrawnBefore + 2 }
+                )
             ),
             {
-                val grew = DemoChart.drawnFrames - selfTestDrawnBefore
+                val grew = DemoChart.selfTestDrawnFrames - selfTestDrawnBefore
                 val ids = registrySize() - selfTestChartBaseline
                 // 末尾探针按帧递增 = 整条绘制路径跑到了末尾（本项目 GL 线程的异常是静默吞掉的，
                 // "少画了东西"与"抛了异常"在画面上长得一样，只有这个计数能把两者分开）。
                 // 拾取号 +2 = 两条系列在 `ChartRenderer` 里注册了号 —— 那只能发生在
                 // `gc.charts`（懒创建）已经建出来并走进了 `drawChart` 之后。
-                val ok = mode == Mode.CHART && grew >= 3 && ids == 2
+                // （`grew >= 2` 已被上面的等待条件保证，留着是为了让这行读数自解释；
+                //   **承重的是 `ids == 2`** —— 它同时挡住"没建出来"与"建了不止一次"。）
+                val ok = mode == Mode.CHART && grew >= 2 && ids == 2
                 check(
                     "⑩ 图表模式：draw 的末尾探针按帧到达 + gc.charts 被创建（两条系列注册了号）", ok,
-                    "mode=${mode.label}，末尾探针 +$grew 帧（期望 ≥3），拾取号 +$ids（期望恰好 2）"
+                    "mode=${mode.label}，末尾探针 +$grew 帧（等待条件要求 ≥2），拾取号 +$ids（期望恰好 2）"
                 )
-                selfTestIdentityKind0 = DemoChart.lastChartIdentity
+                selfTestIdentityKind0 = DemoChart.selfTestLastChartIdentity
                 selfTestSizeAfterKind0 = registrySize()
                 selfTestKindReadings.clear()
             }
@@ -1444,14 +1660,23 @@ class JfglDemoApp : Application() {
         //    而**切回已经建过的图型时必须回到原来那个实例**（不然每绕一圈漏两块 GPU 缓冲）。
         //    这一步判的正是"欠重建"那个盲区：`chart()` 变成永远返回缓存时，
         //    身份不再跳变、号数停在原地，而画面看起来毫无问题（只是菜单变死）。
+        //
+        // ★ 每段的等待条件是"**图表又画了一帧**"（探针涨 1），不是"身份变了"——
+        //   后者在变异 B 下永远等不到，那这条失败就会被报成"工序超预算"，
+        //   读起来像测试坏了而不是实现坏了。探针则与缓存对不对无关。
         Step(
             "⑪ ★ 四种图型遍历",
             listOf(
-                Segment(3, drive = { fireChartKind(1) }, observe = { selfTestKindReadings.add(reading(1)) }),
-                Segment(3, drive = { fireChartKind(2) }, observe = { selfTestKindReadings.add(reading(2)) }),
-                Segment(3, drive = { fireChartKind(3) }, observe = { selfTestKindReadings.add(reading(3)) }),
-                Segment(3, drive = { fireChartKind(0) }, observe = { selfTestKindReadings.add(reading(0)) }),
-                Segment(3, drive = { fireChartKind(1) }, observe = { selfTestKindReadings.add(reading(1)) }),
+                Segment(12, drive = { chartKindStep(1) }, until = { chartDrawnAfterStep() },
+                    observe = { selfTestKindReadings.add(reading()) }),
+                Segment(12, drive = { chartKindStep(2) }, until = { chartDrawnAfterStep() },
+                    observe = { selfTestKindReadings.add(reading()) }),
+                Segment(12, drive = { chartKindStep(3) }, until = { chartDrawnAfterStep() },
+                    observe = { selfTestKindReadings.add(reading()) }),
+                Segment(12, drive = { chartKindStep(0) }, until = { chartDrawnAfterStep() },
+                    observe = { selfTestKindReadings.add(reading()) }),
+                Segment(12, drive = { chartKindStep(1) }, until = { chartDrawnAfterStep() },
+                    observe = { selfTestKindReadings.add(reading()) }),
             ),
             {
                 val r = selfTestKindReadings
@@ -1475,8 +1700,32 @@ class JfglDemoApp : Application() {
         ),
     )
 
-    /** 第 ⑪ 条每步读一次：图型下标、当前拾取号总数、当前 `Chart` 的身份哈希。 */
-    private fun reading(kind: Int) = KindReading(kind, registrySize(), DemoChart.lastChartIdentity)
+    /** 第 ⑪ 条的一段：按菜单切成 [index] 号图型。等待条件见 [chartDrawnAfterStep]。 */
+    private fun chartKindStep(index: Int) {
+        selfTestStepKind = index
+        fireChartKind(index)
+    }
+
+    /**
+     * 第 ⑪ 条那一段的等待条件：**某一帧真的用了这一段要的那个图型**。
+     *
+     * <p>**不能用"又画了一帧"当判据**（第一版就是这么写的，实测倒了）：菜单在 JavaFX 线程
+     * 改 `selectedKind`，而 GL 线程的那一帧**可能已经跑过 `chart()`** ⇒ 紧接着那帧画的
+     * 仍是**旧图型**，"涨了一帧"当场成立，读数就是把**旧实例**贴上**新图型**的标签
+     * （实测：第一段的身份与起点**相同**、号也没涨）。探针 `selfTestLastDrawnKind` 直接
+     * 回答"这一帧用的哪个图型"，正是那个缺的判据。
+     */
+    private fun chartDrawnAfterStep(): Boolean = DemoChart.selfTestLastDrawnKind == selfTestStepKind
+
+    /**
+     * 第 ⑪ 条每步读一次：**图型下标读的是生产状态**（`DemoChart.selectedKind`），
+     * 不是脚本"想切成哪一个"。
+     *
+     * <p>这个区别只在失败报告上体现，而那正是这份输出的全部意义：脚本意图与生产状态
+     * 不一致时（菜单没接上、菜单被禁用、切了但没生效），按意图贴标签会把**实际画出来的**
+     * 图型说成另一个——让人照着错的标签去查。
+     */
+    private fun reading() = KindReading(DemoChart.selectedKind, registrySize(), DemoChart.selfTestLastChartIdentity)
 }
 
 /**

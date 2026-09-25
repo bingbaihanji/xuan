@@ -105,7 +105,7 @@ internal object DemoChart {
      * **它不改变任何绘制行为**——没有一处绘制逻辑读它。
      */
     @Volatile
-    var drawnFrames: Int = 0
+    var selfTestDrawnFrames: Int = 0
         private set
 
     /**
@@ -120,8 +120,35 @@ internal object DemoChart {
      * <p>同样只在自检模式下写（见 [SELFTEST]）。**它不影响绘制**。
      */
     @Volatile
-    var lastChartIdentity: Int = 0
+    var selfTestLastChartIdentity: Int = 0
         private set
+
+    /**
+     * ★ **只读观测入口**：**这一帧实际用的是哪个图型**（= 本帧 [draw] 读到的 [selectedKind]）。
+     *
+     * <p>自检第 ⑪ 条拿它当"**菜单动作已经在某一帧生效**"的判据。为什么需要它：
+     * 菜单在 JavaFX 线程改 `selectedKind`，而 GL 线程的那一帧**可能已经跑过 `chart()`**，
+     * 于是紧接着的那一帧画的仍是**旧图型**；此时"探针涨了一帧"或"身份变了"这类信号
+     * 都可能是旧图型的，读数就会把旧实例贴上新图型的标签（实测撞到过：第一段读到的
+     * 身份与起点**相同**、号也没涨，⑪ 因此倒）。
+     *
+     * <p>它与第 ⑪ 条的断言**量的是两回事**（它量"这一帧用的哪个图型"，断言量
+     * "重建了没有、号涨了没有"），所以拿它当等待条件不会让那条断言退化成恒真：
+     * `chart()` 变成永远返回缓存时，它照样会变成新图型（图型字段确实改了），
+     * 而断言里的"身份跳变 / 号 +2"仍然为假 ⇒ 倒的仍是断言本身，不是等待条件。
+     *
+     * <p>同样只在自检模式下写（见 [SELFTEST]）。**它不影响绘制**。
+     */
+    @Volatile
+    var selfTestLastDrawnKind: Int = -1
+        private set
+
+    /**
+     * 帧内临时量：本帧 `chart()` 用的是哪个图型（**只由 GL 线程在自己那一帧里写、帧末读**）。
+     *
+     * <p>不直接写 [selfTestLastDrawnKind] 是为了不在帧首发布它——见那里的说明。
+     */
+    private var selfTestFrameKind: Int = -1
 
     /**
      * 已建好的图表，**按图型下标各留一份**。
@@ -234,9 +261,11 @@ internal object DemoChart {
         val frame = Rect(FRAME_MARGIN, FRAME_MARGIN, gc.width - 2f * FRAME_MARGIN, gc.height - 2f * FRAME_MARGIN)
 
         val chart = chart()          // ★ 取缓存的，**不是** build()——见 cachedChart 的说明
-        // ★ 只读观测：本帧用的是哪个 Chart 实例（自检第 11 条的身份判据）。
-        //   写在 `chart()` 之后：它回答的是"这一帧画的是谁"，而不是"缓存里有什么"。
-        if (SELFTEST) lastChartIdentity = System.identityHashCode(chart)
+        // ★ 只读观测：**记住本帧用的是哪个图型**（`chart()` 刚刚读的就是它）。
+        //   ⚠️ 只写进一个帧内临时量，**发布留到帧末**（与 `selfTestDrawnFrames++` 一起）——
+        //   理由见 [selfTestLastDrawnKind]：在帧首就发布，等自检读到它时**本帧的
+        //   `drawChart` 可能还没跑**（数据系列还没注册号），读数就会是"半帧"的。
+        if (SELFTEST) selfTestFrameKind = selectedKind
         val metrics = GcTextMetrics(gc)
         val layout = ChartLayout.compute(chart, frame, metrics)
         val plot = layout.plotRect()
@@ -321,11 +350,20 @@ internal object DemoChart {
         }
         gc.restore()
 
-        // ★★ **末尾探针**（自检模式下才写，见 [drawnFrames]）：这行是"整条绘制路径
+        // ★★ **末尾探针**（自检模式下才写，见 [selfTestDrawnFrames]）：这行是"整条绘制路径
         //    跑到了末尾"的唯一直接证据——本项目 GL 线程上的异常是静默吞掉的，
         //    少画了东西和抛了异常在画面上长得一样。**它必须在最后一行**：
         //    放到中间（比如 `drawChart` 之前）就证明不了后面的刻度文字那段跑过。
-        if (SELFTEST) drawnFrames++
+        //
+        //    三个观测值在这里**一起发布**（帧计数 + 身份 + 图型）。这不是顺手：自检读它们
+        //    是为了判"这一帧画完了没有"，而写在帧首的话，读到"身份变了"时本帧的 `drawChart`
+        //    可能还没跑（数据系列还没注册号）——实测就是这样把第 ⑪ 条的读数读成了半帧的
+        //    （号只涨了 1）。帧末发布之后，"图型 == k" 蕴含"用 k 的那一帧已经跑完"。
+        if (SELFTEST) {
+            selfTestDrawnFrames++
+            selfTestLastChartIdentity = System.identityHashCode(chart)
+            selfTestLastDrawnKind = selfTestFrameKind
+        }
     }
 }
 
