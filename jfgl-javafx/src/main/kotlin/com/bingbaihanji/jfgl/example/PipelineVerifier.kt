@@ -129,7 +129,15 @@ private const val LINE_A_Y = 60.25f
 private const val LINE_B_Y = 120.25f
 private const val LINE_C_Y = 180.25f
 
-/** 状态栈探针三条线的 x 范围，以及比对窗口（x 取中段、y 比描边带高一倍）。 */
+/**
+ * 状态栈探针三条线的 x 范围，以及比对窗口。
+ *
+ * <p>窗口的 y 是**相对线心**的（{@link #LINE_WINDOW_DY0} 到 {@link #LINE_WINDOW_DY1}，半开区间）：
+ * 从线心上方 4 行到下方 5 行，共 **10 行**（校验器运行时也会把 `窗口 320x10` 印出来）。
+ * 描边带本体只有 4 行、开了 AA 连最外那圈共 5 行 ⇒ **窗口比描边带高一倍以上**，
+ * AA 多出来的 fringe 才落得进比对范围。只比线心那几行的话，开与不开 AA 的核心行逐像素相同
+ * ——窗口开窄了等于没有断言。
+ */
 private const val LINE_X0 = 60f
 private const val LINE_X1 = 460f
 private const val LINE_WINDOW_X0 = 100
@@ -273,7 +281,9 @@ class PipelineVerifierApp : Application() {
      *       这与本文件里"只断言外角有像素会被'整块都画错了'骗过去"是同一类教训。</li>
      * </ul>
      *
-     * <p>三条线都在线段中段取比对窗口，且窗口**比描边带高一倍**（12 行 vs 5 行）：
+     * <p>三条线都在线段中段取比对窗口，且窗口**比描边带高一倍以上**：窗口 10 行
+     * （[LINE_WINDOW_DY0] −4 到 [LINE_WINDOW_DY1] 6，见那里的说明），
+     * 而描边带本体只有 4 行、开了 AA 连最外那圈共 5 行。
      * 只比"线心那几行"的话，AA 多出来的最外圈 fringe 落在窗口之外，
      * 开了 AA 与没开 AA 的核心行逐像素相同——窗口开窄了就等于没有断言。
      */
@@ -734,9 +744,11 @@ class PipelineVerifierApp : Application() {
         //   A 与 B 照样逐像素相同。
         report("探针一 C≠A：这条开关真的会改变像素（反证）", diffAC > 0,
             "A 与 C 相差 $diffAC 个像素")
-        // 读数：两条线过线心的 6 行。C 的那一行列是**墨量守恒**最直接的证据——
-        // 线心取 y=60.25 时解析覆盖率是 0.75 / 1 / 1 / 1 / 0.25，合计恰好 4.00 px
-        // （= lineWidth），而 A 是 1/1/1/1/0 合计 4.00。两者相等正是"AA 没把线画粗"。
+        // 读数：两条线各印**过线心的 6 行**（含上下各一行背景）。其中线内的 5 行是
+        // **墨量守恒**最直接的证据——线心取 y=60.25 时解析覆盖率是
+        // 0.75 / 1 / 1 / 1 / 0.25，合计恰好 4.00 px（= lineWidth）；
+        // A 的对应 5 行是 1 / 1 / 1 / 1 / 0（它罩在带内），合计同样 4.00。
+        // 两者相等正是"AA 没把线画粗"。
         val x = LINE_WINDOW_X0 + 100
         println("  窗口 ${LINE_WINDOW_X1 - LINE_WINDOW_X0}x${LINE_WINDOW_DY1 - LINE_WINDOW_DY0}")
         println("  A（AA 关）线心 ${f.rowColors(x, LINE_A_Y.toInt() - 3, 6)}")
@@ -783,6 +795,12 @@ class PipelineVerifierApp : Application() {
                 + ((97..103) + (397..403) + (697..703)).joinToString(" ") { "c$it=${f.g(it, 300)}" })
 
         // 横向：五个解析读数（`byte = (v + 1) / 2 * 255`）
+        //
+        // ⚠ 第 300 行那一条（期望 128、实测 127）**判别力为零**：128 ± 4 把 127 收进去了，
+        //   所以"这条属性整体读到 0"（vEdge.x 恒 0 ⇒ 红通道恒 127）时它照样通过。
+        //   它**不是错的**（真实外缘的中点本来就是 0，而"读到 0"与"算出来是 0"同值），
+        //   但别把它算成一条有效覆盖——真正拦得住"整体读到 0"的是另外四条
+        //   （0 / 64 / 191 / 255）与整个沿向剖面。写在这里是因为评审量到过这一点。
         val crossChecks = mapOf(298 to 0, 299 to 64, 300 to 128, 301 to 191, 302 to 255)
         for ((row, expected) in crossChecks) {
             val actual = f.r(300, row)
@@ -836,9 +854,16 @@ class PipelineVerifierApp : Application() {
         val aaCols = (294..299).joinToString(" ") { "x$it=#%06X".format(f.rgb(it, row)) }
         println("  AA 关（外缘 96.75）第 $row 行：$noAaCols")
         println("  AA 开（外缘 296.75）第 $row 行：$aaCols")
-        // 左上外拐角那一块 4x4（AA 关的在 (95..98)，AA 开的在 (295..298)）
-        println("  AA 关 左上角外沿 4x4：\n" + f.boxColors(95, 95, 99, 99))
-        println("  AA 开 左上角外沿 4x4：\n" + f.boxColors(295, 95, 299, 99))
+        // ★ 打印的方块必须**就是被断言的方块**（下面 countNotIn 用的那两个）。
+        //   曾经打印 x∈[295,299) 而断言数 x∈[297,301)：16 个被断言的像素只印出 4 个，
+        //   失败时报告里会出现"打印出来的全是纯白、断言却说 7 个不是"这种自相矛盾的读数——
+        //   而"失败信息可读"恰恰是这些校验器存在的一半理由。
+        println("  AA 关 被断言的 4x4（x 97..100 × y 97..100）：\n" + f.boxColors(97, 97, 101, 101))
+        println("  AA 开 被断言的 4x4（x 297..300 × y 97..100）：\n" + f.boxColors(297, 97, 301, 101))
+        // 外沿那三个像素（也是被断言的，见 ③）
+        println("  AA 开 拐角外沿三点："
+                + listOf(296 to 96, 296 to 97, 297 to 96)
+            .joinToString(" ") { "(${it.first},${it.second})=#%06X".format(f.rgb(it.first, it.second)) })
 
         // ① 横向外扩对闭合路径同样生效：真外缘之外 0.25 像素处必须有片元。
         //    AA 关时那一列是背景（几何止于真外缘），这是**对照**，必须有——
