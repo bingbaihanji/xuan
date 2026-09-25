@@ -70,14 +70,31 @@ internal object ShapeMath {
     }
 
     /**
-     * 轨迹 → 闭合多边形。点数不足 [MIN_POLYGON_POINTS] 时返回 **null**（调用方丢弃这个图形）。
+     * 轨迹 → 闭合多边形。点数不足 [MIN_POLYGON_POINTS]、或抽稀后的点**共线**（零面积）时
+     * 返回 **null**（调用方丢弃这个图形）。
      *
      * <p>返回 null 而不是返回一个退化图形：一个 2 点的"多边形"面积恒为 0，
      * 画出来看不见，却会占一个拾取 ID 与一条列表项——用户会以为程序坏了。
+     * **共线的那条同理**（它连点数都不止 2），理由见函数体里那段说明。
      */
     fun polygonFrom(trajectory: FloatArray): FloatArray? {
         val pts = simplify(trajectory)
-        return if (pts.size / 2 < MIN_POLYGON_POINTS) null else pts
+        if (pts.size / 2 < MIN_POLYGON_POINTS) return null
+        // ★ **还要判面积，不能只判点数** —— 这是终审发现的一条可复现缺陷：
+        //   一条**共线**的轨迹（水平或竖直最容易：同一物理行上各事件换算出的 y 逐位相同，
+        //   浮点上就是严格共线）会被 `simplify` **全部保留**（各点间距 ≥ 阈值）⇒
+        //   点数够、判定通过 ⇒ 造出一个**零面积多边形**。
+        //   而零面积的后果链是完整的：`fillPolygon` 零像素（`style = FILL` 时还不描边）
+        //   ⇒ 画面上什么都没有；ID pass 光栅化不出任何片元 ⇒ 拾取缓冲里没有它的号
+        //   ⇒ **点不中、框选也读不到、永远进不了选中集** ⇒
+        //   **只能靠「清空画布」删掉它**，而那会连所有图形一起清掉。
+        //   —— 这正是隔壁 [JfglDemoApp.commitShape] 的 `planar` 守卫要防的那类"幽灵对象"，
+        //   而那个口径当时**只兑现在面状三兄弟上**。
+        //   本函数 KDoc 原来给的理由就是**面积**（"一个 2 点的多边形面积恒为 0，画出来看不见"），
+        //   判据却只写了点数——理由与判据没对齐。
+        val b = boundsOf(pts)
+        if (b.width <= 0f || b.height <= 0f) return null
+        return pts
     }
 
     /** 轨迹 → 平滑曲线的控制点序列。点数不足 [MIN_CURVE_POINTS] 时返回 null。 */
@@ -196,6 +213,23 @@ private fun runChecks(check: (String, Boolean, String) -> Unit) {
     check("polygonFrom 三点应通过", ShapeMath.polygonFrom(threePoints)?.size == 6,
         "得到 ${ShapeMath.polygonFrom(threePoints)?.size ?: "null"} 个 float")
 
+    // ⑤b ★★ 多边形：**共线**的三点必须被拒（不是画一个零面积图形）。
+    //
+    // 这条盯的是"判据只写了点数、没写面积"那类缺陷：共线的三点**点数够**
+    // （`simplify` 会全部保留，因为各点间距都 ≥ 阈值），于是只判点数的版本放行，
+    // 造出一个零面积多边形——`fillPolygon` 零像素（`style = FILL` 时还不描边）
+    // ⇒ 画面上什么都没有；ID pass 光栅化不出片元 ⇒ 拾取缓冲里没有它的号
+    // ⇒ **点不中、框选读不到、永远进不了选中集** ⇒ 只能靠「清空画布」删掉它。
+    //
+    // 为什么必须有它：④ 的两点**是被点数判据挡下的**，⑤ 的三点**有面积**
+    // ——**把面积判据整个删掉，这两条照样全过**。实测（变异 A）：删掉那两行 ⇒ 只有这条倒。
+    val collinearThree = floatArrayOf(0f, 0f, 20f, 0f, 40f, 0f)   // 与 ① 同形的严格共线轨迹
+    check(
+        "polygonFrom 三点共线（零面积）应为 null",
+        ShapeMath.polygonFrom(collinearThree) == null,
+        "得到 ${ShapeMath.polygonFrom(collinearThree)?.let { "${it.size} 个 float：${it.toList()}" } ?: "null"}"
+    )
+
     // ⑥ 曲线：2 点刚好够（一条直线段）
     check("bezierFrom 两点应通过", ShapeMath.bezierFrom(twoPoints)?.size == 4,
         "得到 ${ShapeMath.bezierFrom(twoPoints)?.size ?: "null"} 个 float")
@@ -204,6 +238,8 @@ private fun runChecks(check: (String, Boolean, String) -> Unit) {
     val b = boundsOf(floatArrayOf(5f, 9f, -3f, 2f, 8f, -1f))
     check("boundsOf 外接框", b.x == -3f && b.y == -1f && b.width == 11f && b.height == 10f,
         "x=${b.x} y=${b.y} w=${b.width} h=${b.height}（期望 -3,-1,11,10）")
+    // ⑧ ★ **这一条也要标号**：它一直没编号，于是"照标号数断言"会数出 10 条（而实际 11 条），
+    //    下面 ⑨ 的说明里也是按"⑦⑧ 查的是 boundsOf"来数的——编号补齐才对得上。
     check("boundsOf 空输入为零矩形", boundsOf(FloatArray(0)).width == 0f, "w=${boundsOf(FloatArray(0)).width}")
 
     // ⑨ ★ 末点去重：末点**等于**最后一个已收下的点时，不该再追加一个重合顶点。
@@ -214,9 +250,9 @@ private fun runChecks(check: (String, Boolean, String) -> Unit) {
     // 占着一个拾取号与一条列表项、画面上什么都看不见——正是 `polygonFrom` 的 KDoc
     // 要避免的那类"用户以为程序坏了"。
     //
-    // 为什么必须有它：前面 ① ② ②b ②c ⑤ 的末点都**不同于**最后一个已收下的点，
+    // 为什么必须有它：前面 ① ② ②b ②c ⑤ ⑤b 的末点都**不同于**最后一个已收下的点，
     // ④⑥ 走 `n <= 2` 提前返回，③ 是空输入，⑦⑧ 查的是 `boundsOf`。
-    // 所以**删掉那条去重分支，十条断言会全部照过**——它是全文件唯一一条没有探针盯着的实现分支。
+    // 所以**删掉那条去重分支，十一条断言会全部照过**——它是全文件唯一一条没有探针盯着的实现分支。
     val jitter = floatArrayOf(100f, 50f, 101f, 50f, 100f, 50f)
     val s9 = ShapeMath.simplify(jitter, minDist = 8f)
     check(

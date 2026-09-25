@@ -313,6 +313,16 @@ internal object DemoChart {
         chart.axis(0).setDisplayLength(plot.width.toDouble())
         chart.axis(1).setDisplayLength(plot.height.toDouble())
 
+        // ★ **刻度只取一次**：`Axis.ticks()` **每次都重新生成整串刻度并格式化标签**
+        //   （`TickGenerator.generate`，`Axis` 没有任何缓存），而本函数一帧里要把它们
+        //   遍历**两遍**（网格一遍、刻度文字一遍）× 两根轴 = **四次生成**。
+        //   同一个文件刚刚为了"每帧多两次 volatile 写"专门设了 `SELFTEST` 开关，
+        //   这里的量级比那个大得多（每次生成要算三级刻度 + 格式化每个标签）。
+        //   **必须在 `setDisplayLength` 之后取**——刻度的位置依赖显示长度；
+        //   两次遍历之间没有东西改轴，所以取一次、用两遍是等价的。
+        val xTicks = chart.axis(0).ticks()
+        val yTicks = chart.axis(1).ticks()
+
         // 绘图区底色。**放在 save/restore 里**——`gc.fill` 是**可变状态**，
         // 写在外面会泄漏给本帧后续的图元（今天无害，只因为 `drawScene` 紧接着就 return）。
         // 库自己的 `drawChart` 是刻意做成状态中立的，这个入口跟上更稳。
@@ -323,17 +333,24 @@ internal object DemoChart {
         // 网格。**库没有辅助**，全仓唯一一份手写循环在 README.md
         gc.lineWidth = 1f
         gc.stroke = GRID
-        for (t in chart.axis(1).ticks()) {         // y 轴要翻：值越大越靠上
+        for (t in yTicks) {         // y 轴要翻：值越大越靠上
             if (!t.isMajor()) continue
             val sy = plot.y + plot.height - t.position().toFloat()
+            // 0 那条横线**也不画**，理由与下面 x 轴那条**逐字相同**（终审指出的一处不对称）：
+            // y 轴的 0 刻度映射到绘图区**下边缘**（`position() == 0` ⇒ `sy == plot.y +
+            // plot.height`），画了只是把那条边加重一道。刻度文字照旧画（它在下面那一段里），
+            // 所以"0"这个读数不会丢——丢的只是与边界重合的那条线。
+            if (t.value() == 0.0) continue
             gc.drawLine(plot.x, sy, plot.x + plot.width, sy)
         }
-        for (t in chart.axis(0).ticks()) {
+        for (t in xTicks) {
             if (!t.isMajor()) continue
             val sx = plot.x + t.position().toFloat()
             // 0 那条竖线**不画**：它与绘图区左边缘重合，画了只是把网格加重一道。
             // （注意：这里**不是**"让给 y 轴"——本 demo 与 `ChartDecorations` 都**不画轴线**，
             //   绘图区没有左/下边框线。早年的注释说"让给 y 轴"，那个"对象"并不存在。）
+            // ★ 上面 y 轴那条**同理**——这一条早先只写了这半边，y 轴那条一直在画
+            //   （终审指出的不对称），本轮补齐。
             if (t.value() == 0.0) continue
             gc.drawLine(sx, plot.y, sx, plot.y + plot.height)
         }
@@ -351,14 +368,14 @@ internal object DemoChart {
         gc.save()
         gc.fontSize = TICK_FONT
         gc.fill = TICK_TEXT
-        for (t in chart.axis(1).ticks()) {
+        for (t in yTicks) {
             if (!t.isMajor()) continue
             val sy = plot.y + plot.height - t.position().toFloat()
             val w = gc.measureText(t.label())
             // 右对齐、右端留 `TICK_RESERVE` 里那个 6px 的缝；`+0.35em` 让基线落在半个字面高处
             gc.drawText(t.label(), plot.x - w - TICK_GAP, sy + TICK_FONT * 0.35f)
         }
-        for (t in chart.axis(0).ticks()) {
+        for (t in xTicks) {
             if (!t.isMajor()) continue
             val sx = plot.x + t.position().toFloat()
             val w = gc.measureText(t.label())

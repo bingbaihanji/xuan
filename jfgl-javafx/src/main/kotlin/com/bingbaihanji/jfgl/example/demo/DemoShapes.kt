@@ -125,6 +125,9 @@ sealed interface Shape {
         override val color: Int, override val style: ShapeStyle, override val lineWidth: Float
     ) : Shape {
         // 直线**只有描边**这一种画法：填充一条没有面积的线段没有意义。
+        // 所以 `style` 这个字段在直线身上**只写不读**——它只为满足 [Shape] 接口而存在，
+        // 菜单里选"只填充"再拖一条线时，读的是 `JfglDemo.styleIsLine`（那边会把样式菜单灰掉）。
+        // 与 [TextShape] 的 `style` / `lineWidth` 是同性质的事，一处交代了另一处也该交代。
         override fun draw(gc: Gc) = strokeWith(gc, color, lineWidth) { gc.drawLine(x1, y1, x2, y2) }
         override fun bounds() = Rect(minOf(x1, x2), minOf(y1, y2), abs(x2 - x1), abs(y2 - y1))
         override fun describe() = "直线 (${x1.toInt()},${y1.toInt()})→(${x2.toInt()},${y2.toInt()})"
@@ -256,10 +259,13 @@ sealed interface Shape {
         /**
          * 文本的外接框（设备像素）。
          *
-         * <p><strong>★ 目前没有任何消费方</strong>：文本恒以 `pickId = 0` 落下
-         * （既不参与拾取、也不进选中集），而 `bounds()` 的唯一调用点是选中高亮那个循环
-         * ——`sel` 只可能来自 `Gc.pick`（对 id 0 返回 null）与 `PickBuffer.readRect`
-         * （滤掉 0），**永不含 0**。所以这个方法今天一次都不会被调到。
+         * <p><strong>★ 目前没有任何消费方</strong>：文本恒以 `pickId = 0` 落下，而
+         * 两个调用点都把它挡在外面——选中高亮那个循环的判据是 `p.pickId in sel`，
+         * 自检第 ① 条的几何断言读的是 `shapes[0]`（一个矩形）。而 `sel` 只可能来自
+         * `Gc.pick`（对 id 0 返回 null）与 `PickBuffer.readRect`（滤掉 0），**永不含 0**。
+         * 所以这个方法今天一次都不会**落在文本上**。
+         * （★ 早先这里写的是"`bounds()` 的唯一调用点是选中高亮那个循环"——**那句是假的**：
+         * 自检 ① 也调它。结论不变，但成立的理由是上面这条，不是"没人调"。）
          * **接入文本拾取之前必须按真实推进宽度把它重算一遍**（那时它才开始被消费）。
          *
          * <p><strong>宽度是按字符数估的，不是量出来的</strong>（`size × min(字符数, 8)`）——
@@ -314,7 +320,11 @@ private inline fun drawWith(gc: Gc, style: ShapeStyle, color: Int, lineWidth: Fl
     }
 }
 
-/** 只描边：先把填充色设成同一个色也没关系，因为 `body` 不会调填充方法。 */
+/**
+ * 只描边：**只设描边色与线宽，不碰填充色**——`body` 不会调填充方法，
+ * 设了也没有意义（早先那句"先把填充色设成同一个色也没关系"是本函数还设 `fill`
+ * 时的残留，与现在的函数体已经不符）。
+ */
 private inline fun strokeWith(gc: Gc, color: Int, lineWidth: Float, body: () -> Unit) {
     gc.save()
     gc.stroke = color

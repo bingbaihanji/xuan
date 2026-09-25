@@ -173,10 +173,17 @@ class JfglDemoApp : Application() {
         style = "-fx-font-size: 13px; -fx-text-fill: #1b1b1b;"
     }
 
-    // ---- JavaFX 线程写、GL 线程读的状态。**分三类，别混。** ----
+    // ---- 跨线程状态。**分三类，别混。** ----
     //
     //   ① **引用快照**（`shapes` / `selection` / `marqueePending`）：整表替换、
     //      从不原地改，所以 GL 线程读到的永远是一个自洽的快照；
+    //      ★ **写者有两处，不是一处**（终审补准的）：JavaFX 线程（`commitShape` /
+    //      `commitText` / `deleteSelected` / `clearAll`），以及**自检模式下 GL 线程上的
+    //      那个钩子**（`consumeMarquee` 里调 `removeShapes` —— 见那里的 KDoc）。
+    //      后者是**例外**，只在自检路径上（生产路径被 `if (SELFTEST …)` 挡着），
+    //      而且它是一次**读-改-写**（`shapes.set(shapes.get().filter { … })`），
+    //      与 JavaFX 线程那侧交错时理论上会丢更新——真丢了会让第 ⑦ 条的判据响亮失败，
+    //      不是静默错画，所以本期只把这句话说准，不动结构；
     //   ② **需要跨线程的标量**（`mode` / `kind`）：`@Volatile`；
     //   ③ **分别发布的标量**（`dragStart*` / `marquee[XYWH]`）：也 `@Volatile`，
     //      但它们是**逐字段发布、成组读取**的，所以允许**单帧不一致**
@@ -594,10 +601,22 @@ class JfglDemoApp : Application() {
     private fun onRelease(bridge: FXGLTransfer, node: Node, e: MouseEvent) {
         if (e.button == MouseButton.SECONDARY) {
             if (!marqueeW.isNaN()) {
-                val r = Rect(minOf(marqueeX, marqueeX + marqueeW), minOf(marqueeY, marqueeY + marqueeH),
-                    abs(marqueeW), abs(marqueeH))
-                marqueePending.set(r)          // GL 线程在下一帧消费
-                resetDragState()               // 见它的说明：顺带取消掉可能在进行的主键拖拽
+                // ★ **只按不拖的右键不算框选**（终审指出的不对称：主键那条有 `CLICK_SLOP`
+                //   闸门，次级这条没有）。按下时 `marqueeW` 被置成 **`0f` 而不是 NaN**，
+                //   所以"按下即松开"会照走一遍**零尺寸**框选：它要么把光标那一个像素下的
+                //   图形选上、要么在空白处把选中集**清空**——两种都是用户没表达过的意图
+                //   （右键在本 demo 里只表示"框选"）。闸门与主键同款：位移小于 `CLICK_SLOP`
+                //   就当作没框选，**不动选中集**。
+                val dragged = abs(marqueeW) >= CLICK_SLOP || abs(marqueeH) >= CLICK_SLOP
+                if (dragged) {
+                    val r = Rect(minOf(marqueeX, marqueeX + marqueeW), minOf(marqueeY, marqueeY + marqueeH),
+                        abs(marqueeW), abs(marqueeH))
+                    marqueePending.set(r)      // GL 线程在下一帧消费
+                }
+                // 提交与否都要清：不清的话残留的 `marqueeW = 0f` 会让**下一次没有按下的**
+                // 右键释放也照走这条分支（它只判 NaN）。见 [resetDragState] 的说明：
+                // 顺带取消掉可能在进行的主键拖拽。
+                resetDragState()
             }
             return
         }
@@ -783,9 +802,24 @@ class JfglDemoApp : Application() {
      * 一处跨线程读——而它的 KDoc 同时声称"只碰线程安全的三样东西"，**文档承诺超过实现**。
      * 改法是让那句话**为真**，不是给它加一段注解：注册表由**调用方在它自己那一侧**解析。
      *
-     * <p>于是它真的只碰三样线程安全的东西（`registry` / `shapes` / `selection`）：
+     * <p>于是它的三个入参（`registry` / `sel` 与它碰的两张表）都来自**调用方自己那一侧**：
      * JavaFX 线程的调用方（[deleteSelected]）同线程读 `transfer`，本来就没问题；
      * GL 线程的钩子手里已经有 `consumeMarquee(gc)` 那个 `gc`，直接交 `gc.pickRegistry`。
+     *
+     * <p><strong>★ 但"它只碰线程安全的东西"这句话对后两样仍然不真</strong>
+     * （终审指出；`0c13440` 只消掉了 `transfer` 那一处）：
+     * `shapes.set(shapes.get().filter { … })` 与 `selection.set(emptySet())` 都是
+     * **读-改-写**，而本函数**有两个线程上的调用方**——[deleteSelected]（JavaFX 线程）与
+     * 自检第 ⑦ 条的钩子（**GL 线程**，见 [consumeMarquee]）。两次 RMW 交错会**丢一次更新**
+     * （经典的 lost update：A 读到旧表 → B 读到旧表并写回 → A 写回它的旧表）。
+     *
+     * <p><strong>为什么这仍然不是生产缺陷</strong>：GL 线程那一侧被
+     * `if (SELFTEST &amp;&amp; selfTestDeleteAfterReadback)` 挡着，**生产路径根本走不到**；
+     * 而真丢了更新的话，第 ⑦ 条自己的判据（`shapes.size`、`selection`）会**响亮失败**，
+     * 不是静默错画。所以本轮**只把话说准**：
+     * **这两张表的写者有两处，一处是自检模式下 GL 线程上的钩子**——那是个例外，且只在自检路径。
+     * （**不改成 `Platform.runLater`**：那会把第 ⑦ 条的时序判据——"读回落地之前按 Delete"——
+     * 从确定性变成竞态，正是那条判据花了一整轮才立住的东西。）
      *
      * <p>状态栏是 JavaFX 控件，**不在这里写**，由调用方负责
      * （[deleteSelected] 在 JavaFX 线程上直接写；钩子那边走 `runLater`）。
@@ -844,14 +878,18 @@ class JfglDemoApp : Application() {
         // 理由见那两处的 KDoc：`body` 抛异常会让 `FXGLTransfer` 的 `endFrame()` 整趟被跳过、
         // 此后每帧都抛，`finally` **挡不住**真正的风险。这里写一句是免得下一个人以为是漏了。
         //
-        // 顺带：`bounds()` 只被这里用，而它的约定是"尺寸非负"（见 `Shape.bounds()` 的 KDoc）。
+        // 顺带：`bounds()` 的**生产**调用点只有这里（另一个调用点在自检第 ① 条的
+        // 几何绝对值断言里，见那里的 `s.firstOrNull()?.shape?.bounds()`——
+        // "只被这里用"那句话是假的，是终审指出来的）。它的约定是"尺寸非负"
+        // （见 `Shape.bounds()` 的 KDoc）。
         // `commitShape` 用 `planar` 保证了这一点；`TextShape` 的尺寸项也恒非负
         // （`size × min(字符数, 8)` 与 `size × 1.3`，而 `size` 是 `FONT_SIZES` 里的正数），
         // 所以不会出现负尺寸矩形。
-        // ⚠️ 但要说准：**文本那个 `bounds()` 其实一次都不会被调到**——文本恒 `pickId = 0`，
-        // 而下面这个循环的判据是 `p.pickId in sel`，`sel` 永不含 0（见 `TextShape.bounds()`
-        // 的 KDoc）。所以"文本的尺寸非负"这件事今天是**没人消费的约定**，
-        // 不是一条被这里验证过的性质。
+        // ⚠️ 但要说准：**文本那个 `bounds()` 一次都不会被调到**——理由**不是**"这里没人调它"
+        // （这里确实调，只是判据 `p.pickId in sel` 把它挡在外面了），而是**文本恒
+        // `pickId = 0` 而 `sel` 永不含 0**（`Gc.pick` 对 0 返回 null、`PickBuffer.readRect`
+        // 滤掉 0，见 `TextShape.bounds()` 的 KDoc）。所以"文本的尺寸非负"这件事今天是
+        // **没人消费的约定**，不是一条被这里验证过的性质。
         gc.save()
         gc.pickId = 0
         gc.stroke = HIGHLIGHT
@@ -1206,11 +1244,23 @@ class JfglDemoApp : Application() {
     private var selfTestScene: Scene? = null
     private var selfTestTimer: AnimationTimer? = null
     private var selfTestSteps: List<Step> = emptyList()
+
+    /**
+     * 已评估的断言条数。**`@Volatile` 不是装饰**：看门狗线程（[startSelfTestWatchdog]）
+     * 在超时那条路径上要读它，而它与 JavaFX 线程之间**没有任何 happens-before 边**
+     * （唯一的同步点 `selfTestDone` 恰恰是"没等到"的那一侧）。
+     * 不写 `@Volatile` 的话超时报告里那句「已评估 k/N」可能印出一个陈旧值——
+     * 而那个 k 正是"被静默跳过的断言"这一形态下**唯一的读数**，印错了就没有第二处可查。
+     */
+    @Volatile
     private var selfTestStep = 0
     private var selfTestSeg = 0
     private var selfTestInjected = false
     private var selfTestBaseFrame = 0
     private var selfTestPulses = 0
+
+    /** 失败条数。理由与 [selfTestStep] 相同——看门狗那条路径同样要读它。 */
+    @Volatile
     private var selfTestFailures = 0
 
     /** 脚本自己带来的中间量（**不是**被测状态）。 */
@@ -1350,7 +1400,20 @@ class JfglDemoApp : Application() {
             System.err.flush()
             // 退出码在这里落定。**必须是显式退出**：JavaFX 自己的关停路径不设退出码，
             // 而 `Application.launch()` 返回后 JVM 会以 0 收尾——失败的那次会被报成"成功"。
-            exitProcess(code)
+            //
+            // ★ **用 `Runtime.halt(code)`，不是 `exitProcess(code)`** —— 退出码一样，
+            //   但 `halt` **不跑关闭钩子**。理由是实测撞出来的：`exitProcess` 会去跑钩子，
+            //   而此刻 **JavaFX 线程正在 `stop()` 之后继续它自己的关停**（`Platform.exit()`
+            //   只是开始拆，钩子与它**并发**碰 GL/D3D）——5 次经过这条退出路径的运行里
+            //   崩过 **1 次原生 ACCESS_VIOLATION**（`0xC0000005`，maven 报退出值
+            //   `-1073741819`），而**当次 12+11 条断言全绿**。那种崩法把"全过"报成了
+            //   非 0 退出，正是本仓库最防的"报告与事实相反"。
+            //   `halt` 不会引入新的并发：latch 是在 `stop()` 的 `finally` 里放的，
+            //   所以走到这里**我们自己的 `dispose()` 已经返回**。
+            //   这条理由在本文件里不是新发明——看门狗那处早就写着同样的话
+            //   （见 [startSelfTestWatchdog]："后者要跑关闭钩子，而此刻我们可能正卡在
+            //   GL 回调里"）。
+            Runtime.getRuntime().halt(code)
         }, "jfgl-selftest-exit").apply { isDaemon = false }.start()
     }
 

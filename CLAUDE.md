@@ -60,9 +60,14 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
 > 上面那条讲的是 `stdout.encoding`（默认 GBK，会让七个校验器的中文断言全乱）。
 > 但 `stderr.encoding` 是**独立的**系统属性，默认同样是 GBK——而**诊断信息走的是 stderr**。
 > 典型受害者是本仓库现有的自检：`ClickDslExample.kt` 的两处
-> `System.err.println("[叠加层] 自检失败：…")`（中文），以及 `JfglDemo.kt` 的四条
+> `System.err.println("[叠加层] 自检失败：…")`（中文），`JfglDemo.kt` 的四条
 > ——「属性 … 不是能识别的真值」「两份自检开关的值不一致」「[自检] 失败 N 项，demo
-> 不可信，退出」「★ 警告：Platform.exit() 之后 … 没跑完」。
+> 不可信，退出」「★ 警告：Platform.exit() 之后 … 没跑完」——以及
+> **`DemoShapeMath.kt` 的异常定位信息**
+> `[自检] 在「$lastName」之后、下一条断言求值时抛异常：…`。
+> **最后这条尤其要紧**：它正是下面那个乱码样本的出处（`simplify` 就在它的上一句），
+> 而它存在的全部意义就是"断言崩了时能指到是哪一条"——读不出来时，
+> 一次崩溃就退化成一句"自检失败"。
 > **表现是**：程序行为完全正确（照常报错、照常以非 0 退出），只有**报告**不可读——
 > 而"读不出原因"恰恰是这些自检存在的一半理由。
 > 实测（2026-09-24）：只带 stdout 开关时该行是 `[�Լ�] �ڡ�simplify …`，
@@ -80,8 +85,17 @@ mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime
     "-Dexec.args=-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -Djfgl.demo.selftest=1 -cp %classpath com.bingbaihanji.jfgl.example.demo.JfglDemoKt"
 ```
 
-退出码 0 = 11 条断言全过；失败或超时（看门狗 60 秒 / 脉冲上限 900）退出码 1 并打印
-**已评估 k/11**——`k` 是"真的被求过值"的条数，不是"总共"（被静默跳过的断言比失败的更坏）。
+**退出码 0 要过两道闸门，两道都不可省**（一条命令里跑完）：
+
+1. **`onInit` 里的纯计算自检**（`selfCheckShapeMath`，输出前缀 `[自检]`）——
+   **12 条**，末行也打 `[自检] 全部通过`。它**与自检模式无关**，正常跑 demo 也执行；
+   失败时打 `[自检] 失败 N 项，demo 不可信，退出` 并退 1，
+   **不会**打「已评估 k/11」（那句话属于第二道闸门，别把它当成唯一的判据）。
+   它崩在断言里时另有一行 stderr 定位（见上面 `stderr.encoding` 那条）。
+2. **合成事件脚本**（输出前缀 `[自检-合成]`）——**11 条**，末行 `[自检-合成] 全部通过`。
+   失败或超时（看门狗 60 秒 / 脉冲上限 900）退 1，并打 **已评估 k/11**——
+   `k` 是"真的被求过值"的条数，不是"总共"（被静默跳过的断言比失败的更坏）。
+
 它证的是**合成事件真能到达 `wireMouse` 那三个处理器**，以及坐标换算、拾取往返、回调交付、
 状态更新这四件事；它**没有**证"真实鼠标事件能到达画布"（合成事件绕过 JavaFX 拾取，
 那条由 `ClickVerifier` 的 `Robot` 探针管），也**没有**证画面对不对。
