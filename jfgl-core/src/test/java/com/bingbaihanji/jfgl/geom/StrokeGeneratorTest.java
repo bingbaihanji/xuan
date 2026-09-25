@@ -455,6 +455,63 @@ class StrokeGeneratorTest {
     }
 
     @Test
+    void rawEdges返回内部数组而不是副本() {
+        // 与上面 rawTriangles 那条同形，理由也相同、但代价更大：
+        // Task 3 起 Gc.emitTriangles 会**每帧**读 rawEdges()，所以"返回副本"不是多一次
+        // 可省可不省的复制，而是每帧一次静默分配——而画面上毫无症状。
+        // 实测：把 rawEdges() 改成 `return Arrays.copyOf(edges, edges.length);` 之后，
+        // 本类其余 25 条断言**全绿**，所以这一条是唯一守住该契约的地方。
+        StrokeGenerator g = new StrokeGenerator();
+        g.stroke(new float[]{0f, 0f, 10f, 0f}, 2, false, 4f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 4f);
+
+        float[] raw = g.rawEdges();
+        assertSame(raw, g.rawEdges(), "不得每次分配新数组，否则热路径省不掉复制");
+        assertSame(raw, g.rawEdges(), "第二次调用同样不得换数组（扩容之外没有理由换）");
+
+        // 与位置数组同一套口径：rawXxx 是内部缓冲且不复制，只有带括号的复制版才复制
+        float[] rawTris = g.rawTriangles();
+        assertSame(rawTris, g.rawTriangles(), "位置数组那条口径不变");
+        assertEquals(rawTris.length, raw.length,
+                "两个数组逐字等长：每三角形各占 6 个 float，一起扩容");
+        assertEquals(g.triangleCount() * 6, g.triangles().length,
+                "复制版给出的是有效长度，不是数组长度");
+        assertTrue(g.triangles().length < rawTris.length,
+                "本用例的有效数据必须短于容量，否则上面那条断言分不出'复制版'与'raw 版'");
+    }
+
+    @Test
+    void 走扩容路径后边距数组仍与三角形数组等长且无NaN() {
+        StrokeGenerator g = new StrokeGenerator();
+        // 10 点锯齿折线：9 段 × 2 + 8 个 miter 接头 × 2 = 34 个三角形 = 204 个 float，
+        // 而初始容量只有 3*6*4 = 72（12 个三角形），所以至少要翻两次倍
+        // （12 个→144、24 个→288）。**这条几何的全部意义就是撑破初始容量**：
+        // 不给它扩容，"两个数组是否仍对齐"根本没被验到（原来的用例只出 6 个三角形）。
+        float[] pts = new float[20];
+        for (int i = 0; i < 10; i++) {
+            pts[i * 2] = i * 10f;
+            pts[i * 2 + 1] = (i % 2) * 10f;
+        }
+        g.stroke(pts, 10, false, 4f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 8f, 8);
+        assertTrue(g.triangleCount() > 12,
+                "这条几何必须撑破初始容量（12 个三角形），否则扩容路径没被跑到，实测 "
+                        + g.triangleCount());
+
+        float[] t = g.rawTriangles();
+        float[] e = g.rawEdges();
+        assertEquals(t.length, e.length,
+                "扩容后两个数组仍必须逐字等长（它们是按同一个判据一起翻倍的）");
+
+        int valid = g.triangleCount() * 6;
+        assertTrue(t.length >= valid, "容量不得小于有效数据");
+        for (int i = 0; i < valid; i++) {
+            assertTrue(Float.isFinite(t[i]), "第 " + i + " 个位置应为有限值，实测 " + t[i]);
+            assertTrue(Float.isFinite(e[i]), "第 " + i + " 个边距应为有限值，实测 " + e[i]);
+        }
+    }
+
+    @Test
     void 水平直线段的横向边距是正负一() {
         StrokeGenerator g = new StrokeGenerator();
         // 一条从 (0,0) 到 (100,0) 的线，线宽 10 ⇒ 半线宽 5
@@ -535,6 +592,11 @@ class StrokeGeneratorTest {
                 StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 8f, 8);
         float[] e = g.rawEdges();
         assertTrue(e.length >= g.triangleCount() * 6, "边距数组至少要有 三角形数*6 个 float");
+        // ★ 名字里的"与三角形对齐"必须按**逐字等长**断言，不能只写 `>= 有效数据`：
+        //   `>=` 对"每三角形只写 3 个 float""扩容时两个数组用不同判据"这类错法**恒真**
+        //   （只要容量够大就成立）。两个数组每三角形各占 6 个 float，就该一样长。
+        assertEquals(g.rawTriangles().length, e.length,
+                "边距数组与位置数组必须逐字等长（每三角形各占 6 个 float，一起扩容）");
         for (int i = 0; i < g.triangleCount() * 6; i++) {
             assertTrue(Float.isFinite(e[i]), "边距不该是 NaN/Infinity，实测 " + e[i]);
         }

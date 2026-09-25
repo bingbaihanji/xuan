@@ -68,6 +68,13 @@ public final class StrokeGenerator {
      * 已有的读取方（{@code Gc} 按 6 个 float 一个三角形遍历它）已经把那个布局当契约；
      * 把边距缠进同一个数组会改掉那个契约，而契约的另一头还有 {@code PathVerifier} 在跑。
      * 因此边距必须是<strong>另一个</strong>数组，按同一个下标口径对齐。
+     *
+     * <p><strong>⚠ 声明顺序是契约</strong>：初值取自 {@code triangles.length}，所以本字段
+     * <strong>必须声明在 {@code triangles} 之后</strong>（Java 按声明顺序初始化实例字段）。
+     * 调换顺序的话 {@code triangles} 此刻还是 {@code null}，这里会直接 NPE 而不是静默变小；
+     * 但若有人把初值改成字面量又把扩容写成"按 {@code edges.length * 2}"而两个数组用不同
+     * 判据，就会在第一次扩容后越界——两个数组一起翻倍（见 {@link #emitTriangle}）那条
+     * 才是应当保持的写法。
      */
     private float[] edges = new float[triangles.length];
 
