@@ -697,6 +697,13 @@ void main() {
 
 并更新那两处 KDoc（"fill、stroke、pickId" → "fill、stroke、pickId、antialias"）。
 
+> **★ 顺手收掉 Task 1 留下的两处"当前尚不存在"标注。** Task 1 的评审要求给两处前向引用
+> 加标注（`VertexFormat.OFFSET_EDGE` 里提的"片段着色器那两个 `w > 0.0`"、
+> `VertexWriter.vertex` 里提的 `Gc.antialias`），因为当时它们都还不存在。
+> **本 Task 一落地，那两句标注本身就变成过时注释了**——正是 Task 1 报告里点名的
+> "新加的两句标注也是前向引用"。**把"随 Task 3 加入 / 当前尚不存在"这两句删掉，
+> 引用保留。** 这是本 Task 的收尾动作之一。
+
 - [ ] **Step 4: 描边几何外扩 1 像素**
 
 `Gc.strokeOutline` 现在是这样：
@@ -861,11 +868,17 @@ Expected: **退出码 0**。`antialias` 默认 false ⇒ 外扩量 0、边距全
 实现上最简单的做法是**只在校验器里**用一段独立的着色器（或给它一个 `uProbe` uniform
 走另一条分支），**不要**改生产着色器的默认行为。
 
-- [ ] **Step 9: 顺手修一处过时注释（Task 1 的欠账）**
+- [ ] **Step 9: ~~顺手修一处过时注释~~ —— 已在 Task 1 的修复轮里做掉了**
 
-`Gc.kt` 里 `INITIAL_VERTEX_CAPACITY` 的注释写着「约 1.5 MB（65536 个顶点 * 24 字节）」，
-stride 改成 32 之后应为 **2 MB**。本 Task 正好要改 `Gc.kt`，顺手改掉。
-（执行者报告里点名了它在 `Gc.kt:1395` 附近。）
+> **2026-09-26 执行期修正：本步作废，不必再做。** 原计划让本 Task 顺手改
+> `Gc.kt` 里「约 1.5 MB（65536 个顶点 * 24 字节）」那句过时注释。Task 1 的**规格审查**
+> 查出同类过时**还剩两处**（`Gc.kt:1395` 与 `FXGLTransfer.kt:539`），
+> 已在 Task 1 的修复轮里一并改掉（各一行注释，零风险）。
+> **保留这个已划掉的步骤是为了留痕**：它记着"stride 一改，全仓库有**四处**
+> 写着旧字节数的注释"这件事，下次再动格式时可以直接 grep 这一类。
+> 顺手记下那四处：`RenderBatch.configureVaoAttributes` 的 Javadoc、
+> `VertexWriter.MAX_VERTEX_CAPACITY`、`Gc.INITIAL_VERTEX_CAPACITY`、
+> `FXGLTransfer` 的顶点容量注释。
 
 - [ ] **Step 10: 提交**
 
