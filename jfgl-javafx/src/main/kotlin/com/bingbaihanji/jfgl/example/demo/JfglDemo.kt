@@ -517,10 +517,25 @@ class JfglDemoApp : Application() {
                 // 在块结束时全部回滚，因此不可能"忘了复位 pickId"。
                 gc.pickable(p.pickId) { p.shape.draw(gc) }
             } else {
+                // **这一支与 `pickable(0) { … }` 逐位等价**（`pickId` 在此刻的环境值就是 0：
+                // 帧首置过 0、`shape.draw` 内部的 save/restore 不动它，而 ID pass 的片段
+                // 着色器无条件写 `fragId`、拾取缓冲被清成 0，所以"写 0"与背景不可区分），
+                // 所以它不是必需的。留着只是让"这一个是不可拾取的"在调用点一眼可见。
+                // **它也不掩盖注册失败**：`gc()` 为 null 时 `id = 0`，图形照画、只是点不中，
+                // 那正是 [commitShape] 里写明的降级。
+                // （Task 8 的文本按规格注册成 `pickId = 0`，会实际走到这一支。）
                 p.shape.draw(gc)
             }
         }
-        // 选中高亮画在所有图形之后，此时 pickId 已被 pickable 复原成 0
+        // 选中高亮画在所有图形之后，此时 pickId 已被 pickable 复原成 0。
+        //
+        // **这里也不加 `try/finally`**，与 [drawDragPreview] / [drawMarquee] 一致——
+        // 理由见那两处的 KDoc：`body` 抛异常会让 `FXGLTransfer` 的 `endFrame()` 整趟被跳过、
+        // 此后每帧都抛，`finally` **挡不住**真正的风险。这里写一句是免得下一个人以为是漏了。
+        //
+        // 顺带：`bounds()` 只被这里用，而它的约定是"尺寸非负"（见 `Shape.bounds()` 的 KDoc）。
+        // `commitShape` 用 `planar` 保证了这一点；Task 8 的 `TextShape` 尺寸项也恒非负
+        // （`size × 字符数` 与 `size × 1.3`），所以不会出现负尺寸矩形。
         gc.save()
         gc.pickId = 0
         gc.stroke = HIGHLIGHT
@@ -630,7 +645,21 @@ class JfglDemoApp : Application() {
         if (gc.width <= 0 || gc.height <= 0) return
         val r = marqueePending.getAndSet(null) ?: return
         val hits = gc.pickRect(r.x, r.y, r.width, r.height)
-        val ids = hits.map { it.id() }.toSet()
+        // ★ **过滤两道，缺一不可**——两个成因都是真的，而且都会让高亮/删除
+        //   静默作用到**另一个**图形上：
+        //
+        //   ① **payload 为 null 的命中**：库明确写了它可达——"刚注销的对象当帧可能仍被画着，
+        //      于是命中 `PickHit(id, null, …)`"（见 `Gc.pickRegistry` 的文档）。
+        //      凡是按"拾取号"存选中集的地方，都得自己把这条挡掉。
+        //   ② **号已经不在 `shapes` 里了**：`PickRegistry` 注销时把号 `push` 进空闲表、
+        //      `register` 优先 `pop`——**它 LIFO 复用**，紧接着的下一次注册就把这个号发回去。
+        //      留着它，用户随手画的下一个图形会**立刻被高亮框住**，再按 Delete 删掉的是
+        //      **那个新图形**，而状态栏照常显示"已删除 1 个图形"。
+        //
+        //   快照取在 **GL 线程**（用 `shapes.get()`），**不是到 `runLater` 里再取**：
+        //   后者中间隔着一整帧，删一个再画一个就可能把号复用回来、又被误选中。
+        val live = shapes.get().map { it.pickId }.toSet()
+        val ids = hits.filter { it.payload() != null && it.id() in live }.map { it.id() }.toSet()
         // 回 JavaFX 线程更新选中集与状态栏（GL 线程不能碰控件）
         Platform.runLater {
             selection.set(ids)
