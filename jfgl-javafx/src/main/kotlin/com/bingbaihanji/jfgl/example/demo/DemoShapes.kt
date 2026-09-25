@@ -3,6 +3,8 @@ package com.bingbaihanji.jfgl.example.demo
 import com.bingbaihanji.jfgl.renderer.Gc
 import com.bingbaihanji.jfgl.util.Rect
 import kotlin.math.abs
+import kotlin.math.floor
+import kotlin.math.hypot
 
 /**
  * **笔位十字**的颜色（橙）。
@@ -359,4 +361,68 @@ internal fun boundsOf(points: FloatArray): Rect {
         i += 2
     }
     return Rect(minX, minY, maxX - minX, maxY - minY)
+}
+
+/**
+ * 用**虚线**描一条折线。**预览专用。**
+ *
+ * <p><strong>为什么在 demo 里手算</strong>：库里的 `StrokeGenerator.strokeDashed(...)`
+ * **存在且有单测**（`StrokeDashTest`），但 **`Gc` 没有把它暴露出来**——`Gc` 的描边路径
+ * 只调实线那个 `stroke(...)`。本 demo 因此自己按**弧长**把折线切成实段。
+ * （这条缺口记在 `CLAUDE.md` 的「未实现 / 待办」里。）
+ *
+ * <p><strong>它只用于预览</strong>：提交时仍然走 `Gc` 的
+ * `fillRect` / `fillCircle` / `fillEllipse` / `drawLine`，
+ * 所以**画出来的东西与这个助手无关**——它坏掉最多是预览难看。
+ *
+ * <p>代价照实记：预览轮廓由本文件与 `JfglDemo` 各算一遍，
+ * 与 `Gc` 内部那份（`rectOutline` / `circleOutline` / `ellipseOutline`，
+ * 都是 `private`）**不是同一份代码**，因此**预览的圆与提交的圆在细分段数上可能不同**。
+ *
+ * @param gc      绘制上下文（调用方负责设好 `stroke` 与 `lineWidth`）
+ * @param points  扁平顶点数组 `[x0,y0, x1,y1, ...]`
+ * @param closed  是否首尾相接
+ * @param dashOn  实段长度（设备像素），≤0 时退化成实线
+ * @param dashOff 空段长度（设备像素），≤0 时退化成实线
+ */
+internal fun strokeDashedPolyline(
+    gc: Gc, points: FloatArray, closed: Boolean, dashOn: Float, dashOff: Float
+) {
+    val n = points.size / 2
+    if (n < 2) return
+    val pattern = dashOn + dashOff
+    if (dashOn <= 0f || dashOff <= 0f || pattern <= 0f) {
+        // 退化：按实线画。**不静默什么都不画**——虚线的参数错不该让预览消失。
+        gc.strokePolyline(points, closed)
+        return
+    }
+    val segCount = if (closed) n else n - 1
+    var s = 0f                                  // 折线起点算起的累计弧长
+    for (i in 0 until segCount) {
+        val j = (i + 1) % n
+        val ax = points[i * 2]
+        val ay = points[i * 2 + 1]
+        val bx = points[j * 2]
+        val by = points[j * 2 + 1]
+        val len = hypot(bx - ax, by - ay)
+        if (len <= 1e-6f) continue
+        // 本段覆盖全局弧长 [s, s+len)。逐个 dash 实区间与它求交：
+        // 一个实区间可能横跨多个折线段，那就在每段里各画一段（拐角处留一个亚像素的缝，
+        // 预览上不可见）。
+        var k = floor((s / pattern).toDouble()).toInt()
+        while (k * pattern <= s + len) {
+            val from = maxOf(k * pattern, s)
+            val to = minOf(k * pattern + dashOn, s + len)
+            if (to > from) {
+                val t0 = (from - s) / len
+                val t1 = (to - s) / len
+                gc.drawLine(
+                    ax + (bx - ax) * t0, ay + (by - ay) * t0,
+                    ax + (bx - ax) * t1, ay + (by - ay) * t1
+                )
+            }
+            k++
+        }
+        s += len
+    }
 }
