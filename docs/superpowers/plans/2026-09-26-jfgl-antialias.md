@@ -134,7 +134,8 @@ Expected: FAIL —— `expected: <32> but was: <24>`，且 `OFFSET_EDGE` 编译�
      * <p><strong>两个分量分别是"横向"与"沿向"</strong>，约定与用法见
      * {@link StrokeGenerator#rawEdges()} 与渲染管线里的描边片段着色器。
      * 简言之：{@code x} 是到中心线的有符号距离（归一化到真实半线宽，{@code ±1} 是两条真实外缘），
-     * {@code y} 是到最近端帽的沿路径距离（同样归一化，**恒 ≥ 0**）。
+     * {@code y} 是到最近端帽的有符号沿路径距离（同样归一化）：**0 是端帽线、带内为正、带外为负**。
+     * 片段着色器靠这个符号区分"在线内"与"在线外"（见设计文档 §4.3 的 {@code 0.5 + y/wa}）。
      *
      * <p><strong>填充与文本两个分量都写 0</strong>——那时该 vary 在图元上是常量、
      * 屏幕空间导数为 0，片段着色器据此走"完全覆盖"的分支。
@@ -169,7 +170,9 @@ Expected: FAIL —— `expected: <32> but was: <24>`，且 `OFFSET_EDGE` 编译�
      * @param premultipliedRgba 预乘 alpha 后的 RGBA 颜色
      * @param id               拾取 ID
      * @param edgeCross        横向：到中心线的有符号距离 ÷ 半线宽（{@code ±1} = 两条真实外缘）
-     * @param edgeAlong        沿向：到最近端帽的沿路径距离 ÷ 半线宽（**恒 ≥ 0**）
+     * @param edgeAlong        沿向：到最近端帽的**有符号**距离 ÷ 半线宽
+     *                         （0 = 端帽线，带内为正、带外为负；填充与文本写 0，
+     *                          它们与描边靠 `fwidth == 0` 区分，**不是**靠符号）
      * @throws IllegalStateException 尚未调用 {@link #setState} 时；
      *                               或缓冲区已写满、消费方始终没有执行帧中途 flush 时
      */
