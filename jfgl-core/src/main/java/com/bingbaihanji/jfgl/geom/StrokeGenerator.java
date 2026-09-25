@@ -148,7 +148,10 @@ public final class StrokeGenerator {
      * <ul>
      *   <li><strong>横向</strong>：到描边中心线的有符号距离，归一化到真实半线宽，
      *       {@code ±1} 正是两条真实外缘，{@code +} 在
-     *       {@code n = (-dy/len, dx/len)} 那一侧（即该段行进方向的左法线侧）。</li>
+     *       {@code n = (-dy/len, dx/len)} 那一侧（即该段行进方向的左法线侧）。
+     *       <strong>接头（{@link #emitJoin} 发射的那几个三角形）是例外：横向一律 0</strong>
+     *       ——不是"距离为 0"，而是"这一维在这里不够用"的显式取值，让片元走
+     *       "完全覆盖"分支。理由见 {@code emitJoin} 的注释（取 ±1 会在抗锯齿下把拐角啃掉）。</li>
      *   <li><strong>沿向</strong>：到最近端帽的沿路径距离，同样除以半线宽。
      *       <strong>{@code 0} 就是端帽线：带内为正，带外为负</strong>——
      *       片段着色器正是靠这个符号区分"在线内"与"在线外"。
@@ -614,16 +617,39 @@ public final class StrokeGenerator {
         float o1x = -u1y * half * s, o1y = u1x * half * s;
         float o2x = -u2y * half * s, o2y = u2x * half * s;
 
-        // 边距的取值规则（三种接头共用一套）：
-        //   拐点 (px,py) 在中心线上 ⇒ 横向为 0；
-        //   两个偏移点与 miter 尖角都在**凸侧**、距中心线恰好半线宽 ⇒ 横向为 s（凸侧符号）；
-        //   沿向三者都等于拐点自己的沿向。
-        // miter 尖角明明离中心线**超过**半线宽（直角处 √2 倍），却仍取 s 而不是那个比值：
-        // 尖角属于描边内部，取 s 让整块尖角恒为"完全覆盖"；若照实取比值，着色器会把尖角
-        // 当成落在两条外缘之外而把它羽化掉——尖角会自己变淡，而画面看起来"只是有点虚"。
+        // 边距的取值规则（三种接头共用一套）：接头三角形的横向**一律取 0**。
+        //
+        // 横坐标为 0 ⇒ 覆盖率公式里 `fwidth(cross) == 0` ⇒ 片元走"完全覆盖"分支
+        // ⇒ 整个接头**不透明**，外缘是**硬边**。沿向三者都等于拐点自己的沿向。
+        //
+        // ★ 为什么不是 ±s：本意是"尖角在描边内部，让它完全覆盖"，但覆盖率公式在
+        //   `|x| = 1` 处给的是 **0.5** 而不是 1 —— 那个本意从来没有实现过。
+        //   而 `Gc` 开了抗锯齿时会按 `几何半宽 / 真实半宽` 缩放**所有**顶点的横向
+        //   （因为描边带被外扩过 1 个像素），于是 ±1 变成 ±1.5 ⇒ 覆盖率 **0**
+        //   ⇒ **每个拐角被啃掉一块**（风筝形外侧整片透明）。
+        //   **取 0 才是真正达成那个本意的写法，且与缩放倍率无关**——它是唯一一个
+        //   在"扩/不扩"两种几何下都给同一个覆盖率的取值。
+        //
+        // 代价一是**已声明的降级，不是缺陷**：miter 的外缘**没有羽化**（硬边）。
+        // 在三个都错的选项里——硬边 / 半透明边 / 缺口——硬边是唯一"形状对得上"的那个。
+        //
+        // ★ 但"形状对得上"有一处**实测出的**偏差要一并记下来：接头几何本身**也被外扩**
+        //   （它用的是同一个 `half`），而它现在恒不透明 ⇒ 拐角外沿会比真实轮廓
+        //   多画约 1 个像素。实测（线宽 8、AA 开、真外缘 296.75）：真外缘之外 0.25 像素处，
+        //   直边给 0.25、拐角给 **1.0**；外拐角对角线那个像素真实覆盖率只有 0.06，也画成纯白。
+        //   要同时收掉这一条，得让接头用**未外扩**的半线宽生成（`stroke` 再收一个
+        //   "接头半宽"参数，由 `Gc` 传真实半线宽）——那是另一处改动，已记进提交信息，
+        //   不在本次范围内。数值由 `PipelineVerifier` 探针三钉着（那一行断言同时是
+        //   这条降级的读数与"将来有人收掉它"的哨兵）。
+        //
+        // 要真正羽化 miter 需要每条边各一个距离分量（`aEdge` 从 vec2 扩到 vec3 或更多），
+        // 那是另一个量级的改动，且当前没有证据说明它值得。
+        //
+        // 圆角接头的圆弧盘（下面的 emitArc）**不在**这条规则里：它的横向是圆弧自己的
+        // 几何（到入段中心线的有符号投影），抹成 0 会把圆端的侧向羽化也一起去掉。
         if (join == Join.BEVEL || join == Join.ROUND) {
             emitTriangle(px, py, px + o1x, py + o1y, px + o2x, py + o2y,
-                    0f, along, s, along, s, along);
+                    0f, along, 0f, along, 0f, along);
             if (join == Join.ROUND) {
                 // 从 o1 方向扫到 o2 方向，扫过角度即转向角
                 float start = (float) Math.atan2(o1y, o1x);
@@ -658,7 +684,7 @@ public final class StrokeGenerator {
         if (!Float.isFinite(miterLength) || miterLength > miterLimit * half) {
             // 超过 miter limit，回退为 bevel
             emitTriangle(px, py, px + o1x, py + o1y, px + o2x, py + o2y,
-                    0f, along, s, along, s, along);
+                    0f, along, 0f, along, 0f, along);
             return;
         }
         // 完整的 miter 接头是"风筝形"四边形 (p, p+o1, m, p+o2)，**两个**三角形：
@@ -670,9 +696,9 @@ public final class StrokeGenerator {
         // 90° 直角处风筝恰好是 2·半线宽 见方的角块，因此"补全"这一件事在像素上可读：
         // 闭合直角方框的总面积从 15800 变成理想值 16000（见 PathVerifier）。
         emitTriangle(px, py, px + o1x, py + o1y, px + o2x, py + o2y,
-                0f, along, s, along, s, along);
+                0f, along, 0f, along, 0f, along);
         emitTriangle(px + o1x, py + o1y, mx, my, px + o2x, py + o2y,
-                s, along, s, along, s, along);
+                0f, along, 0f, along, 0f, along);
     }
 
     /**

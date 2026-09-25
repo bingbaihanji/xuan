@@ -56,7 +56,10 @@ public final class VertexFormat {
      * 屏幕空间导数为 0，片段着色器据此走"完全覆盖"的分支。
      * 也就是说：填充/文本与描边是靠 <strong>{@code fwidth == 0} 区分的，
      * 不是靠沿向的符号</strong>——它们写 0，而描边里同样有沿向为 0 的顶点
-     * （正落在端帽线上的那些，它们是边界而非内部）。
+     * （正落在端帽线上的那些，它们是边界而非内部），
+     * 以及<strong>横向也为 0</strong> 的接头三角形（它要的就是"完全覆盖"，见
+     * {@code StrokeGenerator.emitJoin}）——所以"两个分量都是 0"并不专属于填充与文本，
+     * 它只说明"这一维在这个图元上不携带梯度"。
      * 这条不是特例，是判据本身（片段着色器里那两个 {@code w > 0.0} 判别式
      * 就在 {@code RenderBatch.FRAGMENT_SHADER} 里，与描边羽化同时落地：
      * 它们同时是"这里不需要 {@code uAntialias} uniform"的原因）。

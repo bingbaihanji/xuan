@@ -1258,21 +1258,24 @@ class Gc constructor(private val batch: RenderBatch) {
         //   正是这么用的——容差按设备像素给），所以一个设备像素 = `1 / matrixScale()` 局部单位。
         //   算反了的表现是**外扩量随系统缩放跑偏**，而画面只是"边缘略厚"，极难发现。
         //
-        //   ⚠️ 已声明的范围：`!closed` —— **闭合路径目前不参与外扩**（矩形/圆/椭圆描边都走那条）。
-        //   后果是它们的**长边**只拿到"半边"羽化：几何恰好止于真实外缘，于是真实边缘
-        //   之外那半个像素没有片元，覆盖率只能从 0.5 起步（`0.5 → 1` 而不是 `0 → 1`）。
-        //   沿向那一侧对闭合路径本来就无事可做（它没有端帽）。要收掉这条，
-        //   把条件里的 `&& !closed` 去掉即可——`capExtension` 对闭合路径是空操作
-        //   （`generateOutline` 只在 `!closed` 时补端帽），所以不会多画出一圈。
+        //   ★ 两个方向的外扩是**正交**的，不要混在一个判据里：
+        //     · **横向**外扩（加宽描边带）对**闭合路径同样需要**——矩形/圆/椭圆的
+        //       长边也要有外侧片元，否则它们的真实外缘之外那半个像素没有片元，
+        //       覆盖率只能从 0.5 起步（`0.5 → 1` 而不是 `0 → 1`）。
+        //     · **沿向**外扩（`capExtension`）只对**开放路径**有意义——闭合路径没有端帽，
+        //       传了也是空操作（`generateOutline` 只在 `!closed` 时补端帽）。
+        //   混在一起（用同一个 `!closed` 挡掉两者）的后果是闭合描边的长边只拿到
+        //   半边羽化，而这**不是**任何人的意图，只是两个判据恰好长得一样。
         val realHalf = lineWidth * 0.5f
-        val px = if (antialias && !closed) 1f / matrixScale().coerceAtLeast(1e-6f) else 0f
+        val px = if (antialias) 1f / matrixScale().coerceAtLeast(1e-6f) else 0f
+        val capExt = if (closed) 0f else px
         strokeGenerator.stroke(
-            points, count, closed, (realHalf + px) * 2f,
+            points, count, closed, lineWidth + 2f * px,
             StrokeGenerator.Cap.BUTT,
             StrokeGenerator.Join.MITER,
             MITER_LIMIT,
             ROUND_SEGMENTS,
-            px                                   // ← capExtension
+            capExt                               // ← capExtension：只对开放路径有效
         )
         val n = strokeGenerator.triangleCount() * 6
         // 生成器是按**它收到的那条线宽**的一半归一化边距的，而那条线宽已经被外扩过
@@ -1358,6 +1361,10 @@ class Gc constructor(private val batch: RenderBatch) {
      *                   **沿向不需要换算**：那里的公式是 `0.5 + y/fwidth(y)`，
      *                   分子分母同比例缩放会相消，所以生成器给的值直接可用——
      *                   再除一次反而会把端帽的羽化推歪。
+     *
+     *                   **接头的横向是 0**（见 `StrokeGenerator.emitJoin`），
+     *                   0 乘任何倍率还是 0 ⇒ 接头永远走"完全覆盖"分支，
+     *                   这一步的倍率对它**没有影响**——这正是它取 0 的理由。
      */
     private fun emitTriangles(triangles: FloatArray, floatCount: Int, argb: Int,
                               edges: FloatArray? = null, edgeScale: Float = 1f) {

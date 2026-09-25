@@ -66,8 +66,31 @@ private const val STACK_FRAME = 8
 /** 边距（`aEdge`）探针所在的帧号。 */
 private const val EDGE_FRAME = 10
 
+/** 闭合路径探针（横向外扩 + 拐角）所在的帧号。 */
+private const val CLOSED_FRAME = 12
+
 /** 收尾帧：汇总并落退出码。 */
-private const val FINISH_FRAME = 12
+private const val FINISH_FRAME = 14
+
+/**
+ * 闭合路径探针：两个**同一几何**的描边矩形，一个 AA 关、一个 AA 开，左右并排。
+ *
+ * <p>线宽 8（半线宽 4、外扩后 5）、边长 120、左上角取 `y = 100.75`。
+ * 坐标带 `.75` 是刻意的：真外缘落在 **296.75 / 96.75** 这样的位置，
+ * 于是"真外缘之外 0.25 像素"那一列的像素中心（296.5）**存在**——
+ * 外扩有没有生效，就看那一列有没有片元。若把边缘取成整数，
+ * 外缘两侧的像素要么全覆盖要么全不覆盖，**这条判据会恒真**。
+ */
+private const val CLOSED_LINE_WIDTH = 8f
+private const val CLOSED_SIZE = 120f
+private const val CLOSED_Y = 100.75f
+
+/** AA 关的那一个（对照）与 AA 开的那个（被测）的左上角 x。 */
+private const val CLOSED_X_NO_AA = 100.75f
+private const val CLOSED_X_AA = 300.75f
+
+/** 左边缘中段的探测行：远离上下两个拐角，只有一条直边在那里。 */
+private const val CLOSED_PROBE_ROW = 160
 
 /** 边距探针的线宽；半线宽 2 ⇒ 外扩 1 像素后 3，几何纵向覆盖 297.5..303.5。 */
 private const val EDGE_LINE_WIDTH = 4f
@@ -198,6 +221,7 @@ class PipelineVerifierApp : Application() {
         when (frame) {
             STACK_FRAME -> drawStyleStackScene(gc)
             EDGE_FRAME -> drawEdgeProbeScene(gc)
+            CLOSED_FRAME -> drawClosedProbeScene(gc)
             else -> drawMainScene(gc)
         }
     }
@@ -301,6 +325,32 @@ class PipelineVerifierApp : Application() {
         gc.flush()
         gc.setEdgeProbe(false)
 
+        gc.antialias = false
+    }
+
+    /**
+     * 闭合路径探针：同一几何的描边矩形画两遍，一遍 AA 关、一遍 AA 开。
+     *
+     * <p>它守两件事，都**只对闭合路径**成立：
+     * <ol>
+     *   <li><b>横向外扩必须对闭合路径也生效</b>。曾用同一个 `!closed` 同时挡掉了
+     *       横向与沿向两种外扩，于是矩形/圆/椭圆描边的真外缘之外没有片元、
+     *       覆盖率只能从 0.5 起步（`0.5 → 1` 而不是 `0 → 1`）。
+     *       判别式是"真外缘**之外** 0.25 像素那一列有没有片元"（见 [CLOSED_Y] 的说明）。</li>
+     *   <li><b>拐角不能被啃掉一块</b>。接头三角形的横向取 ±1 时，覆盖率公式在 `|x| = 1`
+     *       处只给 0.5，而外层那个 `几何半宽/真实半宽` 的倍率会把它推到 1.5 ⇒ 覆盖率 0
+     *       ⇒ 风筝形外侧整片透明。判据是"真实轮廓**内部**的拐角方块里一个背景像素都没有"。</li>
+     * </ol>
+     */
+    private fun drawClosedProbeScene(gc: Gc) {
+        gc.lineWidth = CLOSED_LINE_WIDTH
+        gc.stroke = 0xFFFFFFFF.toInt()
+
+        gc.antialias = false
+        gc.strokeRect(CLOSED_X_NO_AA, CLOSED_Y, CLOSED_SIZE, CLOSED_SIZE)
+
+        gc.antialias = true
+        gc.strokeRect(CLOSED_X_AA, CLOSED_Y, CLOSED_SIZE, CLOSED_SIZE)
         gc.antialias = false
     }
 
@@ -445,6 +495,7 @@ class PipelineVerifierApp : Application() {
         when (val f = frame) {
             STACK_FRAME -> if (verifyStyleStack()) frame = f + 1
             EDGE_FRAME -> if (verifyEdgeProbe()) frame = f + 1
+            CLOSED_FRAME -> if (verifyClosedStroke()) frame = f + 1
             FINISH_FRAME -> finish()
             else -> {
                 // 主阶段之后、收尾帧之前的那几帧：主场景照画（只是画，没人读），什么都不校验。
@@ -751,7 +802,74 @@ class PipelineVerifierApp : Application() {
         return true
     }
 
+    // ------------------------------------------------------------------
+    // 探针三：闭合路径的横向外扩 + 拐角
+    // ------------------------------------------------------------------
+
+    /**
+     * 闭合路径探针的判定（几何与两件判据见 [drawClosedProbeScene]）。
+     *
+     * <p>读数全是解析值：
+     * <pre>
+     *   线宽 8 ⇒ 半线宽 4；AA 开时外扩到 5。
+     *   真外缘 = 中心线 ∓ 4。左边缘中段那一行：
+     *     真外缘之外 0.25 像素那一列（AA 开）→ 覆盖率 0.25 → 混出 #666666（102）
+     *     同一列（AA 关）→ 几何止于真外缘 ⇒ 没有片元 ⇒ 仍是背景 #333333
+     *   拐角：真轮廓内部的 4x4 个像素必须**一个背景像素都没有**。
+     * </pre>
+     */
+    private fun verifyClosedStroke(): Boolean {
+        val f = grabFrame() ?: return false
+
+        println("\n-- ★ 探针三：闭合路径的横向外扩 + 拐角 --")
+        // 左边缘中段那一行、跨过真外缘的 5 列（两个矩形各一份）
+        val row = CLOSED_PROBE_ROW
+        val noAaCols = (94..99).joinToString(" ") { "x$it=#%06X".format(f.rgb(it, row)) }
+        val aaCols = (294..299).joinToString(" ") { "x$it=#%06X".format(f.rgb(it, row)) }
+        println("  AA 关（外缘 96.75）第 $row 行：$noAaCols")
+        println("  AA 开（外缘 296.75）第 $row 行：$aaCols")
+        // 左上外拐角那一块 4x4（AA 关的在 (95..98)，AA 开的在 (295..298)）
+        println("  AA 关 左上角外沿 4x4：\n" + f.boxColors(95, 95, 99, 99))
+        println("  AA 开 左上角外沿 4x4：\n" + f.boxColors(295, 95, 299, 99))
+
+        // ① 横向外扩对闭合路径同样生效：真外缘之外 0.25 像素处必须有片元。
+        //    AA 关时那一列是背景（几何止于真外缘），这是**对照**，必须有——
+        //    少了它，"AA 开时那一列不是背景"可能只是"那里本来就画了什么"。
+        val outsideNoAa = f.rgb(96, row)
+        val outsideAa = f.rgb(296, row)
+        report("探针三 对照组：AA 关时真外缘之外那一列就是背景", outsideNoAa == background,
+            "x=96 = #%06X，期望 #%06X".format(outsideNoAa, background))
+        val r = f.r(296, row)
+        report("探针三 闭合描边的真外缘之外也有片元（横向外扩没被 !closed 挡掉）",
+            Math.abs(r - 102) <= CHANNEL_TOLERANCE,
+            "x=296 的 red=$r，期望 102（覆盖率 0.25 的白色压在 #333333 上）")
+
+        // ② 拐角既不能有缺口、也不能有羽化：接头（风筝形）**整块**必须是不透明的。
+        //    判据取"方块里有多少个像素不是纯白"而不是"有多少个是背景"：
+        //    只数背景像素的话，**羽化**（半透明）那一类漏画法在它前面恒真——
+        //    实测就是如此（把接头横向改回 s 时，底边那一半只是变淡到 0.25，一个背景像素都没有）。
+        //    两个方块的范围不同是因为两边的接头几何不同：AA 关时风筝形是 [96.75,100.75]²，
+        //    AA 开时它被外扩成 [295.75,300.75]²。各取**完全落在自己那块内部**的像素。
+        val offNonWhite = f.countNotIn(97, 97, 101, 101, 0xFFFFFF)
+        val onNonWhite = f.countNotIn(296, 96, 301, 101, 0xFFFFFF)
+        report("探针三 对照组：AA 关的拐角方块 16 个像素全是纯白", offNonWhite == 0,
+            "实测 $offNonWhite 个不是纯白")
+        report("探针三 AA 开的接头风筝形整块不透明（既无缺口也无羽化）", onNonWhite == 0,
+            "实测 $onNonWhite 个不是纯白（把接头横向改回 s、或闭合路径不再外扩，本条都会倒）")
+
+        // ③ 已声明的降级：接头几何**也**被外扩过 1 个像素，而它现在恒不透明
+        //    ⇒ 拐角外沿比真实轮廓多画约 1 像素。真覆盖率只有 0.0625 的那个对角线像素
+        //    被画成纯白。要同时去掉这一条，得让接头用**未外扩**的半线宽生成
+        //    （生成器再收一个"接头半宽"参数）——那是另一处改动，见提交信息。
+        report("探针三 已声明的降级：拐角外沿多画约 1 像素（接头几何也被外扩且恒不透明）",
+            f.rgb(296, 96) == 0xFFFFFF,
+            "外拐角对角线像素 (296,96) = #%06X，期望 #FFFFFF（真实覆盖率约 0.06）"
+                .format(f.rgb(296, 96)))
+        return true
+    }
+
     /** 收尾：汇总 + 落退出码。放在最后单独一帧，好让探针阶段也进同一份摘要。 */
+
     private fun finish() {
         println()
         if (failures.isEmpty()) {
@@ -792,6 +910,8 @@ class PipelineVerifierApp : Application() {
 
         fun g(x: Int, y: Int): Int = channel(x, y, 1)
 
+        fun b(x: Int, y: Int): Int = channel(x, y, 2)
+
         private fun channel(x: Int, y: Int, c: Int): Int {
             // glReadPixels 行序自下而上；用户坐标 y 向下，故翻转回读行号。
             val i = ((h - 1 - y) * w + x) * 4 + c
@@ -815,6 +935,39 @@ class PipelineVerifierApp : Application() {
         /** 逐通道打印一串行上的颜色，给报告当读数用。 */
         fun rowColors(x: Int, y0: Int, rows: Int): String =
             (y0 until y0 + rows).joinToString(" ") { "y$it=#%06X".format((r(x, it) shl 16) or (g(x, it) shl 8) or channel(x, it, 2)) }
+
+        /** 取一块矩形的 RGB（不含 alpha）。 */
+        fun rgb(x: Int, y: Int): Int = (r(x, y) shl 16) or (g(x, y) shl 8) or b(x, y)
+
+        /** 数一块矩形（半开区间）里等于给定 RGB 的像素个数。 */
+        fun countIn(x0: Int, y0: Int, x1: Int, y1: Int, rgb: Int): Int {
+            var n = 0
+            for (y in y0.coerceAtLeast(0) until y1.coerceAtMost(h)) {
+                for (x in x0.coerceAtLeast(0) until x1.coerceAtMost(w)) {
+                    if (rgb(x, y) == rgb) n++
+                }
+            }
+            return n
+        }
+
+        /** 数一块矩形（半开区间）里**不等于**给定 RGB 的像素个数。 */
+        fun countNotIn(x0: Int, y0: Int, x1: Int, y1: Int, rgb: Int): Int {
+            var n = 0
+            for (y in y0.coerceAtLeast(0) until y1.coerceAtMost(h)) {
+                for (x in x0.coerceAtLeast(0) until x1.coerceAtMost(w)) {
+                    if (rgb(x, y) != rgb) n++
+                }
+            }
+            return n
+        }
+
+        /** 把一块矩形逐行打成可读的读数（给报告用）。 */
+        fun boxColors(x0: Int, y0: Int, x1: Int, y1: Int): String =
+            (y0.coerceAtLeast(0) until y1.coerceAtMost(h)).joinToString("\n") { y ->
+                "    y$y: " + (x0.coerceAtLeast(0) until x1.coerceAtMost(w)).joinToString(" ") {
+                    "%06X".format(rgb(it, y))
+                }
+            }
     }
 
     /** 两个同形快照里不同的像素个数。 */

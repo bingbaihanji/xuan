@@ -5,6 +5,29 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class StrokeGeneratorTest {
 
+    /** 把顶点位置编成 "x,y"（一位小数、`Locale.ROOT`），供"顶点集合恰好是这几个"这类断言用。 */
+    private static String at(float[] t, int v) {
+        return String.format(java.util.Locale.ROOT, "%.1f,%.1f", t[v * 2], t[v * 2 + 1]);
+    }
+
+    /**
+     * 统计横向边距为 0 的顶点，返回它们的位置集合。
+     *
+     * <p>判据取**顶点集合**而不是"取几个采样点看"：接头就是那几个顶点，
+     * 逐点比对才不会漏掉"只改了一处"。
+     */
+    private static java.util.TreeSet<String> zeroCrossVertices(StrokeGenerator g) {
+        float[] t = g.triangles();
+        float[] e = g.rawEdges();
+        java.util.TreeSet<String> zero = new java.util.TreeSet<>();
+        for (int v = 0; v < g.triangleCount() * 3; v++) {
+            if (e[v * 2] == 0f) {
+                zero.add(at(t, v));
+            }
+        }
+        return zero;
+    }
+
     private static float area(float[] tris) {
         float sum = 0f;
         for (int i = 0; i < tris.length; i += 6) {
@@ -825,8 +848,12 @@ class StrokeGeneratorTest {
         // 【MITER 尖角】limit 8 ⇒ 阈值 16，miter 长度 = half*√2 ≈ 2.83 < 16 ⇒ 走完整风筝形。
         //   两条偏移线的交点 m：t = ((o2x-o1x)*u2y - (o2y-o1y)*u2x)/cross = 2 ⇒
         //   m = p + o1 + u1*t = (12,-2)。它只可能由尖角那个三角形产生
-        //   （x=12 落在两段四边形的范围之外），横向取凸侧符号 s = -1（而不是它到中心线的
-        //   真实距离 √2），沿向与拐点相同 = 5。
+        //   （x=12 落在两段四边形的范围之外），沿向与拐点相同 = 5。
+        //
+        //   横向**必须取 0**——不是它到中心线的真实距离 √2，也不是凸侧符号 s。
+        //   完整理由见 `emitJoin` 的注释，摘要：`|x| = 1` 处覆盖率公式给的是 0.5、
+        //   而 `Gc` 开抗锯齿时会把所有顶点的横向按 `几何半宽/真实半宽` 放大
+        //   ⇒ 取 ±1 会变成 ±1.5 ⇒ 覆盖率 0 ⇒ **每个拐角被啃掉一块**。
         StrokeGenerator g = new StrokeGenerator();
         g.stroke(new float[]{0f, 0f, 10f, 0f, 10f, 10f}, 3, false, 4f,
                 StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 8f, 8);
@@ -836,8 +863,8 @@ class StrokeGeneratorTest {
         for (int v = 0; v < g.triangleCount() * 3; v++) {
             float x = t[v * 2], y = t[v * 2 + 1];
             if (Math.abs(x - 12f) < 1e-5f && Math.abs(y + 2f) < 1e-5f) {
-                assertEquals(-1f, e[v * 2], 1e-5f,
-                        "miter 尖角横向应取凸侧符号 s = -1（取 0 会让尖角被当成外缘之外而羽化掉）");
+                assertEquals(0f, e[v * 2], 1e-5f,
+                        "miter 尖角横向应取 0（走'完全覆盖'分支；取 ±1 会在 AA 下把拐角啃掉一块）");
                 assertEquals(5f, e[v * 2 + 1], 1e-5f, "尖角沿向应与拐点相同");
                 tip++;
             }
@@ -871,6 +898,69 @@ class StrokeGeneratorTest {
             }
         }
         assertTrue(mid > 0, "圆角盘扫过一半处应有顶点（只可能来自圆角盘）");
+    }
+
+    /**
+     * 接头三角形的横向必须**一律取 0**——`emitJoin` 里四处发射点（BEVEL/ROUND 那个、
+     * miter 超限回退那个、MITER 底边那个、MITER 尖角那个）都算。
+     *
+     * <p><strong>为什么必须是 0</strong>：覆盖率公式在 `|x| = 1` 处给的是 **0.5** 而不是 1
+     * ——"取 s 让尖角完全覆盖"这个本意从来没有实现过；而 `Gc` 开抗锯齿时会按
+     * `几何半宽 / 真实半宽` 缩放**所有**顶点的横向（描边带被外扩过 1 个像素），
+     * 于是 ±1 变成 ±1.5 ⇒ 覆盖率 **0** ⇒ <strong>每个拐角被啃掉一块</strong>。
+     * 取 0 让 `fwidth(cross) == 0`、片元走"完全覆盖"分支，
+     * 而且它是唯一一个在"外扩/不外扩"两种几何下给同一个覆盖率的取值。
+     *
+     * <p>判据取**顶点集合**（而不是"挑几个采样点看"）：接头就是那几个顶点，
+     * 逐点比对才拦得住"只改了一处"。
+     */
+    @Test
+    void 接头三角形的横向一律为零() {
+        // 直角折线 (0,0)→(10,0)→(10,10)，线宽 4 ⇒ 半线宽 2。接头风筝形是 [10,12]×[-2,0]：
+        //   拐点 p=(10,0)、两个偏移点 p+o1=(10,-2) 与 p+o2=(12,0)、尖角 m=(12,-2)。
+        // ⚠ (10,-2) 与 (12,0) 同时也是**相邻段四边形**的角点（横向 ±1），
+        //   所以"接头那几个顶点"不能按位置认——要按**横向为 0 的那一批**认，
+        //   再断言那一批恰好是这四个位置。
+        //
+        //   端帽是 BUTT 且 capExtension=0 ⇒ 端帽不发射任何几何；两段四边形全是 ±1。
+        //   于是横向为 0 的顶点**只可能**来自接头。
+        StrokeGenerator g = new StrokeGenerator();
+        g.stroke(new float[]{0f, 0f, 10f, 0f, 10f, 10f}, 3, false, 4f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 8f, 8);
+        // 完整风筝形 = 底边三角形 (p, p+o1, p+o2) + 尖角三角形 (p+o1, m, p+o2)
+        // ⇒ 6 个顶点、4 个不同位置（底边两端各被两个三角形共用一次）。
+        assertEquals("[10.0,-2.0, 10.0,0.0, 12.0,-2.0, 12.0,0.0]",
+                zeroCrossVertices(g).toString(),
+                "横向为 0 的顶点必须恰好是接头风筝形的四个角，实测 " + zeroCrossVertices(g));
+        assertEquals(6, countZeroCross(g), "尖角那一半也要覆盖：底边 3 个 + 尖角 3 个 = 6 个顶点");
+
+        // 反证一：miter 超限回退那条分支（只有底边三角形，3 个顶点）。
+        StrokeGenerator bevelled = new StrokeGenerator();
+        bevelled.stroke(new float[]{0f, 0f, 10f, 0f, 10f, 10f}, 3, false, 4f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 1f, 8);
+        assertEquals(3, countZeroCross(bevelled),
+                "超限回退为斜接后只有底边三角形，横向为 0 的顶点应为 3 个");
+        assertEquals("[10.0,-2.0, 10.0,0.0, 12.0,0.0]", zeroCrossVertices(bevelled).toString(),
+                "回退分支的底边三角形与 MITER 那条是同一个，顶点位置应完全一致");
+
+        // 反证二：BEVEL 分支（与 ROUND 共用同一个发射点）。
+        StrokeGenerator bevel = new StrokeGenerator();
+        bevel.stroke(new float[]{0f, 0f, 10f, 0f, 10f, 10f}, 3, false, 4f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.BEVEL, 8f, 8);
+        assertEquals("[10.0,-2.0, 10.0,0.0, 12.0,0.0]", zeroCrossVertices(bevel).toString(),
+                "BEVEL 接头同样是横向 0，且只有底边三个顶点");
+    }
+
+    /** 统计横向边距**恰好为 0** 的顶点个数。 */
+    private static int countZeroCross(StrokeGenerator g) {
+        float[] e = g.rawEdges();
+        int n = 0;
+        for (int v = 0; v < g.triangleCount() * 3; v++) {
+            if (e[v * 2] == 0f) {
+                n++;
+            }
+        }
+        return n;
     }
 
     @Test
