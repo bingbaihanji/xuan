@@ -155,9 +155,21 @@ private const val PROBE_LINE_WIDTH = 4f
 private const val WINDOW_X_FRAC = 0.1f
 private const val LINE_X_FRAC = 0.05f
 
-/** 窗的纵向上下界（相对 `floor(线心)` 的行号，半开区间 `[-3, +4)` ⇒ 共 7 行）。 */
+/** 窗的纵向上下界（相对 `floor(线心)` 的行号，半开区间 `[-3, +4)`）。 */
 private const val WINDOW_DY0 = -3
 private const val WINDOW_DY1 = 4
+
+/**
+ * 窗的**期望行数** = 7。它的出处是几何，不是上面那两个常量：
+ * 线心 3 行 + 两个过渡行 + 上下各留 1 行背景。
+ *
+ * <p>⚠️ **它必须是一个独立的字面量，不能就地写成 `WINDOW_DY1 - WINDOW_DY0`。**
+ * 实测过：那样写时，把上面两个常量一起改成 `4 / 4`（= 空窗）会让**两边同时变成 0**，
+ * 于是"窗非空"这条先决条件**恒真**——报的是 `[PASS] … 行数 == 0`，而它存在的
+ * 全部理由就是抓这个（空窗下判据 ① 与 ④ 会退化成 `0 == 0`）。
+ * **期望值不许由被测的那两个常量自己算出来**，否则变异一改就是两边一起改。
+ */
+private const val WINDOW_ROWS = 7
 
 /** 背景（`glClearColor(0.2,0.2,0.2)` = #333333）与线色。判据里"过渡像素"就是**两者都不是**的像素。 */
 private const val BG_RGB = 0x333333
@@ -469,8 +481,8 @@ class MsaaVerifierApp : Application() {
         //   （④，0 == 0）都是**恒真**的，也就是说不加这一条，尺寸不匹配时会有两条判据
         //   变成橡皮图章（②③ 仍会倒，所以退出码不受影响——但报告里会混着两条假 PASS）。
         report(
-            "★ 前置：探针窗非空且落在快照内（W > 0，行数 == ${WINDOW_DY1 - WINDOW_DY0}）",
-            winW > 0 && (y1 - y0) == WINDOW_DY1 - WINDOW_DY0,
+            "★ 前置：探针窗非空且落在快照内（W > 0，行数 == $WINDOW_ROWS）",
+            winW > 0 && (y1 - y0) == WINDOW_ROWS,
             "窗 x∈[$x0,$x1) y∈[$y0,$y1)：W=$winW，行数 ${y1 - y0}"
         )
         // ① 期望值出处：硬边没有部分覆盖（像素中心采样）⇒ 0；MSAA 下两个过渡行都是部分覆盖 ⇒ 2W。
