@@ -70,36 +70,80 @@ import static org.lwjgl.opengl.GL30.glVertexAttribIPointer;
  */
 public final class RenderBatch implements Disposable {
 
-    /** 顶点着色器：位置已在 CPU 端烘焙到 NDC，这里只做透传。 */
+    /**
+     * 顶点着色器：位置已在 CPU 端烘焙到 NDC，这里只做透传。
+     *
+     * <p>{@code aEdge}（location 4）同样只做透传，但<strong>它必须被真正读一次</strong>：
+     * 一条"启用了、却没有着色器声明"的属性在 GL 里是合法的，此时
+     * {@code configureVaoAttributes} 里那条指针<strong>接错偏移也不会有任何症状</strong>
+     * ——画面照常，只是抗锯齿行为莫名其妙。这条声明就是让那个偏移可被观测的前提
+     * （端到端读数见 {@code PipelineVerifier} 的边距探针）。
+     */
     private static final String VERTEX_SHADER = """
                                                 #version 330 core
                                                 layout(location = 0) in vec2 aPos;
                                                 layout(location = 1) in vec2 aUV;
                                                 layout(location = 2) in vec4 aColor;
                                                 layout(location = 3) in uint aId;
+                                                layout(location = 4) in vec2 aEdge;
                                                 out vec2 vUV;
                                                 out vec4 vColor;
+                                                out vec2 vEdge;
                                                 void main() {
                                                     gl_Position = vec4(aPos, 0.0, 1.0);
                                                     vUV = aUV;
                                                     vColor = aColor;
+                                                    vEdge = aEdge;
                                                 }
                                                 """;
 
     /**
-     * 片段着色器：采样纹理后与顶点色相乘。
+     * 片段着色器：采样纹理后与顶点色相乘，再乘上解析式抗锯齿算出的覆盖率。
      *
      * <p>{@code uTex} 在纯色绘制时绑定的是 1×1 的白色纹理，于是结果正好是顶点色本身，
      * 全管线只需要这一个 fragment shader。
+     *
+     * <p><strong>两个 {@code w > 0.0} 判别式不可省</strong>：填充与文本的 {@code aEdge}
+     * 恒为 {@code (0,0)}，它在整个图元上是常量 ⇒ {@code fwidth} 为 {@code 0}，
+     * 直接拿去做除数会得到 {@code NaN} ⇒ <strong>整片像素变黑</strong>。
+     *
+     * <p>它们<strong>同时</strong>是"这里不需要 {@code uAntialias} uniform"的原因：
+     * 开关落在 CPU 侧的"写不写真实边距"上（见 {@code Gc.antialias}），
+     * 而 uniform 会打断合批——同一个 uniform 值不同的两批之间不能合并。
+     *
+     * <p><strong>最后乘的必须是标量 {@code (ac * aa)}</strong>：顶点色是预乘的，
+     * 乘一个标量不破坏预乘性；写成 {@code vec4(vColor.rgb, vColor.a * a)} 会让被覆盖的
+     * 像素饱和到全白（SDF 那段有同样的记录）。
      */
     private static final String FRAGMENT_SHADER = """
                                                   #version 330 core
                                                   in vec2 vUV;
                                                   in vec4 vColor;
+                                                  in vec2 vEdge;
                                                   uniform sampler2D uTex;
+                                                  uniform int uProbe;
                                                   out vec4 fragColor;
                                                   void main() {
-                                                      fragColor = texture(uTex, vUV) * vColor;
+                                                      // 抗锯齿：两个分量各算一个覆盖率，再相乘。
+                                                      // 横向 |x| = 1 是两条真实外缘
+                                                      // （归一化分母是**真实**半线宽，见 VertexFormat）；
+                                                      // 沿向 y = 0 是端帽线、带内为正、带外为负。
+                                                      float wc = fwidth(vEdge.x);
+                                                      float ac = (wc > 0.0) ? clamp(0.5 - (abs(vEdge.x) - 1.0) / wc, 0.0, 1.0) : 1.0;
+                                                      float wa = fwidth(vEdge.y);
+                                                      float aa = (wa > 0.0) ? clamp(0.5 + vEdge.y / wa, 0.0, 1.0) : 1.0;
+
+                                                      // 调试探针（setEdgeProbe）：把两个边距直接当颜色输出，
+                                                      // 红 = (横向 + 1) / 2、绿 = (沿向 + 1) / 2。
+                                                      // uProbe 默认 0 ⇒ 这一支在生产里永不生效，默认行为与本 uniform
+                                                      // 加进来之前逐像素相同；存在的唯一目的是让"location 4 那条指针
+                                                      // 到底读到了什么"能被回读像素直接看到——接错偏移不会报任何错。
+                                                      if (uProbe != 0) {
+                                                          fragColor = vec4((vEdge.x + 1.0) * 0.5, (vEdge.y + 1.0) * 0.5, 0.0, 1.0);
+                                                          return;
+                                                      }
+
+                                                      fragColor = texture(uTex, vUV) * vColor * (ac * aa);
                                                   }
                                                   """;
 
@@ -639,6 +683,32 @@ public final class RenderBatch implements Disposable {
      */
     public int pickPassCount() {
         return pickPassCount;
+    }
+
+    /**
+     * 打开/关闭<b>边距调试探针</b>：让主片段着色器把 {@code aEdge} 直接当颜色输出
+     * （红 = {@code (横向 + 1) / 2}、绿 = {@code (沿向 + 1) / 2}），而不是画描边本身。
+     *
+     * <p><b>为什么需要它</b>：{@code layout(location = 4)} 那条属性指针是 Task 1 加的，
+     * 而当时<strong>没有任何着色器声明它</strong>——GL 允许"启用了却没被读"的属性，
+     * 于是那条指针就算把偏移写成 0 或 20（读到拾取 ID），画面也照样逐像素不变。
+     * 只有让着色器真的读一次、再把读到的东西回读出来，
+     * "偏移接对了"才从"代码读过一遍"变成"端到端有读数"。
+     *
+     * <p><b>为什么不改默认行为</b>：{@code uProbe} 是 GL 里初值为 0 的 int uniform，
+     * 本方法不调用时那一支永远不生效 ⇒ 生产路径与本 uniform 加进来之前逐像素相同。
+     * 它<strong>不是</strong>每秒都要设一次的开关：只在探针期间调用，用完必须设回 {@code false}，
+     * 否则之后画的一切都会变成边距彩色图。
+     *
+     * <p>仅供校验器（{@code PipelineVerifier} 的边距探针）使用。
+     *
+     * @param enabled 是否进入探针模式
+     */
+    public void setEdgeProbe(boolean enabled) {
+        // uniform 是**程序对象**的状态，必须先 use() 再设——GL 的 glUniform* 作用于
+        // 当前程序，设到别的程序上不会报错，只会让探针"没反应"。
+        shader.use();
+        shader.setUniform("uProbe", enabled ? 1 : 0);
     }
 
     /**

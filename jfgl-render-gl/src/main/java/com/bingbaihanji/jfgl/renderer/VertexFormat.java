@@ -58,8 +58,8 @@ public final class VertexFormat {
      * 不是靠沿向的符号</strong>——它们写 0，而描边里同样有沿向为 0 的顶点
      * （正落在端帽线上的那些，它们是边界而非内部）。
      * 这条不是特例，是判据本身（片段着色器里那两个 {@code w > 0.0} 判别式
-     * 随 Task 3 的描边羽化一起加入，<strong>当前尚不存在</strong>——
-     * 本字段先于它们落地，是为了让填充与文本的顶点布局与描边一致）。
+     * 就在 {@code RenderBatch.FRAGMENT_SHADER} 里，与描边羽化同时落地：
+     * 它们同时是"这里不需要 {@code uAntialias} uniform"的原因）。
      *
      * <p>为什么需要"沿向"：{@code Gc} 的描边目前只用平头端（{@code Cap.BUTT}），
      * 而平头端的端边<strong>垂直于线段</strong>——它的边界上横向坐标从 {@code +1} 连续走到

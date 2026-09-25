@@ -49,6 +49,71 @@ private const val SCENE_H = 600
 /** 判定用的容差：圆弧用折线逼近，像素数必然略少于解析值。 */
 private const val TOLERANCE = 0.05
 
+// ---------------------------------------------------------------------------
+// 探针用的帧计划
+//
+// 主场景那一段（5 个主帧之后回读）沿用原样；两个探针各自占**一整帧**：
+// 那一帧只画探针自己的几何，于是探针的读数不可能被主场景的图元污染，
+// 主场景的计数与颜色种数也不可能被探针污染——两块互不干扰，谁也不改谁。
+//
+// ★ 三个阶段都在**同一个进程**里跑完，`frame` 只在主阶段 +1，
+//   所以"主场景画满 5 帧"这个既有节奏一个字节都没动。
+// ---------------------------------------------------------------------------
+
+/** 状态栈探针所在的帧号。 */
+private const val STACK_FRAME = 8
+
+/** 边距（`aEdge`）探针所在的帧号。 */
+private const val EDGE_FRAME = 10
+
+/** 收尾帧：汇总并落退出码。 */
+private const val FINISH_FRAME = 12
+
+/** 边距探针的线宽；半线宽 2 ⇒ 外扩 1 像素后 3，几何纵向覆盖 297.5..303.5。 */
+private const val EDGE_LINE_WIDTH = 4f
+
+/**
+ * 边距探针的几何：一条**水平三折点共线折线**，线宽 4，开抗锯齿。
+ *
+ * <p><strong>为什么是三个点而不是两个</strong>：沿向的分量取
+ * `min(弧长, 全长 − 弧长) / 半线宽`，而两点折线的**两端弧长都是 0**——
+ * 于是整条四边形上沿向恒为 0（生成器在 `rawEdges()` 里记着这一条），
+ * "中段远大于 0"这个读数根本不存在。三点共线时中间那个顶点拿到
+ * `300/3 = 100`，沿向这才有一个真正非零的中段。（共线 ⇒ 拐点不发射接头，
+ * 几何仍是两个干净的四边形。）
+ *
+ * <p><strong>y 取 `x.5`、x 取整数</strong>，两者都是刻意的，因为读数全是解析值：
+ * <ul>
+ *   <li>中心线 `y = 300.5` ⇒ 第 300 行的像素中心**正好**落在中心线上（横向 = 0），
+ *       而 ±2（= 真实半线宽，1 用户单位 = 1 设备像素）正好落在第 298 / 302 行的中心上
+ *       （横向 = ∓1、±1）。中间那两行给 ∓0.5、±0.5 —— 一共五个解析读数。</li>
+ *   <li>端线取**整数** x ⇒ 端帽外扩那一圈（宽 1 个设备像素）里正好装得下**一个**像素中心
+ *       （第 99 列，中心 99.5）。端线若取 `x.5`，那一圈的两条边都压在像素中心上，
+ *       外扩列**一个片元都拿不到**，"带外为负"就无从读起。</li>
+ * </ul>
+ */
+private val EDGE_POINTS = floatArrayOf(100f, 300.5f, 400f, 300.5f, 700f, 300.5f)
+
+/**
+ * 8 位通道的判定余量。期望值全是解析值（0 / 127.5 / 255），
+ * 留 ±4 只是给"着色器算到 0.5 之后驱动按哪个方向取整"这点余地：
+ * `0.5 * 255 = 127.5`，取 127 还是 128 由实现定，与我们的对错无关。
+ */
+private const val CHANNEL_TOLERANCE = 4
+
+/** 状态栈探针三条线的线心 y。刻意都带 `.25`：边缘落在**像素内部**，AA 才看得出来。 */
+private const val LINE_A_Y = 60.25f
+private const val LINE_B_Y = 120.25f
+private const val LINE_C_Y = 180.25f
+
+/** 状态栈探针三条线的 x 范围，以及比对窗口（x 取中段、y 比描边带高一倍）。 */
+private const val LINE_X0 = 60f
+private const val LINE_X1 = 460f
+private const val LINE_WINDOW_X0 = 100
+private const val LINE_WINDOW_X1 = 420
+private const val LINE_WINDOW_DY0 = -4
+private const val LINE_WINDOW_DY1 = 6
+
 /**
  * 校验器的启动入口。
  *
@@ -66,7 +131,24 @@ fun verifyMain() {
 class PipelineVerifierApp : Application() {
 
     private var transfer: FXGLTransfer? = null
+
+    /** 帧序号，每帧 +1。只用来决定**本帧画哪个场景**。 */
     private var frame = 0
+
+    /** 主场景已经画过的帧数。探针帧不计入——它替代了原来那个"等到第 5 帧再回读"的计数。 */
+    private var mainFrames = 0
+
+    /** 主场景那一整套断言是否已经跑过（只跑一次）。 */
+    private var mainVerified = false
+
+    /**
+     * 全部失败项，**跨阶段**累积。
+     *
+     * <p>它是字段而不是局部变量：现在有三个阶段（主场景、状态栈探针、边距探针），
+     * 各自独立地往同一份清单里记——退化成三个各自的局部清单，
+     * 那"退出码"就只能反映最后一个阶段的成败，前面那些失败会被静默吞掉。
+     */
+    private val failures = ArrayList<String>()
 
     // 场景配色。每个图元都用与背景(0x333333)及其余图元**可区分**的颜色：
     // 原示例的凹多边形用 0xFF333333，与 glClearColor(0.2,0.2,0.2) 完全相同，
@@ -105,7 +187,22 @@ class PipelineVerifierApp : Application() {
         stage.show()
     }
 
+    /**
+     * `onFrame` 回调的入口：按当前帧号决定画哪个场景。
+     *
+     * <p>探针各占**一整帧**，那一帧里主场景一个图元都不画——
+     * 这是"探针不污染既有判据"的实现方式：既有判据读的是主场景帧，
+     * 探针读的是探针帧，两者在像素上完全没有交集。
+     */
     private fun drawScene(gc: Gc) {
+        when (frame) {
+            STACK_FRAME -> drawStyleStackScene(gc)
+            EDGE_FRAME -> drawEdgeProbeScene(gc)
+            else -> drawMainScene(gc)
+        }
+    }
+
+    private fun drawMainScene(gc: Gc) {
         // flush 探针画在最前面：它们占的是主场景没碰过的空区域（y 175..295、x 40..739），
         // 因此既不影响下面那些颜色计数与包围盒，也让"flush 丢了顶点"这类退化**只**打在新断言上，
         // 不去连累主场景那些既有断言。
@@ -130,6 +227,81 @@ class PipelineVerifierApp : Application() {
         gc.moveTo(50f, 550f)
         gc.bezierCurveTo(200f, 450f, 300f, 650f, 450f, 550f)
         gc.strokePath()
+    }
+
+    // ------------------------------------------------------------------
+    // 探针一：Gc.antialias 进样式栈（Task 3 Step 6 的像素版）
+    // ------------------------------------------------------------------
+
+    /**
+     * 画三条**几何完全相同**的横线，只有 `antialias` 的来路不同。
+     *
+     * <p>判据（`verifyStyleStack`）：A 与 B **逐像素相同**，而 C 必须与 A **不同**。
+     * 两条缺一不可——
+     *
+     * <ul>
+     *   <li>A ≡ B 说的是"`save` 内开的那次 AA 被 `restore` 关回去了"。
+     *       它失败的样子很具体：`restore()` 漏掉 `antialias` ⇒ B 带着 AA 画出来
+     *       ⇒ 会在上下各多出一圈半透明像素。</li>
+     *   <li>★ C ≠ A 是那条**反证**。少了它，A ≡ B 就是一句**恒真**的话：
+     *       把 `antialias` 整个字段删掉、让 `strokeOutline` 永远当它是 false，
+     *       A 与 B 照样逐像素相同——也就是说那条断言根本拦不住"这条开关压根没接线"。
+     *       这与本文件里"只断言外角有像素会被'整块都画错了'骗过去"是同一类教训。</li>
+     * </ul>
+     *
+     * <p>三条线都在线段中段取比对窗口，且窗口**比描边带高一倍**（12 行 vs 5 行）：
+     * 只比"线心那几行"的话，AA 多出来的最外圈 fringe 落在窗口之外，
+     * 开了 AA 与没开 AA 的核心行逐像素相同——窗口开窄了就等于没有断言。
+     */
+    private fun drawStyleStackScene(gc: Gc) {
+        gc.lineWidth = 4f
+        gc.stroke = 0xFFFFFFFF.toInt()
+
+        // A：基线。全程不开，它同时是 C 的对照。
+        gc.antialias = false
+        gc.drawLine(LINE_X0, LINE_A_Y, LINE_X1, LINE_A_Y)
+
+        // B：save 内开、restore 关。画的时候必须已经回到"关"。
+        gc.save()
+        gc.antialias = true
+        gc.restore()
+        gc.drawLine(LINE_X0, LINE_B_Y, LINE_X1, LINE_B_Y)
+
+        // C：反向控制。同样经 save/restore 往返，但**画的时候 AA 是开的**——
+        // 它证明这条开关确实会改变像素，从而让"A ≡ B"不再是橡皮图章。
+        gc.save()
+        gc.antialias = true
+        gc.drawLine(LINE_X0, LINE_C_Y, LINE_X1, LINE_C_Y)
+        gc.restore()
+
+        gc.antialias = false
+    }
+
+    /**
+     * 边距（`aEdge`）探针：把 `vEdge` 直接当颜色输出，回读若干**解析位置**上的读数。
+     *
+     * <p>它守的是 Task 1 留下的一笔欠账：`layout(location = 4)` 那条属性指针加进来时
+     * **没有任何着色器声明它**，于是把偏移写成 0 或 20（读到拾取 ID）画面也逐像素不变
+     * ——"指针接对了"当时只有"代码读过一遍"这一层保障。本帧第一次让着色器真的读它，
+     * 于是它可以被回读了。
+     *
+     * <p>用完即弃：探针模式只在**本帧**开，`flush()` 之后立刻关掉。
+     * 它不进主场景、也不进任何 Task 4 的判据——那些判据量的是"抗锯齿好不好"，
+     * 这里量的是"边距这个信号本身接对了没有"，两件事、两个通道。
+     */
+    private fun drawEdgeProbeScene(gc: Gc) {
+        gc.lineWidth = EDGE_LINE_WIDTH
+        gc.stroke = 0xFFFFFFFF.toInt()
+        gc.antialias = true
+
+        // 必须 flush 一次再关：`uProbe` 是**着色器程序**上的状态，
+        // 而顶点是攒到 submit 时才画的——不先把它画出来就关掉，探针等于没开。
+        gc.setEdgeProbe(true)
+        gc.strokePolyline(EDGE_POINTS)
+        gc.flush()
+        gc.setEdgeProbe(false)
+
+        gc.antialias = false
     }
 
     /**
@@ -256,12 +428,61 @@ class PipelineVerifierApp : Application() {
         }
     }
 
+    /**
+     * 按帧号分派到某个阶段。**每个阶段各占一整帧**，读的是**本帧自己画的东西**。
+     *
+     * <p>分派靠帧号而不是靠一个"本帧画了什么"的字段：那个字段在
+     * "尺寸还没就绪、`drawScene` 被跳过"时会留下上一帧的值，
+     * 于是探针帧会被**静默跳过**——而那正是本仓库最忌讳的失败形态
+     * （报告说全过，实际上有一条断言从未求值）。
+     *
+     * <p><strong>帧号只在"这一帧真的读到了东西"时才推进</strong>：
+     * `grabFrame()` 拿不到帧缓冲时，阶段停在原帧号上重试。
+     * 若在那里也照常推进，一个还没布局完的画布就会让**整条探针一个读数都不产生**，
+     * 而摘要照样打"全部通过"。
+     */
     private fun verifyAll() {
-        val bridge = transfer ?: return
-        if (++frame < 5) return
+        when (val f = frame) {
+            STACK_FRAME -> if (verifyStyleStack()) frame = f + 1
+            EDGE_FRAME -> if (verifyEdgeProbe()) frame = f + 1
+            FINISH_FRAME -> finish()
+            else -> {
+                // 主阶段之后、收尾帧之前的那几帧：主场景照画（只是画，没人读），什么都不校验。
+                if (mainVerified) {
+                    frame = f + 1
+                    return
+                }
+                if (++mainFrames < 5) {
+                    frame = f + 1
+                    return
+                }
+                // 没读到就**不推进**：主阶段一旦被跳过，整份报告会以"没有任何断言"收场，
+                // 且退出码是 0。
+                if (verifyMainScene()) {
+                    mainVerified = true
+                    frame = f + 1
+                }
+            }
+        }
+    }
+
+    /**
+     * 打印判定行，失败则记进 [failures]。
+     *
+     * <p>提成类级方法（原来是 `verifyAll` 里的局部闭包）是因为现在有三个阶段要往
+     * **同一份**失败清单里记：各自记各自的清单，退出码就只能反映最后一个阶段的成败。
+     */
+    private fun report(label: String, ok: Boolean, detail: String) {
+        println("  [${if (ok) "PASS" else "FAIL"}] $label — $detail")
+        if (!ok) failures.add(label)
+    }
+
+    /** @return 是否真的跑完了（帧缓冲尺寸未就绪时返回 false，由 [verifyAll] 下一帧重试） */
+    private fun verifyMainScene(): Boolean {
+        val bridge = transfer ?: return false
         val w = bridge.scaledWidth
         val h = bridge.scaledHeight
-        if (w <= 0 || h <= 0) return
+        if (w <= 0 || h <= 0) return false
 
         val buf = ByteBuffer.allocateDirect(w * h * 4)
         glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, buf)
@@ -301,13 +522,6 @@ class PipelineVerifierApp : Application() {
                 }
             }
             return n
-        }
-
-        val failures = ArrayList<String>()
-
-        fun report(label: String, ok: Boolean, detail: String) {
-            println("  [${if (ok) "PASS" else "FAIL"}] $label — $detail")
-            if (!ok) failures.add(label)
         }
 
         fun approx(label: String, actual: Int, expected: Double, tol: Double = TOLERANCE) {
@@ -411,16 +625,205 @@ class PipelineVerifierApp : Application() {
         // 顺序反了会留下它，后画的那层没盖全（位置/尺寸错了）也会留下它。
         report("z 序：先画的那层被完全盖住（全画面无残影）", (counts[probeUnderRgb] ?: 0) == 0,
             "先画色像素 ${counts[probeUnderRgb] ?: 0}")
+        return true
+    }
 
+    // ------------------------------------------------------------------
+    // 探针一：Gc.antialias 进样式栈
+    // ------------------------------------------------------------------
+
+    /**
+     * 状态栈探针的判定。
+     *
+     * <p>两半：
+     * <ol>
+     *   <li><b>直接读值</b>（不依赖像素）：`save → antialias = true → save → false → restore → restore`
+     *       走一遍，逐层断言。它测的是 [Gc] 的状态栈本身，是本文件里唯一一条
+     *       "不靠回读"的断言——栈是纯内存，本来就不需要 GL 上下文。</li>
+     *   <li><b>像素比对</b>：A ≡ B、且 C ≠ A（理由见 [drawStyleStackScene]）。</li>
+     * </ol>
+     *
+     * <p>读值那一半故意**同时**测嵌套：只测一层的话，
+     * `restore()` 里写成 `antialias = false`（而不是从栈里取）也能通过——
+     * 那正是这类缺陷最常见的写法，而症状是"某一次 restore 之后 AA 莫名关了"。
+     */
+    private fun verifyStyleStack(): Boolean {
+        val f = grabFrame() ?: return false
+        val gc = transfer?.gc() ?: return false
+
+        println("\n-- ★ 探针一：Gc.antialias 进样式栈 --")
+        // 逐层记下**当时读到**的值，报告里打的是它——不是循环结束之后 gc 的当前值。
+        // 打当前值的话五条读数会一模一样（都是最后的 false），失败时看不出是哪一层错了。
+        val atDefault = gc.antialias
+        gc.save(); gc.antialias = true
+        val atLevel1 = gc.antialias
+        gc.save(); gc.antialias = false
+        val atLevel2 = gc.antialias
+        gc.restore()
+        val afterRestore1 = gc.antialias
+        gc.restore()
+        val afterRestore2 = gc.antialias
+        report("探针一 默认是关的（它保护着一批精确像素期望）", !atDefault, "默认读到 $atDefault")
+        report("探针一 save 内可开", atLevel1, "save 之后读到 $atLevel1")
+        report("探针一 嵌套的 save 可再改", !atLevel2, "嵌套 save 之后读到 $atLevel2")
+        report("探针一 restore 回到外层（内层改了不该影响外层）", afterRestore1, "restore 之后读到 $afterRestore1")
+        report("探针一 restore 回到默认的关闭状态", !afterRestore2, "再 restore 之后读到 $afterRestore2")
+
+        val a = f.snapshot(LINE_WINDOW_X0, LINE_A_Y.toInt() + LINE_WINDOW_DY0,
+            LINE_WINDOW_X1, LINE_A_Y.toInt() + LINE_WINDOW_DY1)
+        val b = f.snapshot(LINE_WINDOW_X0, LINE_B_Y.toInt() + LINE_WINDOW_DY0,
+            LINE_WINDOW_X1, LINE_B_Y.toInt() + LINE_WINDOW_DY1)
+        val c = f.snapshot(LINE_WINDOW_X0, LINE_C_Y.toInt() + LINE_WINDOW_DY0,
+            LINE_WINDOW_X1, LINE_C_Y.toInt() + LINE_WINDOW_DY1)
+        val diffAB = differingPixels(a, b)
+        val diffAC = differingPixels(a, c)
+        report("探针一 A≡B：save 内开的那次 AA 被 restore 关了回去", diffAB == 0,
+            "A 与 B 相差 $diffAB 个像素")
+        // ★ 反证：少了它，上面那条就是恒真的——把 antialias 整个删掉、让描边永远当它是 false，
+        //   A 与 B 照样逐像素相同。
+        report("探针一 C≠A：这条开关真的会改变像素（反证）", diffAC > 0,
+            "A 与 C 相差 $diffAC 个像素")
+        // 读数：两条线过线心的 6 行。C 的那一行列是**墨量守恒**最直接的证据——
+        // 线心取 y=60.25 时解析覆盖率是 0.75 / 1 / 1 / 1 / 0.25，合计恰好 4.00 px
+        // （= lineWidth），而 A 是 1/1/1/1/0 合计 4.00。两者相等正是"AA 没把线画粗"。
+        val x = LINE_WINDOW_X0 + 100
+        println("  窗口 ${LINE_WINDOW_X1 - LINE_WINDOW_X0}x${LINE_WINDOW_DY1 - LINE_WINDOW_DY0}")
+        println("  A（AA 关）线心 ${f.rowColors(x, LINE_A_Y.toInt() - 3, 6)}")
+        println("  C（AA 开）线心 ${f.rowColors(x, LINE_C_Y.toInt() - 3, 6)}")
+        return true
+    }
+
+    // ------------------------------------------------------------------
+    // 探针二：aEdge 的偏移（Task 1 的欠账）
+    // ------------------------------------------------------------------
+
+    /**
+     * 边距探针的判定：把 `vEdge` 当颜色输出的那一帧，回读一组**解析位置**。
+     *
+     * <p>读数全是手算的（几何见 [EDGE_POINTS] 的说明），没有一个是"对着输出量出来的"：
+     * <pre>
+     *   红 = (横向 + 1) / 2       绿 = (沿向 + 1) / 2
+     *   横向：中心线 0 → 128；±0.5 → 64 / 191；±1（真实外缘）→ 0 / 255
+     *   沿向：中段 100 → 255（饱和）；端线外侧那一列 −1/6 → 106
+     * </pre>
+     *
+     * <p>为什么这组读数能证明"偏移接对了"：若 `configureVaoAttributes` 里那条指针
+     * 写成了 20（读到拾取 ID）或 0（读到位置），这两个分量会变成**别有来源**的数
+     * ——例如整条带子横向恒 0（把 ID 0 的位模式读成浮点 0.0）、或者随位置线性变化。
+     * 实测证据见提交信息里的变异记录。
+     */
+    private fun verifyEdgeProbe(): Boolean {
+        val f = grabFrame() ?: return false
+
+        println("\n-- ★ 探针二：aEdge 的偏移（片段着色器把 vEdge 当颜色输出） --")
+        // 先打两行读数：断言失败时，报告里得有"实际是多少"，
+        // 否则一次 FAIL 只会留下一句"不对"，排查方向反而指向着色器本身。
+        println("  横向剖面（第 300 列，行 296..304）："
+                + (296..304).joinToString(" ") { "r$it=${f.r(300, it)}" })
+        println("  沿向剖面（第 300 行，列 97..103 / 397..403 / 697..703）："
+                + ((97..103) + (397..403) + (697..703)).joinToString(" ") { "c$it=${f.g(it, 300)}" })
+
+        // 横向：五个解析读数（`byte = (v + 1) / 2 * 255`）
+        val crossChecks = mapOf(298 to 0, 299 to 64, 300 to 128, 301 to 191, 302 to 255)
+        for ((row, expected) in crossChecks) {
+            val actual = f.r(300, row)
+            report("探针二 横向：第 $row 行 red=$actual，即 vEdge.x=${"%.2f".format(actual / 127.5 - 1)}"
+                    + "（期望 $expected = ${"%.2f".format(expected / 127.5 - 1)}）",
+                Math.abs(actual - expected) <= CHANNEL_TOLERANCE, "实际 $actual，期望 $expected")
+        }
+        // 沿向。中段单列一条：沿向在那里是 100，映射后**饱和**到 1.0，
+        // 所以"回映射"只能给出下界——写成"恰好等于 255"是拿一个饱和值当精确读数用。
+        val midGreen = f.g(400, 300)
+        report("探针二 沿向：中段（第 400 列）green=$midGreen，沿向远大于 0（映射后饱和）",
+            midGreen >= 250, "实际 $midGreen，期望 ≥ 250")
+        val alongChecks = mapOf(
+            100 to 149,   // 端线**内侧**一格：+1/6
+            99 to 106,    // 端帽外扩那一圈：**−1/6**（带外为负，端帽羽化的全部来路）
+            700 to 106,   // 另一端的外扩圈，与起点对称
+            699 to 149,
+        )
+        for ((col, expected) in alongChecks) {
+            val actual = f.g(col, 300)
+            report("探针二 沿向：第 $col 列 green=$actual，即 vEdge.y=${"%.2f".format(actual / 127.5 - 1)}"
+                    + "（期望 $expected = ${"%.2f".format(expected / 127.5 - 1)}）",
+                Math.abs(actual - expected) <= CHANNEL_TOLERANCE, "实际 $actual，期望 $expected")
+        }
+        return true
+    }
+
+    /** 收尾：汇总 + 落退出码。放在最后单独一帧，好让探针阶段也进同一份摘要。 */
+    private fun finish() {
         println()
         if (failures.isEmpty()) {
             println("=== 全部通过 ===")
         } else {
             println("=== 失败 ${failures.size} 项：${failures.joinToString("；")} ===")
         }
-
         Platform.exit()
         exitProcess(if (failures.isEmpty()) 0 else 1)
+    }
+
+    // ------------------------------------------------------------------
+    // 回读
+    // ------------------------------------------------------------------
+
+    /** 回读整幅帧缓冲；尺寸不可用时返回 null（此时**不**推进阶段，见 [verifyAll] 的说明）。 */
+    private fun grabFrame(): Frame? {
+        val bridge = transfer ?: return null
+        val w = bridge.scaledWidth
+        val h = bridge.scaledHeight
+        if (w <= 0 || h <= 0) return null
+        val buf = ByteBuffer.allocateDirect(w * h * 4)
+        glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, buf)
+        buf.position(0)
+        return Frame(buf, w, h)
+    }
+
+    /**
+     * 一帧的回读结果，按**用户坐标**取色（原点左上、y 向下）。
+     *
+     * <p>取色口径与主阶段里那个局部 `pixelAt` 逐字一致——这里刻意把那份换算收成**一处**：
+     * 探针与主场景若各写一份行序翻转，两边就可能一个对一个错，
+     * 而"一个对一个错"看起来只会像"探针的几何画歪了"。
+     */
+    private class Frame(private val buf: ByteBuffer, val w: Int, val h: Int) {
+
+        fun r(x: Int, y: Int): Int = channel(x, y, 0)
+
+        fun g(x: Int, y: Int): Int = channel(x, y, 1)
+
+        private fun channel(x: Int, y: Int, c: Int): Int {
+            // glReadPixels 行序自下而上；用户坐标 y 向下，故翻转回读行号。
+            val i = ((h - 1 - y) * w + x) * 4 + c
+            return buf.get(i).toInt() and 0xFF
+        }
+
+        /** 取一块矩形里的 RGB（不含 alpha），按行优先。越界部分夹紧到帧缓冲内。 */
+        fun snapshot(x0: Int, y0: Int, x1: Int, y1: Int): IntArray {
+            val xs = x0.coerceAtLeast(0)..(x1 - 1).coerceAtMost(w - 1)
+            val ys = y0.coerceAtLeast(0)..(y1 - 1).coerceAtMost(h - 1)
+            val out = IntArray(xs.count() * ys.count())
+            var i = 0
+            for (y in ys) {
+                for (x in xs) {
+                    out[i++] = (r(x, y) shl 16) or (g(x, y) shl 8) or channel(x, y, 2)
+                }
+            }
+            return out
+        }
+
+        /** 逐通道打印一串行上的颜色，给报告当读数用。 */
+        fun rowColors(x: Int, y0: Int, rows: Int): String =
+            (y0 until y0 + rows).joinToString(" ") { "y$it=#%06X".format((r(x, it) shl 16) or (g(x, it) shl 8) or channel(x, it, 2)) }
+    }
+
+    /** 两个同形快照里不同的像素个数。 */
+    private fun differingPixels(a: IntArray, b: IntArray): Int {
+        var n = 0
+        for (i in a.indices) {
+            if (a[i] != b[i]) n++
+        }
+        return n
     }
 
     override fun stop() {

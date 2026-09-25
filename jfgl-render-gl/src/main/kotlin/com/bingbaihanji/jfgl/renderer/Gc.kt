@@ -70,6 +70,23 @@ class Gc constructor(private val batch: RenderBatch) {
     /** 当前线宽（用户坐标单位）。 */
     var lineWidth: Float = 1f
 
+    /**
+     * 是否为后续**描边**开启解析式抗锯齿。**默认关。**
+     *
+     * <p>它进 [save] / [restore] 栈，与 [lineWidth] 同构 ⇒ 可以只给某一条线开，
+     * 也可以 `save` 内开、`restore` 关。
+     *
+     * <p><strong>默认关是刻意的</strong>：开了之后描边边缘会多出半透明像素，
+     * 而本仓库的像素校验器里有一批**精确到 ±0 的期望值**（如蓝圆角矩形描边 = 3084 px），
+     * 它们花了整轮才立住。默认关 ⇒ 默认路径逐像素不变。
+     *
+     * <p>它只影响**描边**；填充与文本不受影响（它们本来就写 `aEdge = (0,0)`）。
+     * 实现上它落在两处 CPU 侧：几何是否外扩 1 个设备像素（[strokeOutline]），
+     * 以及顶点里写不写真实边距（[emitTriangles]）。**片元那一侧没有 uniform**——
+     * 见 [RenderBatch] 的 FRAGMENT_SHADER：填充/文本与描边靠 `fwidth == 0` 区分。
+     */
+    var antialias: Boolean = false
+
     /** 全局不透明度（0-1），与样式颜色相乘。 */
     var globalAlpha: Float = 1f
 
@@ -232,7 +249,7 @@ class Gc constructor(private val batch: RenderBatch) {
         }
     }
 
-    /** 样式栈的整数部分：每层 [INTS_PER_STYLE_LEVEL] 个值（fill、stroke、pickId）。 */
+    /** 样式栈的整数部分：每层 [INTS_PER_STYLE_LEVEL] 个值（fill、stroke、pickId、antialias）。 */
     private var styleInts = IntArray(INITIAL_STACK_LEVELS * INTS_PER_STYLE_LEVEL)
 
     /** 样式栈的浮点部分：每层 [FLOATS_PER_STYLE_LEVEL] 个值（lineWidth、globalAlpha、fontSize）。 */
@@ -531,7 +548,8 @@ class Gc constructor(private val batch: RenderBatch) {
     // ------------------------------------------------------------------
 
     /**
-     * 压入当前的**全部绘制状态**：变换、裁剪、填充色、描边色、线宽、全局不透明度、拾取 ID、字号。
+     * 压入当前的**全部绘制状态**：变换、裁剪、填充色、描边色、线宽、全局不透明度、拾取 ID、字号、
+     * [antialias]。
      *
      * <p>与 HTML Canvas / JavaFX 的 `save()` 语义一致——用户改完样式再 [restore] 就能回到原样，
      * 不必手工记下每一个字段。每次 [save] 在稳态下不产生任何分配：
@@ -545,6 +563,9 @@ class Gc constructor(private val batch: RenderBatch) {
         styleInts[intBase] = fill
         styleInts[intBase + 1] = stroke
         styleInts[intBase + 2] = pickId
+        // antialias 用 int 存（1/0）：整数部分放的是"打包成 int 的样式"，
+        // 一个布尔不值得为它单开一个数组，而多开一个数组就多一处会忘记扩容的地方。
+        styleInts[intBase + 3] = if (antialias) 1 else 0
         val floatBase = styleDepth * FLOATS_PER_STYLE_LEVEL
         styleFloats[floatBase] = lineWidth
         styleFloats[floatBase + 1] = globalAlpha
@@ -565,6 +586,7 @@ class Gc constructor(private val batch: RenderBatch) {
         fill = styleInts[intBase]
         stroke = styleInts[intBase + 1]
         pickId = styleInts[intBase + 2]
+        antialias = styleInts[intBase + 3] != 0
         val floatBase = styleDepth * FLOATS_PER_STYLE_LEVEL
         lineWidth = styleFloats[floatBase]
         globalAlpha = styleFloats[floatBase + 1]
@@ -1217,14 +1239,49 @@ class Gc constructor(private val batch: RenderBatch) {
         if (count < 2) {
             return
         }
+        // ★ 开 AA 时描边带要**两个方向都外扩**：
+        //   横向外扩让两条长边有外侧片元；沿向外扩让端帽的端边有外侧片元。
+        //   少了任何一个，那一条边就推不到 0.5 以下 ⇒ 边缘从"全亮"直接跳到"没有"，
+        //   AA 只做了一半。
+        //   ⚠️ "把折线两端延长一点"**不是**可行做法——延长点会成为折线自己的弧长端点，
+        //   沿向在那里恒为 0（实测两点线两端各延长 1 局部单位后沿向集合是 {0.0, 0.2}，
+        //   一个负值都没有）。所以沿向靠 capExtension 参数，由 StrokeGenerator 自己铺。
+        //
+        //   `px` 是"1 个设备像素折成的局部单位数"。方向由 `matrixScale()` 的定义定死：
+        //   它返回的是"1 个用户单位 = 多少设备像素"（`Flattener.flatten(path, matrixScale())`
+        //   正是这么用的——容差按设备像素给），所以一个设备像素 = `1 / matrixScale()` 局部单位。
+        //   算反了的表现是**外扩量随系统缩放跑偏**，而画面只是"边缘略厚"，极难发现。
+        //
+        //   ⚠️ 已声明的范围：`!closed` —— **闭合路径目前不参与外扩**（矩形/圆/椭圆描边都走那条）。
+        //   后果是它们的**长边**只拿到"半边"羽化：几何恰好止于真实外缘，于是真实边缘
+        //   之外那半个像素没有片元，覆盖率只能从 0.5 起步（`0.5 → 1` 而不是 `0 → 1`）。
+        //   沿向那一侧对闭合路径本来就无事可做（它没有端帽）。要收掉这条，
+        //   把条件里的 `&& !closed` 去掉即可——`capExtension` 对闭合路径是空操作
+        //   （`generateOutline` 只在 `!closed` 时补端帽），所以不会多画出一圈。
+        val realHalf = lineWidth * 0.5f
+        val px = if (antialias && !closed) 1f / matrixScale().coerceAtLeast(1e-6f) else 0f
         strokeGenerator.stroke(
-            points, count, closed, lineWidth,
+            points, count, closed, (realHalf + px) * 2f,
             StrokeGenerator.Cap.BUTT,
             StrokeGenerator.Join.MITER,
             MITER_LIMIT,
-            ROUND_SEGMENTS
+            ROUND_SEGMENTS,
+            px                                   // ← capExtension
         )
-        emitTriangles(strokeGenerator.rawTriangles(), strokeGenerator.triangleCount() * 6, stroke)
+        val n = strokeGenerator.triangleCount() * 6
+        // 生成器是按**它收到的那条线宽**的一半归一化边距的，而那条线宽已经被外扩过
+        // ⇒ 这里要把横向分量换算回"真实半线宽"这个分母（推理与实测见 emitTriangles 的
+        // `edgeScale`）。线宽 ≤ 0 时生成器一个三角形都不发射（`width <= 0` 直接返回），
+        // 但这个除法仍要先避开 0——`0/0` 与 `x/0` 在浮点里不抛异常，
+        // 它们会安静地把 NaN/Infinity 传给下一层。
+        val edgeScale = if (realHalf > 0f) (realHalf + px) / realHalf else 1f
+        // ★ 关着的时候必须传 null（= 全写 0），**不能**只把外扩量置 0 就算了：
+        //   生成器给的边距本身非零，写进顶点就会让 fwidth ≠ 0 ⇒ 片元走羽化分支
+        //   ⇒ 一条本该逐像素不变的描边会自己长出半透明边缘、还会多出几种新颜色。
+        //   实测：这一处漏掉时 PipelineVerifier 以 1 退出，倒的正是
+        //   「蓝圆角矩形描边恰好 3084 px」与「画面只有 7 种颜色」两条。
+        emitTriangles(strokeGenerator.rawTriangles(), n, stroke,
+            if (antialias) strokeGenerator.rawEdges() else null, edgeScale)
     }
 
     /**
@@ -1280,8 +1337,26 @@ class Gc constructor(private val batch: RenderBatch) {
      * @param triangles 扁平三角形数组，每 6 个 float 一个三角形
      * @param floatCount 有效 float 个数（**不是**数组长度：`rawTriangles()` 的数组通常更长）
      * @param argb       ARGB 颜色（会先乘以 [globalAlpha] 再预乘）
+     * @param edges      与 [triangles] **逐顶点平行**的边距数组（每顶点 2 个 float）；
+     *                   `null` 表示全写 0（填充、文本、以及 [antialias] 关时的描边都走这条）。
+     *                   **不得保留**：它是 [StrokeGenerator] 的内部缓冲。
+     * @param edgeScale  [edges] 的**横向**分量从"生成器口径"换算到"着色器口径"的比例。
+     *
+     *                   生成器按**它所收到的线宽**的一半归一化横向分量（`±1` = 它铺出来的
+     *                   那两条外缘），而着色器要的是按**真实**半线宽归一化
+     *                   （见 [VertexFormat.OFFSET_EDGE]：`±1` = 两条**真实**外缘）。
+     *                   开了 AA 时几何被加宽过 1 个设备像素，两个分母不再相等，
+     *                   于是这里要乘上 `几何半宽 / 真实半宽`。
+     *                   **不做这一步的症状**：真实外缘落在 `|x| < 1` 处，覆盖率公式
+     *                   `0.5 - (|x|-1)/wc` 恒为正 ⇒ 整个外扩带全亮 ⇒ 描边比线宽宽出
+     *                   约 1 个像素，而边缘依旧是硬的（"AA 只做了一半"的另一种样子）。
+     *
+     *                   **沿向不需要换算**：那里的公式是 `0.5 + y/fwidth(y)`，
+     *                   分子分母同比例缩放会相消，所以生成器给的值直接可用——
+     *                   再除一次反而会把端帽的羽化推歪。
      */
-    private fun emitTriangles(triangles: FloatArray, floatCount: Int, argb: Int) {
+    private fun emitTriangles(triangles: FloatArray, floatCount: Int, argb: Int,
+                              edges: FloatArray? = null, edgeScale: Float = 1f) {
         if (floatCount < 6) {
             return
         }
@@ -1294,10 +1369,14 @@ class Gc constructor(private val batch: RenderBatch) {
             while (k < 3) {
                 val wx = triangles[i]
                 val wy = triangles[i + 1]
+                // 横向要换算（生成器的归一化分母是"它收到的线宽/2"，那里含外扩量）；
+                // 沿向已经是可用的口径，**不要再动它**。
+                val ec = if (edges != null) edges[i] * edgeScale else 0f
+                val ea = if (edges != null) edges[i + 1] else 0f
                 // 直接走 ViewTransform 的标量变换，避免每个顶点分配一个 Vec2
                 writer().vertex(
                     state.transformX(wx, wy), state.transformY(wx, wy),
-                    0f, 0f, packed, pickId
+                    0f, 0f, packed, pickId, ec, ea
                 )
                 i += 2
                 k++
@@ -1307,6 +1386,28 @@ class Gc constructor(private val batch: RenderBatch) {
 
     // ------------------------------------------------------------------
     // 供后续任务使用
+    // ------------------------------------------------------------------
+    // 诊断（只给校验器用）
+    // ------------------------------------------------------------------
+
+    /**
+     * 打开/关闭**边距调试探针**：让片段着色器把 `aEdge` 直接当颜色输出
+     * （红 = `(横向 + 1) / 2`、绿 = `(沿向 + 1) / 2`），而不是画描边本身。
+     *
+     * <p>存在的唯一理由是让"`layout(location = 4)` 那条属性指针到底读到了什么"
+     * 能被**回读像素直接看到**：GL 允许"启用了、却没有着色器声明"的属性，
+     * 于是那条指针把偏移写成 0 或 20（读到拾取 ID）时画面**逐像素不变**，
+     * 只有抗锯齿行为莫名其妙。判据与读数见 `PipelineVerifier` 的边距探针。
+     *
+     * <p><strong>用完必须设回 `false`</strong>：它是**程序对象**上的状态，
+     * 开着的时候之后画的一切都变成边距彩色图。
+     *
+     * @param enabled 是否进入探针模式
+     */
+    fun setEdgeProbe(enabled: Boolean) {
+        batch.setEdgeProbe(enabled)
+    }
+
     // ------------------------------------------------------------------
 
     /** 返回内部顶点写入器，供绘制方法追加顶点。 */
@@ -1365,8 +1466,8 @@ class Gc constructor(private val batch: RenderBatch) {
     /**
      * 确保样式栈能容纳给定的层数。
      *
-     * <p>两个数组按**各自的每层宽度**独立扩容：整数部分每层 3 个（fill、stroke、pickId），
-     * 浮点部分每层 3 个（lineWidth、globalAlpha、fontSize）。此前两者都是 2，
+     * <p>两个数组按**各自的每层宽度**独立扩容：整数部分每层 4 个（fill、stroke、pickId、
+     * antialias），浮点部分每层 3 个（lineWidth、globalAlpha、fontSize）。此前两者都是 2，
      * 所以共用了一个 `capacityLevels * 2` 的算法——`pickId` 进来以后那个算法对整数部分就是错的，
      * 会让栈在深层 [save] 时越界。
      *
@@ -1427,8 +1528,8 @@ class Gc constructor(private val batch: RenderBatch) {
          */
         private const val INITIAL_STACK_LEVELS = 8
 
-        /** 样式栈每层占用的 int 个数：fill、stroke、pickId。 */
-        private const val INTS_PER_STYLE_LEVEL = 3
+        /** 样式栈每层占用的 int 个数：fill、stroke、pickId、antialias。 */
+        private const val INTS_PER_STYLE_LEVEL = 4
 
         /** 样式栈每层占用的 float 个数：lineWidth、globalAlpha、fontSize。 */
         private const val FLOATS_PER_STYLE_LEVEL = 3
