@@ -536,7 +536,7 @@ class FXGLTransfer(
         /**
          * [RenderBatch] 的初始顶点容量（单位：顶点）。
          *
-         * <p>65536 个顶点即 1.5 MB（每个顶点 24 字节），够画满一屏文字级别的图元量而无需扩容；
+         * <p>65536 个顶点即 2.0 MiB（每个顶点 32 字节），够画满一屏文字级别的图元量而无需扩容；
          * 超出后会触发帧中途 flush，不会失败。
          */
         private const val INITIAL_VERTEX_CAPACITY = 65536

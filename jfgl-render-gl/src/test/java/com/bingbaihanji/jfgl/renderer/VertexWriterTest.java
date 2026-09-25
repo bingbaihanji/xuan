@@ -328,23 +328,39 @@ class VertexWriterTest {
      * 或写入 NaN），填充的边缘会被当成描边边界而<strong>半透明地淡出</strong>——
      * 画面看起来"只是边缘软了一点"，与抗锯齿生效时的样子几乎一样。
      *
+     * <p><strong>判据必须落在"同一个槽位先脏后写"上</strong>，这是本条用例唯一微妙的地方。
+     * 曾经写成"先写一个边距非 0 的顶点、再写六参数顶点"，以为能抓住残值——<strong>抓不住</strong>：
+     * 前一个顶点占的是它自己的 24..31 字节，而断言读的是<strong>六参数那个顶点</strong>的
+     * 24..31 字节，两段内存从不重叠，那次预写对判据毫无贡献。
+     * 那样的用例其实只是因为"新分配的直接缓冲区恰好是 0"才通过，而"恰好是 0"
+     * 恰恰是它自己声称不算数的东西。
+     * 正确写法是：先往<strong>即将被复用的那个槽位</strong>写非零边距，
+     * 再 {@link VertexWriter#reset()} 把写入位置带回原点（它只归零计数，
+     * <strong>不清缓冲区内容</strong>），然后用六参数重载写<strong>同一个槽位</strong>。
+     * 实测：把八参数版改成"两个边距都是 0 时不写"，改前 23 条全绿，改后本条立刻倒。
+     *
      * <p>断言取的是"两个分量分别等于 0"，不是"整块 8 字节看着像 0"：
      * 只比较第一个分量的话，把横向/沿向写反的变异会存活。
      */
     @Test
     void 六参数重载把两个边距分量都写0() {
-        VertexWriter w = new VertexWriter(64);
-        w.setState(1, 0, 0, 100, 100);
-        // 先写一个边距非 0 的顶点，再写六参数顶点：
-        // 这样"复用上一位使用者的残值"这类漏写才会被抓住（若只写一个顶点，缓冲区本来就是 0）。
-        w.vertex(0f, 0f, 0f, 0f, WHITE, 0, 1f, 1f);
-        w.vertex(1f, 1f, 0f, 0f, WHITE, 0);
+        VertexWriter writer = new VertexWriter(16);
+        writer.setState(0, 0, 0, 100, 100);
 
-        ByteBuffer b = w.buffer();
-        int base = VertexFormat.STRIDE_BYTES;
-        assertEquals(0f, b.getFloat(base + 24), 1e-6f,
-                "横向边距必须写 0：fwidth==0 是「完全覆盖」分支的判据，残值会让填充边缘淡出");
-        assertEquals(0f, b.getFloat(base + 28), 1e-6f,
-                "沿向边距必须写 0：只钉住横向的话，两个分量写反的变异会存活");
+        // 关键：先往**即将被复用的那个槽位**写一个非零边距，
+        // 再 reset() 让写入位置回到原点，然后用六参数重载写同一个槽位。
+        // 这样"六参数版漏写边距（保留上一位使用者的残值）"才会被抓住——
+        // 写进**别的**槽位是抓不住的（两段内存从不重叠，断言读的是槽位 0 的 24/28）。
+        writer.vertex(9f, 9f, 0f, 0f, 0xFFFFFFFF, 0, 1f, 1f);
+        writer.reset();
+        // reset() 会把写入器带回"尚未设置状态"，不重设就写会抛 IllegalStateException。
+        writer.setState(0, 0, 0, 100, 100);
+        writer.vertex(1f, 2f, 0f, 0f, 0xFF00FF00, 0);
+
+        ByteBuffer b = writer.buffer();
+        assertEquals(0f, b.getFloat(24), 1e-6f,
+                "六参数重载必须把横向写 0，而不是保留上一个占用该槽位者的残值");
+        assertEquals(0f, b.getFloat(28), 1e-6f,
+                "六参数重载必须把沿向写 0，而不是保留上一个占用该槽位者的残值");
     }
 }

@@ -1392,7 +1392,7 @@ class Gc constructor(private val batch: RenderBatch) {
     }
 
     companion object {
-        /** 初始顶点容量，约 1.5 MB（65536 个顶点 * 24 字节）。 */
+        /** 初始顶点容量，约 2.0 MiB（65536 个顶点 * 32 字节）。 */
         private const val INITIAL_VERTEX_CAPACITY = 65536
 
         /** 圆角矩形每个角用多少段折线逼近 90° 圆弧。 */

@@ -194,7 +194,9 @@ public final class VertexWriter {
      * 追加一个顶点，抗锯齿边距写 0。必须先调用 {@link #setState}。
      *
      * <p>这个重载给"与抗锯齿无关的几何"用：填充、文本，以及 {@code Gc.antialias} 关时的
-     * 一切几何。写 0 而不是别的值是<strong>有意义的</strong>——它让片段着色器里那两个
+     * 一切几何（{@code Gc.antialias} 随 Task 3 加入，<strong>当前尚不存在</strong>；
+     * 先把它写在这里是因为本重载正是那条开关关闭时要走的路）。
+     * 写 0 而不是别的值是<strong>有意义的</strong>——它让片段着色器里那两个
      * {@code fwidth} 为 0，从而走"完全覆盖"的分支（见 {@link VertexFormat#OFFSET_EDGE}）。
      *
      * @param x                位置 x（已烘焙到 NDC）
