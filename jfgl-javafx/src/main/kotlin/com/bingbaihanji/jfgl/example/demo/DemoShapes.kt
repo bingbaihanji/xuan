@@ -5,12 +5,18 @@ import com.bingbaihanji.jfgl.util.Rect
 import kotlin.math.abs
 
 /**
- * 笔位十字的颜色（橙）。
+ * **笔位十字**的颜色（橙）。
  *
  * <p>**与选中高亮刻意不同色**（后者是 `JfglDemo.kt` 里的黄）——同一个画面上可能同时有
  * "选中框"与"笔位标记"，同色就分不出哪个是哪个了。
+ *
+ * <p>★ **名字里不带 `HIGHLIGHT`**（它早先叫 `HIGHLIGHT_CROSS`）：它标的是**笔位**，
+ * 不是"某个被选中的东西"。与选中高亮共用同一个前缀，会让"这两个黄是不是同一个黄"
+ * 重新变成"要读注释才知道"的问题——而那正是上面那句话想避免的。
+ *
+ * <p>`private` 够用：全仓只有 [Shape.TextShape.draw] 一处用它。
  */
-internal const val HIGHLIGHT_CROSS = 0xFFFF6D00.toInt()
+private const val PEN_CROSS = 0xFFFF6D00.toInt()
 
 /** 新画图形的描边方式。 */
 enum class ShapeStyle { FILL, STROKE, FILL_AND_STROKE }
@@ -35,6 +41,17 @@ enum class ShapeKind(val label: String) {
  * 于是 GL 线程拿到的永远是一个自洽的快照。
  */
 sealed interface Shape {
+    /**
+     * 主色（ARGB 打包）。
+     *
+     * <p><strong>★ 它的语义按变体分两种，别以为全项目只有一个意思</strong>：
+     * 六个几何变体（[RectShape] / [CircleShape] / [EllipseShape] / [LineShape] /
+     * [PolygonShape] / [BezierShape]）里它是**填充与描边共用的那个色**——
+     * `drawWith` 把它同时赋给 `gc.fill` 与 `gc.stroke`；而 [TextShape] 里它是**文字色**
+     * （只进 `gc.fill`，因为文字走的就是填充那条路）。
+     * 方向本身说得通（`Gc.drawText` 用的正是 `fill`），但不写下来，
+     * 读的人只能从各自实现里猜。
+     */
     val color: Int
     val style: ShapeStyle
     val lineWidth: Float
@@ -45,17 +62,22 @@ sealed interface Shape {
     /**
      * 轴对齐包围盒（设备像素）。选中高亮与状态栏用。
      *
-     * <p>**约定**：尺寸参数（`w` / `h` / `r` / `rx` / `ry`）**非负**。
-     * 六个实现里只有 [LineShape] 自己用 `minOf` / `abs` 规范化，另外三个
-     * （[RectShape] / [CircleShape] / [EllipseShape]）把尺寸参数直接交给矩形算术——
-     * 传负值会得到一个**负尺寸矩形**，而 `util/Rect` 的
+     * <p>**约定**：尺寸参数（`w` / `h` / `r` / `rx` / `ry` / `size`）**非负**。
+     * 七个实现里只有 [LineShape] 自己用 `minOf` / `abs` 规范化，另外四个
+     * （[RectShape] / [CircleShape] / [EllipseShape] / [TextShape]）把尺寸参数直接交给
+     * 矩形算术——传负值会得到一个**负尺寸矩形**，而 `util/Rect` 的
      * `contains` / `intersects` 在负尺寸下恒为 `false`（`px <= x + width` 里右边比左边小了）。
      * [PolygonShape] / [BezierShape] 不受影响：它们没有尺寸参数，框由 `boundsOf` 从点集算。
      *
+     * <p><strong>★ 但 [TextShape] 与那三个是同病不同因</strong>：它的非负性**不靠构造处
+     * 规范化**，而是 `commitText` 传进来的那个 `size` 本来就是 `FONT_SIZES` 里的
+     * **正数字面量**——**没有任何东西在替它翻正**。换一个能传负 `size` 的调用方，
+     * 它立刻就是上面那个负尺寸矩形（它的 `bounds()` 自己的文档里也写了这一条）。
+     *
      * <p>所以"反向拖拽"必须在**构造处**规范化（demo 里是 `JfglDemo.commitShape` 用
      * `minOf` / `abs` / `hypot` 做的）。**这里不就地规范化是刻意的**：每帧多几次 `abs`
-     * 不贵，但把约定留在构造点那一处，比让六个实现各自决定怎么翻正要好读——
-     * 而且 [LineShape] 已经翻正了，另五个再翻一遍会让"谁负责"这件事变糊涂。
+     * 不贵，但把约定留在构造点那一处，比让七个实现各自决定怎么翻正要好读——
+     * 而且 [LineShape] 已经翻正了，另六个再翻一遍会让"谁负责"这件事变糊涂。
      */
     fun bounds(): Rect
 
@@ -193,32 +215,68 @@ sealed interface Shape {
     data class TextShape(
         val text: String, val x: Float, val y: Float, val size: Float, override val color: Int
     ) : Shape {
+        /**
+         * 只为满足 [Shape] 接口而存在：**文字只有"填充"这一种画法**
+         * （字形以 [color] 填进帧缓冲），所以恒为 [ShapeStyle.FILL]。
+         * 这里跟 [LineShape] 那句"直线只有描边这一种画法"交代的是同一性质的事。
+         */
         override val style = ShapeStyle.FILL
+
+        /**
+         * 同样只为满足接口：**它不参与绘制**——`draw` 里那个笔位十字的线宽是写死的 1f。
+         * 写出来是免得读的人自己判断这是疏忽还是有意。
+         */
         override val lineWidth = 1f
 
-        override fun draw(gc: Gc) {
-            gc.save()
+        /**
+         * 画文字 + 一个**笔位十字**。
+         *
+         * <p>★ 走 [drawWith] 而不是手写 `save` / `restore`：**一行就拿到 `finally`**，
+         * 而且消掉了"同一个文件里两种口径并存"——本文件的 [drawWith] / [strokeWith]
+         * 都带 `finally`，只有这里以前是裸的。理由与那两个完全相同（见 [drawWith] 的
+         * 文档）：把状态栈的平衡**在本文件内闭合**。
+         *
+         * <p>**这不是"行为修复"**：body 在正常路径上不抛，而真抛了的话
+         * `FXGLTransfer` 会把 `endFrame()` 整趟跳过、此后每帧都抛——栈上多一层根本
+         * 表现不出来。它的价值在一致性，以及"将来有人在帧回调外面套 `try/catch`
+         * 保住帧循环时，这里不成新地雷"（那一条是架构评审提的）。
+         *
+         * <p>样式由 [drawWith] 设好（`fill` / `stroke` / `lineWidth` 都是 [color]），
+         * body 里再把 `stroke` 覆盖成十字的橙色——与改动前逐位相同。
+         */
+        override fun draw(gc: Gc) = drawWith(gc, ShapeStyle.FILL, color, 1f) {
             gc.fontSize = size
-            gc.fill = color
             gc.drawText(text, x, y)
             // 笔位十字：横竖各 8px
-            gc.stroke = HIGHLIGHT_CROSS
-            gc.lineWidth = 1f
+            gc.stroke = PEN_CROSS
             gc.drawLine(x - 8f, y, x + 8f, y)
             gc.drawLine(x, y - 8f, x, y + 8f)
-            gc.restore()
         }
 
         /**
          * 文本的外接框（设备像素）。
          *
-         * <p><strong>宽度是按**字符数**估的，不是量出来的</strong>（`size × min(字符数, 8)`）——
+         * <p><strong>★ 目前没有任何消费方</strong>：文本恒以 `pickId = 0` 落下
+         * （既不参与拾取、也不进选中集），而 `bounds()` 的唯一调用点是选中高亮那个循环
+         * ——`sel` 只可能来自 `Gc.pick`（对 id 0 返回 null）与 `PickBuffer.readRect`
+         * （滤掉 0），**永不含 0**。所以这个方法今天一次都不会被调到。
+         * **接入文本拾取之前必须按真实推进宽度把它重算一遍**（那时它才开始被消费）。
+         *
+         * <p><strong>宽度是按字符数估的，不是量出来的</strong>（`size × min(字符数, 8)`）——
          * CJK 约 1 em/字、拉丁约 0.5 em/字，所以这个框**不会贴着文字**。
-         * 它是给选中高亮用的近似值，够用即可；真要精确就用 `gc.measureText`，
-         * 但那要求在这里持有 `Gc`，而 `Shape` 是纯模型——不值当。
+         * **而且 `coerceAtMost(8)` 让它在本 demo 里退化成了常数**：四条样本串的字符数是
+         * 24 / 9 / 14 / 17，**全部 ≥ 8**，于是乘数恒为 8、宽度恒为 `size × 8`。
+         * （写这一句是免得下一个人以为它真的"按字符数估"。）
+         *
+         * <p><strong>为什么不在构造处用 `gc.measureText` 量真的</strong>：那把尺子
+         * **只能在 GL 线程上调**——它取的是 `batch` 的字形源（`Gc.measureText` 里那句），
+         * 而那一侧**没有** `pickRegistry` 那种"刻意例外"的线程安全承诺。
+         * `TextShape` 是在 `commitText` 里（JavaFX 线程）构造的，所以在那里量
+         * **本来就不通**，与"值当不值当"无关。
          *
          * <p>上下取 `size × 1.3`：基线之下留出降部（`g`/`y` 的尾巴）。
-         * **尺寸项恒非负**（`size > 0`），满足 `Shape.bounds()` 的"尺寸非负"约定。
+         * **尺寸项恒非负**，但那靠的是 `commitText` 只传 `FONT_SIZES` 里的正数字面量
+         * ——**这里没有任何东西在翻正**（见 `Shape.bounds()` 的 KDoc）。
          */
         override fun bounds() = Rect(x, y - size, size * text.length.coerceAtMost(8), size * 1.3f)
         override fun describe() = "文本「$text」 ${size.toInt()}px @(${x.toInt()},${y.toInt()})"

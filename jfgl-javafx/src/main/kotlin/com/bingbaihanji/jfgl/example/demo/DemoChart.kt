@@ -47,15 +47,19 @@ private const val COLOR_COST = 0xFFFF8A65.toInt()
 /**
  * 本进程是否处于合成事件自检模式（`-Djfgl.demo.selftest=1`）。
  *
- * <p>**与 `JfglDemo.kt` 里那个开关是同一个属性名**（[SELFTEST_PROPERTY] 就在那个文件里，
- * 两处引用同一个常量，不会各写一份字符串）。分成两个 `val` 是刻意的：这里只用来挡住
- * 下面那两个观测计数器，与 demo 那个开关的其余语义无关。
+ * <p><strong>★ 判定走 [selfTestEnabled]，不是在这里再解析一遍属性</strong>
+ * （[SELFTEST_PROPERTY] 那个常量在 `JfglDemo.kt` 里，两处引用同一个常量）。
+ * 这里本来写的是 `System.getProperty(SELFTEST_PROPERTY) == "1"`——**属性名一样、
+ * 认得的值不一样**：`JfglDemo` 那一侧认 `1` 与 `true`，这一侧只认 `1`。
+ * 于是 `-Djfgl.demo.selftest=true` 下脚本照跑、而**本文件的三个观测值一个都不写**，
+ * 自检把它读成"图表没画出来"。共用属性名不等于共用判定——详见 [selfTestEnabled]
+ * 的文档，那里记着完整的那次假缺陷。
  *
- * <p>挡住而不是无条件自增，是因为那两个计数器**是纯观测**——它们不该让生产路径
+ * <p>默认关着，是因为下面那两个计数器**是纯观测**——它们不该让生产路径
  * 每帧多两次 volatile 写（图型每帧都在画，那是一个真的热路径）。开关关掉之后
  * `SELFTEST` 是个静态 final 布尔，JIT 会把整个分支消掉。
  */
-private val SELFTEST: Boolean = System.getProperty(SELFTEST_PROPERTY) == "1"
+private val SELFTEST: Boolean = selfTestEnabled()
 
 /** 12 个月。 */
 private val MONTHS = arrayOf(
@@ -79,6 +83,18 @@ private val COST = doubleArrayOf(31.0, 35.0, 39.0, 41.0, 46.0, 52.0, 55.0, 58.0,
  * ——窗口一缩放绘图区就变，刻度位置就跟着错开，而那看起来像数据本身的问题。
  */
 internal object DemoChart {
+
+    /**
+     * **只给启动一致性自检读**（`JfglDemo.kt` 的 `verifySelfTestFlagsAgree`）：
+     * 本文件那个 `SELFTEST` 的当前值，用来和 `JfglDemo` 那一侧的开关比对。
+     *
+     * <p>为什么要这么一个入口：那两份开关**各自私有**，谁也看不见谁，而它们一旦不一致
+     * （历史上真发生过：属性名相同、解析不同），症状是"图表渲染坏了"而**不是**
+     * "开关坏了"——那是本项目最费时间的一类误导。所以启动时当场比一次。
+     *
+     * <p>**不要在别处用它**：它不是"当前是否自检模式"的公共查询口，只是那一次比对的探针。
+     */
+    internal fun selfTestFlag(): Boolean = SELFTEST
 
     /** 菜单里的图型。第二项是 [ChartType]；`AREA` / `BAR` 需要额外的样式参数，见 [build]。 */
     val KINDS: List<Pair<String, ChartType>> = listOf(

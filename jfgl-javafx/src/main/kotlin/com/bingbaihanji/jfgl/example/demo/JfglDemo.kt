@@ -40,18 +40,65 @@ private const val SCENE_H = 700.0
  * 那个（它只用来挡住两个纯观测计数器）。两处各写一份字符串的话，改名字那天
  * 一个跟着改、另一个静默地永远读不到——那样 `DemoChart` 的观测计数器恒为 0，
  * 而自检会把它读成"图表没画出来"。
+ *
+ * <p><strong>★ 但共用属性名还不够</strong>：解析也必须共用同一个判定，否则就是
+ * "属性名一样、认得的值不一样"——那正是 [selfTestEnabled] 的文档里记着的那次假缺陷。
+ * 两处引用同一个常量只解决了"名字"，判定由 [selfTestEnabled] 解决。
  */
 internal const val SELFTEST_PROPERTY = "jfgl.demo.selftest"
 
+/** [SELFTEST_PROPERTY] 的原始值。**只读一次**，理由见 [SELFTEST_ON]。 */
+private val SELFTEST_RAW: String? = System.getProperty(SELFTEST_PROPERTY)
+
 /**
- * 是否处于**合成事件自检**模式（`-Djfgl.demo.selftest=1`）。
+ * ★ **自检开关的唯一判定**（`-Djfgl.demo.selftest`）——**两个读它的文件都走这一个函数**。
  *
- * <p>**默认关闭，且关掉时自检一行都不跑**（连 [JfglDemoApp.frameCount] 都不自增）——
- * 这不是"少跑点"，而是生产路径**零开销**这条承诺：自检的所有状态都只在
- * `if (SELFTEST)` 里被碰。
+ * <p><strong>为什么必须是一个共用的判定，而不是"两边各写一份、只共用属性名"</strong>：
+ * `312054c` 把本文件这一侧的判据放宽成认 `1` **与** `true`，而 `DemoChart.kt` 那一侧
+ * 没跟着改（仍是 `System.getProperty(...) == "1"`）。于是同一份属性名下有了**两份解析
+ * 不同的副本**，后果是：`-Djfgl.demo.selftest=true` 下**脚本照跑，而三个图表观测一个
+ * 都不写**——⑩ 的末尾探针恒 +0、⑪ 的身份恒 0、`selfTestLastDrawnKind` 恒 -1，
+ * 而**绘制与拾取号完全正常**。自检于是报出一堆"图表好像坏了"的读数，
+ * 真正坏的是开关解析。**共用属性名 ≠ 共用判定**，这一条正是栽在这里的。
+ *
+ * <p>这条曾经被记成"间歇性缺陷、间歇率约 1/17"（⑩⑪ 全倒、身份全 0）。复核把它推翻了：
+ * 那次唯一的差别就是**开关写的是 `=true` 而不是 `=1`**，而那一批运行里只有一个日志是
+ * 这么跑的。旧日志 `/tmp/trueflag.log` 里那 **6 行「等待超预算」**（⑩ 1 行 + ⑪ 5 行）
+ * 是"观测写入被关掉"的指纹——**异常假说下不会有它们**（帧一停，`frameCount` 就不再涨，
+ * 等待条件既不会成立、也永远用不满帧预算，脚本只会挂在看门狗那一条上）。
+ *
+ * <p>防复发：启动时由 [JfglDemoApp.verifySelfTestFlagsAgree] 判一次"两边一致"。
+ */
+internal fun selfTestEnabled(): Boolean = SELFTEST_ON
+
+/**
+ * 判定本身。**解析一次、也只出声一次**——[selfTestEnabled] 会被两个文件各要一次，
+ * 而"认不出来的值"那行警告不该印两遍。
+ *
+ * <p>认 `1` 与 `true`（大小写不敏感）。**认不出来的值要出声**：`-Djfgl.demo.selftest=yes`
+ * 那种写法下自检一条都不跑、进程进交互模式永不退出——症状与"看门狗没兜住的挂死"
+ * 一模一样（没输出、不退出），而这条路径**看门狗也兜不到**（它根本没被启动）。
+ * 所以这里把"认不出来的值"打成一行刺眼的 stderr，而不是静默地当没开。
+ */
+private val SELFTEST_ON: Boolean = run {
+    val raw = SELFTEST_RAW
+    val on = raw != null && (raw == "1" || raw.equals("true", ignoreCase = true))
+    if (raw != null && !on) {
+        System.err.println(
+            "[自检-合成] 属性 $SELFTEST_PROPERTY=$raw 不是能识别的真值（用 1 或 true）；" +
+                "**自检不会运行**，窗口会进入正常交互模式（不会自己退出）"
+        )
+    }
+    on
+}
+
+/**
+ * 本文件的开关（= [selfTestEnabled]），**内容是 `false` 时自检一行都不跑**
+ * （连 [JfglDemoApp.frameCount] 都不自增）——这不是"少跑点"，而是生产路径**零开销**
+ * 这条承诺：自检的所有状态都只在 `if (SELFTEST)` 里被碰。
  *
  * <p>为什么要有它：这个 demo **没有像素校验器**（画面取决于用户点了哪儿，没有可断言的
- * 判据），所以"画出来的图形对不对、点得中不中"到 Task 10 为止**只有静态证据**。
+ * 判据），所以"画出来的图形对不对、点得中不中"**只有静态证据**。
  * 合成事件走的是 `wireMouse` 接的那三条真实处理器（`ClickVerifier` 已证明这条路通），
  * 于是交互闭环第一次有了运行时证据。
  *
@@ -66,24 +113,16 @@ internal const val SELFTEST_PROPERTY = "jfgl.demo.selftest"
  * ② **画面对不对**——这里断言的全是状态，本 demo 也没有像素校验器。<br>
  * ③ hover 那条（`pickAsync`）路径——本脚本只驱动点击与拖拽。
  */
-private val SELFTEST: Boolean = run {
-    val raw = System.getProperty(SELFTEST_PROPERTY)
-    // 认 `1` 与 `true`（大小写不敏感）。**认不出来的值要出声**：`-Djfgl.demo.selftest=yes`
-    // 那种写法下自检一条都不跑、进程进交互模式永不退出——症状与"看门狗没兜住的挂死"
-    // 一模一样（没输出、不退出），而这条路径**看门狗也兜不到**（它根本没被启动）。
-    // 所以这里把"认不出来的值"打成一行刺眼的 stderr，而不是静默地当没开。
-    val on = raw != null && (raw == "1" || raw.equals("true", ignoreCase = true))
-    if (raw != null && !on) {
-        System.err.println(
-            "[自检-合成] 属性 $SELFTEST_PROPERTY=$raw 不是能识别的真值（用 1 或 true）；" +
-                "**自检不会运行**，窗口会进入正常交互模式（不会自己退出）"
-        )
-    }
-    on
-}
+private val SELFTEST: Boolean = selfTestEnabled()
 
 /** 自检的看门狗超时（秒）。见 [JfglDemoApp.startSelfTestWatchdog]。 */
 private const val SELFTEST_TIMEOUT_SECONDS = 60L
+
+/**
+ * 自检退出时等 [JfglDemoApp.stop] 跑完 `dispose` 的上限（秒）。
+ * 超了就照退，只多打一行警告——**不能让清理把退出本身拖住**。
+ */
+private const val DISPOSE_TIMEOUT_SECONDS = 5L
 
 /** 背景色。**不能**用 0xFF333333：`FXGLTransfer` 的 `glClearColor` 就是 (0.2,0.2,0.2)。 */
 private const val BG = 0xFF23262B.toInt()
@@ -120,7 +159,9 @@ private enum class Mode(val label: String) { DRAW("绘图"), TEXT("文本"), CHA
  * **之后**由 `pickRegistry` 分配的。给 `Shape` 加一个可变字段会破坏"整表替换"这条
  * 跨线程契约（GL 线程读到的列表就不再是自洽的了）。所以 ID 放在外面这一层。
  *
- * @param pickId 0 表示尚未注册（此时不参与拾取，但仍照常画）
+ * @param pickId 0 表示**不参与拾取**（但仍照常画）。成因有二：**注册失败**
+ *               （`gc()` 为 null 时 `id = 0`，见 [commitShape] 里写明的降级），
+ *               或**刻意不注册**（[commitText] 落下的文本就是这样，见那里的说明）
  */
 data class Placed(val shape: Shape, val pickId: Int)
 
@@ -150,18 +191,18 @@ class JfglDemoApp : Application() {
 
     /**
      * 当前模式与图形种类。**这两个真的跨线程**：`mode` 被 GL 线程的
-     * [drawScene] / [drawDragPreview] / [onDrag] 读，`kind` 被 [drawDragPreview] 读，
-     * 而它们由菜单在 JavaFX 线程写——所以需要 `@Volatile`。
+     * [drawScene] / [drawDragPreview] 读、也被 JavaFX 线程的 [onDrag] / [onRelease] 读，
+     * `kind` 被 [drawDragPreview] 读，而它们由菜单在 JavaFX 线程写——所以需要 `@Volatile`。
      */
     @Volatile private var mode = Mode.DRAW
     @Volatile private var kind = ShapeKind.RECT
 
     // ---- 以下是**只在 JavaFX 线程**读写的状态，因此**不需要** `@Volatile`。 ----
     //
-    //   它们的唯一读点是 [commitShape]（以及 Task 8 的 `commitText`），两者都在
-    //   JavaFX 线程上（由鼠标事件 / 菜单触发）；即使 Task 8 把 `fontSize` 装进
-    //   `TextShape` 再交给 GL 线程使用，那个交接也发生在"构造快照"这一步，
-    //   而不是靠这个字段跨线程可见。
+    //   它们的唯一读点是 [commitShape] 与 [commitText]，两者都在
+    //   JavaFX 线程上（由鼠标事件 / 菜单触发）；`fontSize` 虽然要装进
+    //   `TextShape` 再交给 GL 线程使用，但那个交接发生在"构造快照"这一步
+    //   （装好之后的 `TextShape` 是**不可变**的），而不是靠这个字段跨线程可见。
     //   **别顺手给它们加 `@Volatile`**——那会让人以为它们跨线程，从而看不出
     //   真正的跨线程字段是哪两个。
 
@@ -317,7 +358,45 @@ class JfglDemoApp : Application() {
     /** 待处理的框选请求（GL 线程消费）。**用对象快照，不用上面那四个标量。** */
     private val marqueePending = AtomicReference<Rect?>(null)
 
+    /**
+     * 启动一次性自检：**两份 `SELFTEST`（本文件的与 `DemoChart` 的）必须是同一个值**。
+     *
+     * <p>它防的是历史上有过的那次真事故：两边**属性名相同、解析不同**
+     * （`JfglDemo` 认 `1` 与 `true`，`DemoChart` 只认 `1`），于是
+     * `-Djfgl.demo.selftest=true` 下脚本照跑、而图表那三个观测值一个都不写——
+     * 自检报出来的却是一堆"图表好像坏了"的读数（⑩ 探针恒 +0、⑪ 身份恒 0），
+     * 真正坏的是开关。**当场自曝**比让下一个人花一整轮去查"图表渲染"划算得多。
+     *
+     * <p><strong>★ 说清楚这个检查现在治的是什么</strong>：两侧的判定都已经收进
+     * [selfTestEnabled] 一个函数了，所以它**在今天的代码上是结构恒真的**——
+     * 它不会、也不可能在今天报出不一致。它的价值只在**将来**：哪天有人给某一侧
+     * 重新写一份自己的解析（那正是当初发生的事），下一次启动就会打一行刺眼的
+     * stderr 并以非 0 退出，而不是又伪装成一个渲染缺陷。
+     * 换句话说它是一道**防复发的哨兵**，不是一条"当前会失败的断言"。
+     *
+     * @return 一致返回 true；不一致时已打印原因，调用方应退非 0
+     */
+    private fun verifySelfTestFlagsAgree(): Boolean {
+        val mine = SELFTEST
+        val charts = DemoChart.selfTestFlag()
+        if (mine == charts) return true
+        System.err.println(
+            "[自检] ★ 两份自检开关的值不一致：JfglDemo=$mine，DemoChart=$charts。" +
+                "它们读的是同一个属性 $SELFTEST_PROPERTY 却给出了不同结果——" +
+                "**这不是图表坏了，是开关解析分叉了**（历史上真发生过：" +
+                "一侧认 1 与 true、另一侧只认 1）。读数不可信，直接退出。"
+        )
+        return false
+    }
+
     override fun start(stage: Stage) {
+        if (!verifySelfTestFlagsAgree()) {
+            // 退出交给 JavaFX 线程（本方法就在 JavaFX 线程上）——与 `onInit` 里那条自检
+            // 用同一套写法，理由见那里：别在没人测过的时机关 JVM。
+            // `return` 掉后面的建窗：既然自检读数不可信，就别再跑一遍自检了。
+            Platform.runLater { exitProcess(1) }
+            return
+        }
         val bridge = FXGLTransfer()
         bridge.onInit {
             // ★ 启动自检**放在 `gc()` 的 let 之外**——它只用 println / System.err，
@@ -492,12 +571,15 @@ class JfglDemoApp : Application() {
      *    而那只在右键先松开时成立。**文档承诺超过实现**与本文件 I1 那条是同一类问题。）
      * ③ **模式被切走时**（[buildMenuBar] 的 `modeItem`）。
      *
-     * <p>③ 是最容易漏的那一处，而漏掉的后果是**静默错画**：
-     * 绘图模式按下并拖动 → **按住不放**、用键盘切到文本 → 松开（走 `Mode.TEXT -> Unit`，
-     * 什么都不清）→ 切回绘图。此刻残留的 `dragStartX` 让 [drawDragPreview] **凭空画一个预览框**；
-     * 更糟的是接着在任意处按下再松开时，`moved` 从那个**旧起点**量起、
-     * [commitShape] 还会用**旧轨迹**，于是**落下一个用户从没拖过的图形**，
-     * 而状态栏正常显示"已画：…"——正是本仓库最防的那类"静默错画"。
+     * <p>③ 是最容易漏的那一处。**下面这条链路是"漏掉它会怎样"的说明，不是当前行为**——
+     * 当前代码在 ③ 处调用了本方法，所以走不出来；把 `modeItem` 里那一行删掉就能复现：
+     * 绘图模式按下并拖动 → **按住不放**、用键盘切到**图表** → 松开
+     * （`Mode.CHART -> Unit` 什么都不清；`Mode.TEXT` 那条**也不再是 `Unit`**——它现在
+     * 会在"位移超过 `CLICK_SLOP`"时清掉 `dragStartX`，但那只是模式专属的窄清理，
+     * 清不到轨迹与框选标志，**代替不了**本方法要做的整条清理）→ 切回绘图。
+     * 此刻残留的 `dragStartX` 让 [drawDragPreview] **凭空画一个预览框**：它画的是一条
+     * 用户从没拖出来的矩形/轨迹，而图形列表与状态栏里都没有它——正是本仓库最防的那类
+     * "看起来正常、其实没这回事"。（它一直画到下一次 DRAW 按下把起点覆盖掉为止。）
      *
      * <p>（可达性已核实：Windows 上 Alt/F10 能在**鼠标按键按住时**走菜单，
      * 因为 JavaFX 的 `Scene` 只在**所有**键抬起后才结束 press-drag-release 手势。）
@@ -537,17 +619,23 @@ class JfglDemoApp : Application() {
                     resetDragState()
                 }
             }
-            // 文本：**在抬起时落字**（`onPress` 的 TEXT 分支是 `Unit`，不记起点），
-            // 所以这里用 `moved` 把"单击落字"与"拖着划了一下什么都没有"分开。
+            // 文本：**在抬起时落字**（`onPress` 的 TEXT 分支是 `Unit`，不记起点）。
             //
-            // ★ 这条分支只清 `dragStartX`，**不是** [resetDragState]。两处都写清楚了：
-            //   ① `moved` 在 `dragStartX` 为 NaN 时**恒为 0.0**（见上面的 `moved` 计算），
-            //      所以 `moved >= CLICK_SLOP` 只可能出现在"起点是残留的"那种情形——
-            //      而这里清掉那个残留就够了；
+            // ★ **`moved` 这条判据是防御性的、当前不可达**——不要说它能"把单击落字与
+            //   拖着划了一下什么都没有分开"：文本模式下 `moved` **恒为 0.0**
+            //   （`onPress` 的 TEXT 分支不记起点，而 `mode` 的唯一写点 `modeItem`
+            //   **总是**调 [resetDragState]，所以进 TEXT 时 `dragStartX` 必是 NaN），
+            //   于是 `else dragStartX = Float.NaN` **永不执行**——
+            //   **左键拖 200px 也照样在松开处落字**。行为本身与验收表一致，
+            //   但照旧注释写出来的断言会是一条**恒假断言**，而本仓库把"被静默跳过的
+            //   断言"与失败的断言同等看待。守卫留着（零成本），只是别把它当判据。
+            //
+            // ★ 这条分支只清 `dragStartX`，**不是** [resetDragState]。理由：
+            //   ① 上面那个 else 已不可达，它清的是"万一"；
             //   ② TEXT 模式下 `trajectory` 与 `marqueeW` 都不参与画面：预览框由
             //      [drawDragPreview] 画，而它在非 DRAW 模式**直接返回**。
-            //   （Task 4 留下的那句"别忘了在末尾也 resetDragState()"是当时 `commitText`
-            //     还不存在时的占位提醒；计划 Task 8 给的是这个更窄的写法，理由如上。）
+            //   （早年这里留过一句"别忘了在末尾也 resetDragState()"，那是 `commitText`
+            //     还不存在时的占位提醒，早已换成这个更窄的写法。）
             Mode.TEXT -> {
                 if (moved < CLICK_SLOP) commitText(dx, dy) else dragStartX = Float.NaN
             }
@@ -618,14 +706,32 @@ class JfglDemoApp : Application() {
         status.text = "已画：${s.describe()} · 共 ${shapes.get().size} 个"
     }
 
-    /** 落一段文字。**在 JavaFX 线程上被调用**（从 onRelease）。 */
+    /**
+     * 落一段文字。**在 JavaFX 线程上被调用**（从 [onRelease]）。
+     *
+     * <p><strong>★ 文本按规格注册成 `pickId = 0`，即不参与拾取</strong>——这不是
+     * "还没做"，是本期**刻意**的选择（框架本来就支持可拾取文本：`Gc` 的文档写着文本
+     * "裁剪、z 序、合批、GPU 拾取全部自动成立"，不做反而少演示了一块能力）。
+     *
+     * <p>**代价必须写下来**：`pickId = 0` 让文本**没有单独的删除途径**——
+     * `删除选中` 删不到它（它进不了选中集），**只有「清空画布」能清，而那会连所有图形
+     * 一起清掉**。误点落下一段字之后，唯一补救是全清。
+     *
+     * <p>要把它做成可拾取的，只需在这里像 [commitShape] 那样发号（一行）——**但必须先
+     * 按真实推进宽度重算 [Shape.TextShape.bounds]**：那时它才开始被选中高亮消费，
+     * 而它现在是个"按字符数估、且在本 demo 里退化成了常数"的近似值
+     * （详见那个方法的 KDoc）。
+     */
     private fun commitText(x: Float, y: Float) {
         val sample = TEXT_SAMPLES[textSeq % TEXT_SAMPLES.size]
         textSeq++
         shapes.set(shapes.get() + Placed(
-            Shape.TextShape(sample, x, y, fontSize, color), 0   // 文本不参与拾取（Task 8 不做文本拾取）
+            Shape.TextShape(sample, x, y, fontSize, color), 0   // 文本不参与拾取，见上
         ))
-        status.text = "落字：「$sample」${fontSize.toInt()}px，笔位 ($x,$y)，基线 y=$y"
+        // 坐标一律取整再进状态栏（本文件别处都这么写）——原样插 float 会显示成
+        // "笔位 (671.4286,183.71428)"，读起来像精度暴露，其实只是没取整。
+        status.text = "落字：「$sample」${fontSize.toInt()}px，" +
+            "笔位 (${x.toInt()},${y.toInt()})，基线 y=${y.toInt()}"
     }
 
     /**
@@ -728,7 +834,7 @@ class JfglDemoApp : Application() {
                 // 所以它不是必需的。留着只是让"这一个是不可拾取的"在调用点一眼可见。
                 // **它也不掩盖注册失败**：`gc()` 为 null 时 `id = 0`，图形照画、只是点不中，
                 // 那正是 [commitShape] 里写明的降级。
-                // （Task 8 的文本按规格注册成 `pickId = 0`，会实际走到这一支。）
+                // （文本就是按规格注册成 `pickId = 0` 的，所以这一支真的会被走到。）
                 p.shape.draw(gc)
             }
         }
@@ -739,8 +845,13 @@ class JfglDemoApp : Application() {
         // 此后每帧都抛，`finally` **挡不住**真正的风险。这里写一句是免得下一个人以为是漏了。
         //
         // 顺带：`bounds()` 只被这里用，而它的约定是"尺寸非负"（见 `Shape.bounds()` 的 KDoc）。
-        // `commitShape` 用 `planar` 保证了这一点；Task 8 的 `TextShape` 尺寸项也恒非负
-        // （`size × 字符数` 与 `size × 1.3`），所以不会出现负尺寸矩形。
+        // `commitShape` 用 `planar` 保证了这一点；`TextShape` 的尺寸项也恒非负
+        // （`size × min(字符数, 8)` 与 `size × 1.3`，而 `size` 是 `FONT_SIZES` 里的正数），
+        // 所以不会出现负尺寸矩形。
+        // ⚠️ 但要说准：**文本那个 `bounds()` 其实一次都不会被调到**——文本恒 `pickId = 0`，
+        // 而下面这个循环的判据是 `p.pickId in sel`，`sel` 永不含 0（见 `TextShape.bounds()`
+        // 的 KDoc）。所以"文本的尺寸非负"这件事今天是**没人消费的约定**，
+        // 不是一条被这里验证过的性质。
         gc.save()
         gc.pickId = 0
         gc.stroke = HIGHLIGHT
@@ -1028,10 +1139,27 @@ class JfglDemoApp : Application() {
         status.text = "已清空"
     }
 
-    /** 窗口关闭时释放 GL 资源。**不要在 stop 之外的地方 dispose**。 */
+    /**
+     * 窗口关闭时释放 GL 资源。**不要在 stop 之外的地方 dispose**。
+     *
+     * <p>自检模式下的退出路径（[selfTestFinish]）会**等这个 latch**：以前那里是
+     * `exitProcess` 直退，于是本方法**一次都不会被调到**，每跑一次自检就漏一批
+     * GL/D3D 对象。`finally` 是必要的——`dispose` 抛异常时 latch 若不放行，
+     * 退出路径会白等满超时（那会把一次有报告的失败变慢，但至少不会变哑）。
+     */
     override fun stop() {
-        transfer?.dispose()
+        try {
+            transfer?.dispose()
+        } finally {
+            selfTestDisposed.countDown()
+        }
     }
+
+    /**
+     * [stop] 跑完（含 `dispose`）之后放行。**只在自检模式用**——交互模式下窗口一关
+     * 进程就结束了，没有人在等它。
+     */
+    private val selfTestDisposed = CountDownLatch(1)
 
     // ==================================================================
     // 合成事件自检（`-Djfgl.demo.selftest=1`；不开的话下面**一行都不跑**）
@@ -1194,9 +1322,36 @@ class JfglDemoApp : Application() {
         } else {
             println("[自检-合成] 失败 $selfTestFailures 项，见上面的 ★ 失败 行")
         }
-        // 退出放在 JavaFX 线程上（本函数就在 AnimationTimer 里跑）——与 demo 既有的启动自检
-        // 同一条理由：GL 回调里直接 exit 是一条没人测过的路径（见 [start] 的 `onInit`）。
-        exitProcess(if (selfTestFailures == 0) 0 else 1)
+
+        // ★ 退出路径**先走 `Platform.exit()`**，让 JavaFX 真的跑一遍 `stop()` → `dispose()`。
+        //   以前这里直接 `exitProcess`，于是 `stop()` **从不执行**：每跑一次自检就漏一批
+        //   GL/D3D 对象。（这是**卫生项**，与"自检会不会间歇性失败"无关——那条的真因是
+        //   开关解析分叉，见 [selfTestEnabled]。）
+        //
+        //   ⚠️ **等待必须在另一个线程上做**：本函数就在 JavaFX 线程上（AnimationTimer 的
+        //   脉冲里），而 `stop()` 也要 JavaFX 线程才能跑——在这里等它，等于把要用的线程
+        //   占住，必然等满超时。所以另起一个**非 daemon** 线程等 latch：非 daemon 保证
+        //   JVM 不会在 `Platform.exit()` 之后、退出码还没落定之前就走掉。
+        val code = if (selfTestFailures == 0) 0 else 1
+        Platform.exit()
+        Thread({
+            val disposed = selfTestDisposed.await(DISPOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            if (disposed) {
+                println("[自检-合成] stop()/dispose() 已跑完，GL 资源已释放")
+            } else {
+                // 出声而不是静默：清理没跑完是**已知会漏对象**的那种情况，
+                // 而它的症状（下一次运行的行为）与这里毫无关系，不写下来就查不到。
+                System.err.println(
+                    "[自检-合成] ★ 警告：Platform.exit() 之后 ${DISPOSE_TIMEOUT_SECONDS} 秒内" +
+                        " stop()/dispose() 没跑完，直接退出（这一轮会漏掉一批 GL/D3D 对象）"
+                )
+            }
+            System.out.flush()
+            System.err.flush()
+            // 退出码在这里落定。**必须是显式退出**：JavaFX 自己的关停路径不设退出码，
+            // 而 `Application.launch()` 返回后 JVM 会以 0 收尾——失败的那次会被报成"成功"。
+            exitProcess(code)
+        }, "jfgl-selftest-exit").apply { isDaemon = false }.start()
     }
 
     /**
