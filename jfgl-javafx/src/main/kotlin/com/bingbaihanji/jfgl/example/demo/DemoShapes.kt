@@ -383,7 +383,8 @@ internal const val MAX_DASH_SEGMENTS = 4096f
  * （不必在脑子里做一次德摩根反演），而且**没人会把 `x > 0f` "化简"成 `x <= 0f`**
  * ——危险的重写只会从 `!(x > 0f)` 出发。
  *
- * @param pathLength 这条折线的总弧长（调用方先算一遍）
+ * @param pathLength 这条折线的总弧长（调用方先算一遍）。**必须是真实值**——
+ *                   传 `0` 会让第三项恒真、上界整个失效，**死循环回来**
  */
 internal fun isUsableDashPattern(on: Float, off: Float, pathLength: Float): Boolean {
     if (!(on > 0f) || !on.isFinite()) return false
@@ -421,8 +422,16 @@ internal fun isUsableDashPattern(on: Float, off: Float, pathLength: Float): Bool
  * `(float) Math.hypot((double)x, (double)y)`（**双精度**；kotlin-stdlib 2.3.0 字节码实测为
  * `f2d / f2d / Math.hypot(DD)D / d2f`），而朴素移植会用 `sqrt(dx*dx + dy*dy)` 的 float32 算法。
  * 依赖 `len` 的结论（dash 边界落点）恰恰是两者差异会落到的地方。所以**仿真不能替代像素回读**；
- * 这个助手目前**唯一的自动化闸门**是 `DemoShapeMath.kt` 里那 6 条纯函数断言
- * （判据是"被放行的输入迭代有上界"，即**行为**，而不是"参数是正的有限数"）。
+ * 这个助手目前**唯一的自动化闸门**是 `DemoShapeMath.kt` 里那几条纯函数断言。
+ * ★ **它们是"判据的单元测试"，不是行为测试**——每条只调 [isUsableDashPattern] 并比较
+ * 布尔值，**没有一条跑循环、没有一条数迭代次数**："迭代有上界"是由**判据的定义 + 论证**
+ * 保证的，不是那几条验出来的。**循环本身仍无闸门。**
+ *
+ * <p>★ **一处已知接缝，声明在这里**（不为它加闸门的理由见下）：[isUsableDashPattern]
+ * 的第三项全靠本函数传进去的 `pathLen`。**它必须是真实的路径总弧长**——误传 `0f`、
+ * 或把它那趟预处理删掉，上界就会失效、**死循环原样回来**，而那几条自检**照过**。
+ * 抓它要一条"跑真循环并数迭代次数"的断言，那等于把本函数的行为搬进无 GL 自检，
+ * 而**它不是纯函数**（要 `Gc`）——代价与本任务不成比例，所以这里只把它写成契约。
  *
  * @param gc      绘制上下文（调用方负责设好 `stroke` 与 `lineWidth`）
  * @param points  扁平顶点数组 `[x0,y0, x1,y1, ...]`。两条隐含契约：长度为**奇数**时
