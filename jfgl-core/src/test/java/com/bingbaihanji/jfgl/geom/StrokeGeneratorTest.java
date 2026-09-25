@@ -460,8 +460,8 @@ class StrokeGeneratorTest {
         // Task 3 起 Gc.emitTriangles 会**每帧**读 rawEdges()，所以"返回副本"不是多一次
         // 可省可不省的复制，而是每帧一次静默分配——而画面上毫无症状。
         // 实测：把 rawEdges() 改成 `return Arrays.copyOf(edges, edges.length);` 之后，
-        // 本类其余断言**全绿**（补这条之前是 25/25 全绿；补完之后是 29/30，倒的只有这一条），
-        // 所以这一条是唯一守住该契约的地方。
+        // 本类其余断言**全绿**、倒的只有这一条（本类规模 25 / 27 / 30 / 31 条时各复跑过一次，
+        // 每次都是同一结论）——所以这一条是唯一守住该契约的地方。
         StrokeGenerator g = new StrokeGenerator();
         g.stroke(new float[]{0f, 0f, 10f, 0f}, 2, false, 4f,
                 StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 4f);
@@ -629,22 +629,27 @@ class StrokeGeneratorTest {
 
         // 光有负值还不够：外扩四边形必须真的**铺出去**了。少了这一条，
         // "把四个顶点都发在端线上"那种写法也能让上面的断言通过。
+        // ★ 而且**两端必须各自计数**：一个 sawOuter 布尔量只要任意一端铺了就是真，
+        //   于是"只有起点外扩"或"只有终点外扩"都能全绿——而 C1 的可见后果恰恰是
+        //   **两端各长出一像素**，只钉住一端等于一半没钉。实测这两个变异（起点/终点
+        //   各删一处）在合并成布尔量时都是 30/30 全绿，拆开之后各自定向倒下。
         float[] t = ext.triangles();
-        boolean sawOuter = false;
+        int startOuter = 0, endOuter = 0;
         for (int v = 0; v < ext.triangleCount() * 3; v++) {
             float x = t[v * 2];
             float a = e[v * 2 + 1];
             if (x < -1e-5f) {
-                assertEquals(-2f, x, 1e-4f, "外缘应铺到端线外 capExtension 处");
-                assertEquals(-2f / 5f, a, 1e-6f, "外缘沿向应为 -0.4");
-                sawOuter = true;
+                assertEquals(-2f, x, 1e-4f, "起点外缘应铺到端线外 capExtension 处");
+                assertEquals(-2f / 5f, a, 1e-6f, "起点外缘沿向应为 -0.4");
+                startOuter++;
             } else if (x > 100f + 1e-5f) {
-                assertEquals(102f, x, 1e-4f, "另一端同样外扩");
-                assertEquals(-2f / 5f, a, 1e-6f);
-                sawOuter = true;
+                assertEquals(102f, x, 1e-4f, "终点外缘应铺到端线外 capExtension 处");
+                assertEquals(-2f / 5f, a, 1e-6f, "终点外缘沿向应为 -0.4");
+                endOuter++;
             }
         }
-        assertTrue(sawOuter, "两端都该有外扩出来的顶点");
+        assertTrue(startOuter > 0, "**起点**必须有外扩出来的顶点，实测 " + startOuter);
+        assertTrue(endOuter > 0, "**终点**必须有外扩出来的顶点，实测 " + endOuter);
 
         // 既有行为不变：capExtension 缺省（0）时一个负值都不该有，
         // 而且位置与不传时逐位相同
@@ -662,6 +667,65 @@ class StrokeGeneratorTest {
                 "capExtension = 0 必须与不传这个参数完全等价");
         assertArrayEquals(noExt.triangles(), zeroExt.triangles(), 0f,
                 "capExtension = 0 的位置必须逐位相同");
+    }
+
+    @Test
+    void 虚线每一格也各自外扩() {
+        // 虚线那半边（strokeDashed 的 capExtension）此前零调用点、零断言，
+        // 把它悄悄改成 0f 时 35 条实线+虚线用例全绿。而它**是新的公开 API 面**，
+        // 与"生产里永远到不了 ⇒ 永久不可验"同族，所以必须按值钉住。
+        //
+        // 期望值：每格实线都是两点开放折线，两个端点各是一条端线，端帽各自外扩
+        // capExtension ⇒ 外缘沿向 = -capExtension/half。本用例：
+        //   折线 (0,0)→(40,0)、w=4 ⇒ half=2、capExtension=2 ⇒ 外缘沿向 -2/2 = -1。
+        // dash 模式 {10,10}、相位 0、全长 40 ⇒ 实线格是 [0,10] 与 [20,30]：
+        //   第 1 格起点 x=0 外扩到 x=-2；第 2 格终点 x=30 外扩到 x=32。
+        StrokeGenerator g = new StrokeGenerator();
+        g.strokeDashed(new float[]{0f, 0f, 40f, 0f}, 2, false, 4f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 8f,
+                new float[]{10f, 10f}, 0f, 8, 2f);
+        float[] t = g.triangles();
+        float[] e = g.rawEdges();
+
+        float min = Float.MAX_VALUE;
+        for (int i = 0; i < g.triangleCount() * 3; i++) {
+            min = Math.min(min, e[i * 2 + 1]);
+        }
+        assertEquals(-1f, min, 1e-6f,
+                "虚线格的外缘沿向应为 -capExtension/半线宽 = -2/2");
+
+        // 位置同样要钉：外缘必须真的在格子两端之外，而且是**首格起点**与**末格终点**
+        // 各一处（否则"只有中间某一格外扩"也能满足上面的极值）
+        int firstDashOuter = 0, lastDashOuter = 0;
+        for (int v = 0; v < g.triangleCount() * 3; v++) {
+            float x = t[v * 2];
+            float a = e[v * 2 + 1];
+            if (Math.abs(x + 2f) < 1e-4f) {
+                assertEquals(-1f, a, 1e-6f, "首格起点外缘的沿向应为 -1");
+                firstDashOuter++;
+            } else if (Math.abs(x - 32f) < 1e-4f) {
+                assertEquals(-1f, a, 1e-6f, "末格终点外缘的沿向应为 -1");
+                lastDashOuter++;
+            }
+        }
+        assertTrue(firstDashOuter > 0, "首格起点应有外扩顶点，实测 " + firstDashOuter);
+        assertTrue(lastDashOuter > 0, "末格终点应有外扩顶点，实测 " + lastDashOuter);
+
+        // 反面：同一支虚线不传 capExtension 时，一个负值都不该有
+        StrokeGenerator noExt = new StrokeGenerator();
+        noExt.strokeDashed(new float[]{0f, 0f, 40f, 0f}, 2, false, 4f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 8f,
+                new float[]{10f, 10f}, 0f, 8);
+        for (int i = 0; i < noExt.triangleCount() * 3; i++) {
+            assertTrue(noExt.rawEdges()[i * 2 + 1] >= 0f,
+                    "不外扩的虚线不该有负沿向");
+        }
+        // 外扩只增加几何，且增量可数：2 格实线 × 每格 2 个端点 = 4 个外扩四边形
+        // = 8 个三角形。（**不是**"整表前缀不变"：起点封口是在本段四边形**之前**发的，
+        // 所以起点那圈外扩会把这格后面的顶点整体往后挪——顺序不是契约，别断言它。）
+        assertEquals(8, g.triangleCount() - noExt.triangleCount(),
+                "4 个外扩四边形应恰好带来 8 个三角形，实测差值 "
+                        + (g.triangleCount() - noExt.triangleCount()));
     }
 
     @Test
