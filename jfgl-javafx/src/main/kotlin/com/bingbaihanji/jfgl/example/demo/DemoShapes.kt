@@ -387,26 +387,44 @@ internal fun boundsOf(points: FloatArray): Rect {
  * @param gc      绘制上下文（调用方负责设好 `stroke` 与 `lineWidth`）
  * @param points  扁平顶点数组 `[x0,y0, x1,y1, ...]`
  * @param closed  是否首尾相接
- * @param dashOn  实段长度（设备像素），**非正（或 NaN）时退化成实线**
- * @param dashOff 空段长度（设备像素），**非正（或 NaN）时退化成实线**
+ * @param dashOn  实段长度（设备像素），**不是正的有限数时**退化成实线
+ *                （覆盖 0、负数、NaN、±Inf，以及两参数之和溢出到 Inf）
+ * @param dashOff 空段长度（设备像素），**不是正的有限数时**退化成实线
+ *                （覆盖 0、负数、NaN、±Inf，以及两参数之和溢出到 Inf）
  */
 internal fun strokeDashedPolyline(
     gc: Gc, points: FloatArray, closed: Boolean, dashOn: Float, dashOff: Float
 ) {
     val n = points.size / 2
     if (n < 2) return
-    if (!(dashOn > 0f) || !(dashOff > 0f)) {
+    // ★ 判据是「**两个参数都是正的有限数，且其和也是有限数**」——这是一个闭集
+    //   （能构成一个可用 dash 模式的输入恰好就是它），而不是"非正就不能用"的半句话。
+    //   三个反例**都不是"非正"**，却都让 `pattern` 变成不可用的值、进而**静默一段都不画**：
+    //   · `NaN`：与任何数比较都是 false，`x <= 0f` 放它过去；`NaN.toInt() == 0` ⇒ 循环恒 false；
+    //   · `+Inf`：`Inf > 0f` **为真**，`x <= 0f` 与 `x > 0f` 都放它过去；
+    //     `floor(s/Inf).toInt() == 0` ⇒ `0 * Inf == NaN` ⇒ 循环恒 false；
+    //   · 两参数**各自有限**但相加**溢出**到 Inf（如两个 `Float.MAX_VALUE`）：同上。
+    //   三者都恰好复现了这条守卫要防的那件事（"不静默什么都不画"）。
+    //   `!(x > 0f)` 管住 NaN / 0 / 负数，`!x.isFinite()` 管住 ±Inf，最后一项管住**和**溢出。
+    //   ⚠️ 最后一项不能省：`Float.isFinite` 逐个查参数时，`MAX + MAX` 这个和是 **Inf 而
+    //   两个参数各自都有限**——只查参数的话，这一路仍然是静默不画。
+    //   以上全部是**本机探针实测**（不是推理）：`(nan <= 0f)=false`、`!(nan > 0f)=true`、
+    //   `nan.toInt()=0`、`0*nan <= 5f=false`、`!(inf > 0f)=false`、`inf.isFinite()=false`、
+    //   `floor(0f/Inf).toInt()=0`、`0*inf <= 5f=false`、`Float.MAX_VALUE.isFinite()=true`
+    //   而 `(MAX+MAX).isFinite()=false`、`0*(MAX+MAX) <= 5f=false`；对照：`pattern = 1e30f`
+    //   这种**很大但有限**的值会正常进循环、退化成实线（`0*1e30f <= 5f = true`），
+    //   所以判据是"有限"，不是"够小"。
+    if (!(dashOn > 0f) || !dashOn.isFinite() ||
+        !(dashOff > 0f) || !dashOff.isFinite() ||
+        !(dashOn + dashOff).isFinite()
+    ) {
         // 退化：按实线画。**不静默什么都不画**——虚线的参数错不该让预览消失。
-        // ★ 判据必须写成 `!(x > 0f)`，**不能**写成 `x <= 0f`：NaN 与任何数比较都是
-        // false，所以 `x <= 0f` 对 NaN 为 false、守卫挡不住它。NaN 穿透到主路径的表现是
-        // `pattern = NaN` → `NaN.toInt()` 在 JVM 上是 0 → `0 * NaN <= s + len` 恒 false
-        // → **一段都不画、也不报错**，恰好就是这条守卫想避免的那件事。
-        // `!(x > 0f)` 一次覆盖 **NaN、0、负数**三种输入。
         gc.strokePolyline(points, closed)
         return
     }
-    // 走到这里两个参数都是正的，所以总和必为正——早先那条 `|| pattern <= 0f`
-    // 在这个判据之下恒假，已删（留着一个恒假的判据，下一个人会以为它有意义）。
+    // 走到这里两个参数都是正的有限数、和也有限，所以 `pattern` 必为正的有限数——
+    // 早先那条 `|| pattern <= 0f` 在这个判据之下恒假，已删
+    // （留着一个恒假的判据，下一个人会以为它有意义）。
     val pattern = dashOn + dashOff
     val segCount = if (closed) n else n - 1
     var s = 0f                                  // 折线起点算起的累计弧长
