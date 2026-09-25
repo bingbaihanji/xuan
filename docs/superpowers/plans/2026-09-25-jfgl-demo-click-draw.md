@@ -23,6 +23,12 @@
    要证明"这段代码跑通了"，**在它末尾打一行**——加在末尾才证明"整段函数体都返回了"。
 4. **跑 demo 要按 PID 清残留 JVM**（`timeout mvn exec:exec` 只杀 maven，fork 出来的 java 会变孤儿，
    而留下的窗口可能被**人**点过）。**不抢前台、不截屏**。
+   **★ 但这句有它自己的失败模式**：本机常驻的 java 进程里有**用户自己的 IDE**
+   （IDEA 的 Kotlin 守护进程）与 **Maven 拉起的 Kotlin 编译守护进程**（后者是**设计上常驻**的，
+   杀掉只会让下次构建变慢）。所以"清残留"**必须先看命令行确认那是你起的那个**
+   （找 `JfglDemoKt` / `*VerifierKt`），**绝不要写成"杀光 `java.exe`"**——
+   那会杀掉用户正在用的编辑器。2026-09-26 本机正好是这个局面（一个 Maven Kotlin daemon + 一个 IDEA），
+   实现者核实了两个 PID 的用途才决定一个都不动，**这个判断是对的**。
 5. **手工跑：** `-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8` **两个都要**
    （后者管的是 stderr，而诊断走 stderr）。
 
@@ -545,28 +551,52 @@ git commit -m "feat(demo): 两点式改点两下——虚线预览、锚点独�
 > 字段口径与仓库既有校验器一致（`ClickVerifier`：`scene.x/scene.y` +
 > `pickResult = null` + `stillSincePress = true`），**照抄那套**。
 
-- [ ] **Step 1b: 给虚线加一个"末尾探针"计数器**
+- [ ] **Step 1b: 给虚线加**两个**探针计数器（不是"末尾一行"）**
 
-`strokeDashedPolyline` 画在 GL 侧、没有读数，所以**在 `DemoShapes.kt` 里加一个
-自检专用的计数器**（这是本项目唯一可靠的"这段代码跑到了末尾"的证据形式）：
+> **★ 这一处是 Task 1 的质量审查改过的**：原设计写的是"在函数**最后一行**加一个计数器"，
+> 而 `strokeDashedPolyline` 有**两个出口**——退化那条（参数不可用 ⇒ 画实线）会在到达末行**之前** `return`。
+> 只放末行的话，**退化路径永远不计数**，而那恰恰是守卫存在的理由所在。
+> 改成两个计数器，**两条出口各自可见**。
+
+`strokeDashedPolyline` 画在 GL 侧、没有读数，所以加两个自检专用计数器：
 
 ```kotlin
 /**
- * 自检专用的探针：`strokeDashedPolyline` **跑到末尾**的次数。
+ * 自检专用的探针：`strokeDashedPolyline` **真的按虚线画了**的次数
+ * （即走完主循环、没有落到退化分支）。
  *
  * <p>它只在 `SELFTEST` 打开时自增；**没有任何绘制逻辑读它**。
  * 断言"虚线预览真的画了"只能靠它——帧缓冲读不回来，而
- * "跑到了末尾"证明的是**整段函数体都正常返回了**
+ * "走完了主循环"证明的是**整段函数体都正常返回了**
  * （GL 线程的异常被 openglfx 的原生回调吞掉，我们代码里一处 `catch` 都没有）。
  */
 @Volatile internal var dashedSegmentsDrawn: Int = 0
+
+/**
+ * 自检专用的探针：`strokeDashedPolyline` **落进退化分支**（参数不可用 ⇒ 画实线）的次数。
+ *
+ * <p>与 [dashedSegmentsDrawn] 分开计是刻意的：**一个非 0 的退化计数**
+ * 说明调用方传了不可用的 dash 参数——而那正是那条守卫存在的理由。
+ * 合成到一起的话，"虚线画了"与"退化成实线了"就分不出来，而两者在画面上
+ * **都可能看起来像一条正常的预览线**。
+ */
+@Volatile internal var dashedFallbacks: Int = 0
 ```
 
-在 `strokeDashedPolyline` 的**最后一行**加：
+两处各自自增（**退化那一支在 `return` 之前**）：
 
 ```kotlin
+    if (!usable) {
+        if (SELFTEST) dashedFallbacks++
+        gc.strokePolyline(points, closed)
+        return
+    }
+    // ……主循环……
     if (SELFTEST) dashedSegmentsDrawn++
 ```
+
+**Task 3 的断言因此是两条**：`dashedSegmentsDrawn > 基准` **且** `dashedFallbacks == 基准`
+（后者顺带证明调用方传的 `6f`/`4f` 真的可用）。
 
 > `SELFTEST` 在 `DemoShapes.kt` 里还没有——**用 `DemoChart.kt` 那个写法**：
 > `private val SELFTEST = selfTestEnabled()`（`selfTestEnabled()` 是共用判定，
