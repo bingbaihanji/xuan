@@ -56,6 +56,50 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
 > 失败信息可读恰恰是这些校验器存在的一半理由（一个读不出原因的 FAIL 与没有断言差不多）。
 > 它必须写在 `-Dexec.args` 的值里（即分给那个 fork 出来的 JVM），放在 `-cp` 之前。
 
+> **⚠️ `-Dstderr.encoding=UTF-8` 是**另一个**开关，只写 stdout 那个不够。**
+> 上面那条讲的是 `stdout.encoding`（默认 GBK，会让七个校验器的中文断言全乱）。
+> 但 `stderr.encoding` 是**独立的**系统属性，默认同样是 GBK——而**诊断信息走的是 stderr**。
+> 典型受害者是本仓库现有的自检：`ClickDslExample.kt` 的两处
+> `System.err.println("[叠加层] 自检失败：…")`（中文），以及 `JfglDemo.kt` 的四条
+> ——「属性 … 不是能识别的真值」「两份自检开关的值不一致」「[自检] 失败 N 项，demo
+> 不可信，退出」「★ 警告：Platform.exit() 之后 … 没跑完」。
+> **表现是**：程序行为完全正确（照常报错、照常以非 0 退出），只有**报告**不可读——
+> 而"读不出原因"恰恰是这些自检存在的一半理由。
+> 实测（2026-09-24）：只带 stdout 开关时该行是 `[�Լ�] �ڡ�simplify …`，
+> 两个都带上之后逐字可读。所以跑法统一写成
+> `-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8`。
+
+### 交互式 demo 的自检模式（`-Djfgl.demo.selftest=1`）
+
+`example/demo/` 那个交互式 demo **没有像素校验器**（画面取决于用户点了哪儿，没有可断言的
+判据），所以它自带一支**合成事件自检**——驱动窗口的是真事件处理器，但事件由程序合成：
+
+```bash
+cd jfgl-javafx
+mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
+    "-Dexec.args=-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -Djfgl.demo.selftest=1 -cp %classpath com.bingbaihanji.jfgl.example.demo.JfglDemoKt"
+```
+
+退出码 0 = 11 条断言全过；失败或超时（看门狗 60 秒 / 脉冲上限 900）退出码 1 并打印
+**已评估 k/11**——`k` 是"真的被求过值"的条数，不是"总共"（被静默跳过的断言比失败的更坏）。
+它证的是**合成事件真能到达 `wireMouse` 那三个处理器**，以及坐标换算、拾取往返、回调交付、
+状态更新这四件事；它**没有**证"真实鼠标事件能到达画布"（合成事件绕过 JavaFX 拾取，
+那条由 `ClickVerifier` 的 `Robot` 探针管），也**没有**证画面对不对。
+
+> **★ 一次被推翻的"间歇性缺陷"值得记下来，因为它的真因是"同一属性名下两份解析"。**
+> 现象：`-Djfgl.demo.selftest=true` 时 ⑩⑪ 全倒（末尾探针恒 +0、身份恒 0），
+> 而绘制与拾取号完全正常；一批运行里约 **1/17** 复发，一度被推断成
+> "帧在文字那段抛异常被 openglfx 静默吞掉"。
+> **真因**：`JfglDemo` 那一侧的判据被放宽成认 `1` **与** `true`，而 `DemoChart` 那一侧
+> **没跟着改**（仍是 `== "1"`）——于是 `=true` 下**脚本照跑，而图表那三个观测一个都不写**。
+> 那一批运行里**只有一个**是 `=true` 跑的，所以"1/17"是这么来的，**不是随机性**。
+> **判据**：那次失败的日志里有 **6 行「等待超预算」**（⑩ 1 行 + ⑪ 5 行）——
+> 而"异常被吞"的假说下**不可能有它们**：帧一停，`frameCount` 就不再涨，等待条件既不会成立、
+> 也永远用不满帧预算，脚本只会挂在看门狗那一条上（实测：日志里 0 行「脚本超时」）。
+> **收口**：解析收成 `internal fun selfTestEnabled()` 一个判定（两侧都用它），
+> 并在启动时比一次两份开关的值（不一致就打印并退 1）。
+> **可复用的教训**：**共用属性名 ≠ 共用判定**；跨文件的同名开关，判据也必须是同一份代码。
+
 `exec-maven-plugin` **未在 `pom.xml` 中声明**，但 3.6.3 已缓存，`-o` 离线可用。
 某些 shell 会把 `-D` 前缀吃掉（表现为 Maven 报 `Unknown lifecycle phase '.executable=java'`），
 把每个 `-D...` 参数**加引号**可以规避。
@@ -813,6 +857,45 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
   变异实测：①按位置约定分类 ⇒ 4 条单测 + 4 条像素断言倒下（两个正方形整块消失）；
   ②忽略嵌套（每个轮廓各自成块、不收洞）⇒ 4 条单测 + 3 条像素断言倒下（环心被填实）。
 - 没有黄金图像测试。
+- **`example/demo/` 的交互式 demo 暴露、但本期只记录的缺口**（`JfglDemo.kt` 是它们的绕法样板）：
+  - **`jfgl { }` 只暴露 `overlay`，不暴露画布节点**：菜单栏**能**加
+    （`onScene { (it.root as BorderPane).top = menuBar }`——`createMainView()` 返回的正是
+    `Scene` 的根 `BorderPane`），但画布是 `StackPane(view, overlay)` 的第一个孩子，
+    只能从 `overlay.parent` 掏。拖拽 / hover / 滚轮都要接在它上面。
+    鼠标入口也只有 `onClick` 一个。
+  - **没有异步 `pickRect`**：框选只能同步调（`w×h×4` 字节的 `glReadPixels`），
+    不能在 JavaFX 线程做。demo 的绕法是 `onFrame` 里读 volatile 标志。
+    **★ 附带一条：`onFrame` 跑在 `endFrame()` 之前，那里读到的 ID 缓冲是上一帧的**
+    ——场景静态时等价，动态时必须走 `pickAsync`。
+    **★ 更准的说法是"库明确拒绝给"，不是"给陈旧的"**：`RenderBatch.beginFrame` 会刻意把
+    `pickBufferValid` 置回 `false`，所以 `onFrame` 里调 `pickRect` / `pick` 是**恒返回空**
+    ——框选会永远选不中任何东西且不报错。正确位置是 `FXGLTransfer.onRender`
+    （跑在 `endFrame()` **之后**、`pickBufferValid` 为 `true`）。
+    **★ 顺带一条命名陷阱（比缺口本身更值得记）**：`JFGL.onRender` 转发到的是
+    `bridge.onFrame`，即 `endFrame()` **之前**那个——与 `FXGLTransfer.onRender`
+    **同名不同时机**。照名字找"帧末回调"的 DSL 用户会拿到早一步的那个，
+    于是**区域拾取在 DSL 路径上恒返回空**（单像素有 `pickAsync` / `clickAsync` 兜着，区域没有）。
+  - **`Gc` 没有公开 `ChartTextMetrics`**：自己算布局要重写一遍口径
+    （`lineHeight = fontSize × ChartLayout.LINE_HEIGHT_FACTOR`）。重写歪了网格与标题带就
+    对不上，而画面只是"看着有点挤"。demo 里的 `GcTextMetrics` 就是这份重写。
+  - **没有"可拾取图元列表"抽象**：每个应用都要自己维护
+    `列表 + 可变 pickId + register/unregister 配对 + 选中集的跨线程可见性`。
+  - **`jfgl-javafx` 跑不了单测**：pom 里没有 junit、没有 surefire，kotlin 插件也只配了
+    `src/main/kotlin`。所以本模块的纯计算只能靠"启动自检 + 非 0 退出"
+    （`ClickDslExample` 与 `JfglDemo` 都是这个模式）。`src/test` 目录存在但是空的。
+  - **★ `ChartRenderer` 没有"这个系列不再画了"的回收接口**（设计文档 §6.6）：
+    它用 `IdentityHashMap` 按 **`Series` 对象身份**缓存每个系列的 GPU 缓冲与拾取号
+    （`buffers` 与 `pickIds.computeIfAbsent(series, pickRegistry::register)` 两处），
+    而这两张 map **只在 `ChartRenderer.dispose()` 里清空**，中间没有任何回收路径。
+    后果：任何"每帧重建 `Chart`"的写法——而那是最自然的写法，因为 `Chart` 看起来是个
+    纯计算对象——都会**每帧泄漏一块 `SeriesBuffer`（显存）并每帧消耗两个拾取号**；
+    号耗尽时 `PickRegistry` 会抛异常，**而 GL 线程上的异常在本项目是静默吞掉的**，
+    所以症状是"前几百帧完全正常，然后图表忽然不画了，没有任何报错"。
+    demo 的处置是**按图型缓存 `Chart`**（`DemoChart.cachedCharts`），代价是菜单四项
+    ⇒ 上限 8 块缓冲与 8 个号（**有界**，来回切不再分配）。
+    该补的是库：一个"本帧只保留这些系列"的入口（形如 `retainSeries` / `releaseSeries`），
+    在 `draw` 结束时回收不再出现的系列。**属于扩 API 面，本期只记录**
+    ——`DemoChart.kt` 的 KDoc 明确承诺了这条要记进这里。
 
 **声明了但完全没用到的依赖**
 JOML（数学全是手写的）、`lwjgl-glfw`、jspecify、logback、byte-buddy(+agent)、JNA。
