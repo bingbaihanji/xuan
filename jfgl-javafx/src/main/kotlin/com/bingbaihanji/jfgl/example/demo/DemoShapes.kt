@@ -364,69 +364,100 @@ internal fun boundsOf(points: FloatArray): Rect {
 }
 
 /**
+ * 折线段数的上限。远超任何预览需要（几百像素、6/4 图案约 100 段），只为让迭代有界。
+ */
+internal const val MAX_DASH_SEGMENTS = 4096f
+
+/**
+ * 这个 dash 模式**能不能用来画**：`on` / `off` 是不是正的有限数、
+ * 它们的和是不是有限、**以及按这条路径的长度算下来迭代次数有没有上界**。
+ *
+ * <p><strong>最后一条不是凑数的</strong>：内层 while 的开销是 `Θ(arcLen / pattern)`，
+ * 而 `k` 是 **`Int`**——pattern 小到 ~1e-7 时 `floor(s / pattern).toInt()` 会饱和到
+ * `Int.MAX_VALUE`，`k * pattern` 仍 ≤ `s + len`，于是 `k++` **回绕到 `Int.MIN_VALUE`**，
+ * 负数 `k` 也满足条件 ⇒ 状态重现 ⇒ **内层 while 永不退出**（它跑在 `onRender` 里，
+ * 卡住的是 GL 线程）；而每段只有亚像素宽 ⇒ **预览同时静默消失**。
+ * 两个症状都是调用方最不想要的那种。
+ *
+ * <p><strong>判据写成"可用"而不是"不可用"</strong>：正着写时 NaN 被 `> 0f` 自动挡掉
+ * （不必在脑子里做一次德摩根反演），而且**没人会把 `x > 0f` "化简"成 `x <= 0f`**
+ * ——危险的重写只会从 `!(x > 0f)` 出发。
+ *
+ * @param pathLength 这条折线的总弧长（调用方先算一遍）
+ */
+internal fun isUsableDashPattern(on: Float, off: Float, pathLength: Float): Boolean {
+    if (!(on > 0f) || !on.isFinite()) return false
+    if (!(off > 0f) || !off.isFinite()) return false
+    val pattern = on + off
+    if (!pattern.isFinite()) return false
+    return pathLength / pattern <= MAX_DASH_SEGMENTS
+}
+
+/**
  * 用**虚线**描一条折线。**预览专用。**
  *
  * <p><strong>为什么在 demo 里手算</strong>：库里的 `StrokeGenerator.strokeDashed(...)`
  * **存在且有单测**（`StrokeDashTest`），但 **`Gc` 没有把它暴露出来**——`Gc` 的描边路径
  * 只调实线那个 `stroke(...)`。本 demo 因此自己按**弧长**把折线切成实段。
- * （这条缺口记在 `CLAUDE.md` 的「未实现 / 待办」里。）
+ * （这条缺口**将在 Task 4 记进** `CLAUDE.md` 的「未实现 / 待办」。）
  *
- * <p><strong>它只用于预览</strong>：提交时仍然走 `Gc` 的
- * `fillRect` / `fillCircle` / `fillEllipse` / `drawLine`，
- * 所以**画出来的东西与这个助手无关**——它坏掉最多是预览难看。
+ * <p><strong>它只用于预览</strong>：提交时仍然走 `Gc` 的绘制方法
+ * （`fillRect` / `fillCircle` / `fillEllipse` / `drawLine`，轨迹型是
+ * `fillPolygon` / `strokePolyline` 与 `beginPath…strokePath`），
+ * 所以**画出来的东西与这个助手无关**——**只要调用方传的是常量**（本 demo 就是），
+ * 它坏掉最多是预览难看。
  *
  * <p>代价照实记：预览轮廓由本文件与 `JfglDemo` 各算一遍，
  * 与 `Gc` 内部那份（`rectOutline` / `circleOutline` / `ellipseOutline`，
  * 都是 `private`）**不是同一份代码**，因此**预览的圆与提交的圆在细分段数上可能不同**。
  *
- * <p><strong>实测（数值仿真）：任意两段绘制区间互不重叠</strong>——半透明预览下
- * 也不会因叠加而加深。★ **证据强度照实写：这是把本函数的切分逻辑忠实移植成 float32
- * 之后跑出来的数值仿真，不是真机像素回读**（这个助手目前还没有调用方，没有画面可读）；
- * 将来 `JfglDemo` 接上虚线预览后，若要拿像素口径钉它，请按本仓库的惯例另立校验器。
+ * <p><strong>任意两段绘制区间互不重叠</strong>——半透明预览下不会因叠加而加深。
+ * 这条是**解析**结论、不需要仿真：第 k 格画的是 `[max(kp, s), min(kp+on, s+len)]`，
+ * 第 k+1 格同理，而因 `off > 0` 有 `(k+1)p = kp + on + off > kp + on` ⇒ 两区间严格分离。
+ * （仿真只复核过它，不是它的依据。）
+ *
+ * <p>★ **一条数值仿真的残余风险，照实记**：若只做"把本函数忠实移植成 float32"来仿真，
+ * 那**与被审函数不是同一个函数**——`kotlin.math.hypot(Float, Float)` 的实现是
+ * `(float) Math.hypot((double)x, (double)y)`（**双精度**；kotlin-stdlib 2.3.0 字节码实测为
+ * `f2d / f2d / Math.hypot(DD)D / d2f`），而朴素移植会用 `sqrt(dx*dx + dy*dy)` 的 float32 算法。
+ * 依赖 `len` 的结论（dash 边界落点）恰恰是两者差异会落到的地方。所以**仿真不能替代像素回读**；
+ * 这个助手目前**唯一的自动化闸门**是 `DemoShapeMath.kt` 里那 6 条纯函数断言
+ * （判据是"被放行的输入迭代有上界"，即**行为**，而不是"参数是正的有限数"）。
  *
  * @param gc      绘制上下文（调用方负责设好 `stroke` 与 `lineWidth`）
- * @param points  扁平顶点数组 `[x0,y0, x1,y1, ...]`
- * @param closed  是否首尾相接
- * @param dashOn  实段长度（设备像素），**不是正的有限数时**退化成实线
- *                （覆盖 0、负数、NaN、±Inf，以及两参数之和溢出到 Inf）
- * @param dashOff 空段长度（设备像素），**不是正的有限数时**退化成实线
- *                （覆盖 0、负数、NaN、±Inf，以及两参数之和溢出到 Inf）
+ * @param points  扁平顶点数组 `[x0,y0, x1,y1, ...]`。两条隐含契约：长度为**奇数**时
+ *                末尾那个孤立的 float 被丢掉（与 [boundsOf] 同口径）；长度 `<= 1e-6f`
+ *                的段被跳过（不描、也不推进累计弧长）。
+ * @param closed  是否首尾相接（闭合时最后一段从末点回到首点）
+ * @param dashOn  实段长度（设备像素）。**可用值是正的有限数**，判据见 [isUsableDashPattern]；
+ *                不是可用值时退化成实线
+ * @param dashOff 空段长度（设备像素）。同上
  */
 internal fun strokeDashedPolyline(
     gc: Gc, points: FloatArray, closed: Boolean, dashOn: Float, dashOff: Float
 ) {
     val n = points.size / 2
     if (n < 2) return
-    // ★ 判据是「**两个参数都是正的有限数，且其和也是有限数**」——这是一个闭集
-    //   （能构成一个可用 dash 模式的输入恰好就是它），而不是"非正就不能用"的半句话。
-    //   三个反例**都不是"非正"**，却都让 `pattern` 变成不可用的值、进而**静默一段都不画**：
-    //   · `NaN`：与任何数比较都是 false，`x <= 0f` 放它过去；`NaN.toInt() == 0` ⇒ 循环恒 false；
-    //   · `+Inf`：`Inf > 0f` **为真**，`x <= 0f` 与 `x > 0f` 都放它过去；
-    //     `floor(s/Inf).toInt() == 0` ⇒ `0 * Inf == NaN` ⇒ 循环恒 false；
-    //   · 两参数**各自有限**但相加**溢出**到 Inf（如两个 `Float.MAX_VALUE`）：同上。
-    //   三者都恰好复现了这条守卫要防的那件事（"不静默什么都不画"）。
-    //   `!(x > 0f)` 管住 NaN / 0 / 负数，`!x.isFinite()` 管住 ±Inf，最后一项管住**和**溢出。
-    //   ⚠️ 最后一项不能省：`Float.isFinite` 逐个查参数时，`MAX + MAX` 这个和是 **Inf 而
-    //   两个参数各自都有限**——只查参数的话，这一路仍然是静默不画。
-    //   以上全部是**本机探针实测**（不是推理）：`(nan <= 0f)=false`、`!(nan > 0f)=true`、
-    //   `nan.toInt()=0`、`0*nan <= 5f=false`、`!(inf > 0f)=false`、`inf.isFinite()=false`、
-    //   `floor(0f/Inf).toInt()=0`、`0*inf <= 5f=false`、`Float.MAX_VALUE.isFinite()=true`
-    //   而 `(MAX+MAX).isFinite()=false`、`0*(MAX+MAX) <= 5f=false`；对照：`pattern = 1e30f`
-    //   这种**很大但有限**的值会正常进循环、退化成实线（`0*1e30f <= 5f = true`），
-    //   所以判据是"有限"，不是"够小"。
-    if (!(dashOn > 0f) || !dashOn.isFinite() ||
-        !(dashOff > 0f) || !dashOff.isFinite() ||
-        !(dashOn + dashOff).isFinite()
-    ) {
-        // 退化：按实线画。**不静默什么都不画**——虚线的参数错不该让预览消失。
+    val segCount = if (closed) n else n - 1
+    // 先算总弧长：`isUsableDashPattern` 的第三项要用它（迭代有上界）。
+    // 这一趟与下面的主循环共用同一个 `segCount`（两侧的"段"必须是同一个集合）。
+    var pathLen = 0f
+    for (i in 0 until segCount) {
+        val j = (i + 1) % n
+        pathLen += hypot(points[j * 2] - points[i * 2], points[j * 2 + 1] - points[i * 2 + 1])
+    }
+    // 判据本身在 [isUsableDashPattern] 里（有名字、可单测），这里只说**意图**：
+    // 参数构不成可用的 dash 模式时退化成实线，**不静默什么都不画**。
+    // ★ 两端都要有界，不只是"参数是正的有限数"：**大端**由 `isFinite` 管住
+    //   （+Inf ⇒ `k` 恒 0 ⇒ `0 * Inf = NaN` ⇒ 循环一次都不执行），
+    //   **小端**由 `MAX_DASH_SEGMENTS` 管住（pattern ~1e-7 ⇒ `k` 回绕 ⇒ 死循环）。
+    if (!isUsableDashPattern(dashOn, dashOff, pathLen)) {
         gc.strokePolyline(points, closed)
         return
     }
-    // 走到这里两个参数都是正的有限数、和也有限，所以 `pattern` 必为正的有限数——
-    // 早先那条 `|| pattern <= 0f` 在这个判据之下恒假，已删
+    // 走到这里 `pattern` 必为正的有限数——早先那条 `|| pattern <= 0f` 在判据之下恒假，已删
     // （留着一个恒假的判据，下一个人会以为它有意义）。
     val pattern = dashOn + dashOff
-    val segCount = if (closed) n else n - 1
     var s = 0f                                  // 折线起点算起的累计弧长
     for (i in 0 until segCount) {
         val j = (i + 1) % n

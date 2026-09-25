@@ -259,4 +259,44 @@ private fun runChecks(check: (String, Boolean, String) -> Unit) {
         "simplify 末点与上一个已收下的点重合时不重复追加",
         s9.size == 2, "得到 ${s9.size / 2} 点：${s9.toList()}（期望 1 点、2 个 float）"
     )
+
+    // ⑩ ★★ 虚线模式的**可用性**。判据是**行为**：被放行的输入，迭代有上界。
+    //
+    // 为什么不能只钉"参数是正的有限数"：那条**与被测的判据是同一个命题**，于是那样的表
+    // 在结构上**不可能在"放行集"里找到反例**——它只是把判据重推了一遍，是橡皮图章。
+    // 质量审查正是这么指出上一版的：那张 14 组表把 `1e-30f` 列在"应放行"里，而小端反例
+    // （`k` 回绕 ⇒ 内层 while 永不退出 + 每段亚像素 ⇒ 预览静默消失）恰恰落在它声称
+    // 已覆盖的那一侧。
+    //
+    // 下面第二条与第五条是**同一类输入的两端**：`NaN` 走 `> 0f` 被挡、`1e-30f` 走
+    // `MAX_DASH_SEGMENTS` 被挡——**少任何一条，判据就只关掉了一半**。
+    val dashNormal = isUsableDashPattern(6f, 4f, 500f)
+    check("虚线模式 6f/4f 可用（500px ⇒ 50 段 ≤ 4096）", dashNormal, "得到 $dashNormal（期望 true）")
+
+    val dashNan = isUsableDashPattern(Float.NaN, 4f, 500f)
+    check("虚线模式 NaN 不可用（NaN 与任何数比较都是 false）", !dashNan, "得到 $dashNan（期望 false）")
+
+    val dashInf = isUsableDashPattern(Float.POSITIVE_INFINITY, 4f, 500f)
+    check("虚线模式 +Inf 不可用（Inf > 0f 为真，那条挡不住它）", !dashInf, "得到 $dashInf（期望 false）")
+
+    val dashOverflow = isUsableDashPattern(Float.MAX_VALUE, Float.MAX_VALUE, 500f)
+    check(
+        "虚线模式 和溢出到 Inf 不可用（两参数各自都有限）",
+        !dashOverflow, "得到 $dashOverflow（期望 false）"
+    )
+
+    val dashTiny = isUsableDashPattern(1e-30f, 1e-30f, 500f)
+    check(
+        "虚线模式 极小 pattern 不可用（k 回绕 ⇒ 死循环；旧表漏掉的反例）",
+        !dashTiny,
+        "得到 $dashTiny（期望 false；其段数为 ${500f / (1e-30f + 1e-30f)}，远超 $MAX_DASH_SEGMENTS）"
+    )
+
+    // ★ 边界点：`MAX_VALUE / 2 + MAX_VALUE / 2` 恰好 = `MAX_VALUE`，**不溢出** ⇒ 放行。
+    // 它钉住"和溢出"那一项的位置：判据若写成 `>=` 或把上限收紧，这一条会先倒。
+    val dashEdge = isUsableDashPattern(Float.MAX_VALUE / 2f, Float.MAX_VALUE / 2f, 500f)
+    check(
+        "虚线模式 和的边界（MAX/2 各一，和恰好 MAX 不溢出）可用",
+        dashEdge, "得到 $dashEdge（期望 true；其段数为 ${500f / (Float.MAX_VALUE / 2f + Float.MAX_VALUE / 2f)}）"
+    )
 }
