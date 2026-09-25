@@ -469,6 +469,134 @@ ctx.setPickId(pickIds.computeIfAbsent(series, pickRegistry::register));
 
 ---
 
+## 4.5 与两个参考项目的对比（`chart-fx` / `fxcharts`）
+
+JFGL 自述参考过 `D:\javaProject\javafx\chart-fx`（717 个 `.java`）与
+`D:\javaProject\bingbaihanji\javaui\fxcharts`（275 个）。**这一节是读它们的一手源码后写的，
+不是照抄 JFGL 文档里的转述**——而那个决定当场就还了本：**JFGL 文档对它们的转述有三处是错的**
+（见 4.5.4）。
+
+对比按七条轴做（渲染模型 / 数据与轴 / 扩展点 / 配色 / 性能策略 / 线程模型 / API 形状），
+下面是**结论与可行动的条目**；完整的逐轴对照在实施时的报告中。
+
+### 4.5.1 ★ 最重要的那条：**③-2 降采样立项时不要拿 chart-fx 当理由**
+
+chart-fx 有**完整的降采样子系统**（`datareduction/` 5 个类，阈值默认 5 点、
+像素距离默认 6px），所以"看看参考项目怎么做"必然得出"该做"。
+**但逐行读下来它是有损的**：
+
+```java
+// DefaultDataReducer —— 缩减时把 min/max 塞进误差棒数组
+xValues[count] = (int)(meanX/ncount);  yValues[count] = (int)(meanY/ncount);
+yPointNegErrors[count] = maxY;  yPointPosErrors[count] = minY;
+```
+
+而**折线只读 `xValues`/`yValues`**（`ErrorDataSetRenderer` 里
+`gc.strokePolyline(xValues, yValues, count)`）。
+
+> **★★ 这一节初稿写错了一处，而且是写在本节最值钱的那个结论上——照实记下来。**
+> 初稿写的是"**在默认的纯折线形态下**，一个 1 个样本宽的尖峰……**在画面上消失**，
+> 而画面看起来完全正常"，并把"`ErrorStyle.NONE` 是默认"当作三条支撑证据之一。
+> **实测那条是错的**：`AbstractErrorDataSetRendererParameter.java:40` 的默认值是
+> **`ErrorStyle.ERRORCOMBO`（不是 `NONE`）**，而 `ERRORCOMBO` 分支会去画误差棒/误差面
+> （`ErrorDataSetRenderer` 的 `switch (getErrorType())`，且 `drawErrorSurface` 读的正是
+> `errorYNeg`/`errorYPos` 那两个数组）。
+>
+> ⇒ **"折线只读均值"成立**（机制那半是真的），**但"所以尖峰在画面上消失"未证、且已有反证**
+> ——在默认配置下，尖峰至少还会以**误差面/误差棒**的形式出现，除非调用方显式设 `ErrorStyle.NONE`。
+> **纠正来源**：实施这一节的修改时，实现者独立去核了 `ErrorStyle` 的默认值并报回来——
+> **而这三条数字/事实错误，都是我直接照抄对比报告、没有自己验造成的**
+> （另两条：`datareduction/` 是 **6 个 `.java`**（5 个缩减器 + `ReductionType` 枚举）不是"5 个类"；
+> `ChartBits` 是 **24 个常量**不是 23，`sed -n '/^public enum ChartBits/,/^\s*;/p'` 可逐个数）。
+> **这一条本身就是"转述不可信、要回到一手材料"的又一次实例**，只是这次犯错的是这份评审。
+
+**所以那条行动项的适用面要收窄**（但它本身不变，两种情形下都成立）：
+"**真做 ③-2 时必须保留每列 min–max、不许取均值或抽稀，且必须有一条「单样本尖峰不被吃掉」
+的像素断言**"——**它防的是"折线画的是均值、而 min/max 在另一条消费路径上"这个结构**，
+而不是"尖峰一定看不见"。**要立"尖峰会消失"这条规矩，得先补一条像素级复现。**
+
+**可行动**：
+1. ③-2 真做时，**必须保留每列 min–max，不许取均值或抽稀**，并且要有
+   「**单样本尖峰不被吃掉**」的像素断言。否则会把 chart-fx 的缺陷原样抄进来。
+2. `CLAUDE.md` 的「未实现 / 待办」里 ③-2 那条补一句：
+   **参考项目的降采样是有损的，不能作为立项依据。**
+3. 顺带记下 chart-fx 的 `RollingDataSet.add()` 每追加一段就把**全部保留点的 x 平移一次**
+   （`shift(-lastLength)`）——那正是本项目用 uniform 滚动（`uScrollOffset`）规避掉的东西，
+   **是 JFGL 对它的实质改进，不是照抄。**
+
+### 4.5.2 `Gc` 那个"上帝类"的判断，两个参考项目都是它的**反面证据**
+
+| | 主入口 | 规模与形状 |
+|---|---|---|
+| fxcharts | **没有统一入口** | `Axis` **2086 行**——**刻度分级 + 标签格式化 + 自带一个 Canvas 自己画轴**，全在一个类里；另有 23 个枚举值 + 29 个各自独立的 `Region` 子类 |
+| chart-fx | `XYChart extends Chart` | `Chart` 961 行 + **21 个渲染器类** + CRTP 自递归泛型 + 1128 行的参数基类 + 824 行的 CSS 工厂 |
+| JFGL | `Gc`（单一、像 canvas） | 1436 行、51 个公开成员 |
+
+**它们的主入口都在不可逆地变胖，而且胖的方式恰好都是"模型与绘制同居一个类"。**
+所以 §4 里那条"**不要拆 `Gc` 的公开 API**"**站得住**——拆成 `ShapeOps`/`TextOps`
+会让调用方第一次用就困惑，而不拆的代价在两个参考项目里都有更严重的先例。
+
+**但 `Gc` 的真问题不是它大**，是这两条：
+1. **它混了两种性能模型**（本条**新增**，§4 里没记）：同一个入口上，
+   `fillPath` 每帧重传 **21.6 MB**，`charts.draw` **永不重传**——**而 API 上看不出来**。
+   这不是"模仿 canvas"本身有害，是**给了两个数量级不同的性能模型却不告诉用户**。
+   **可行动**：`VertexWriter` 已经有 `overflowed()` / 帧中途 flush 这条可观测路径，
+   在顶点数超阈值时**一次性**给个可观测信号（stderr 一行 + 计数器），
+   并在 `Gc.strokePath` / `fillPath` 的 KDoc 顶部写明
+   "**静态大几何请走 `charts`；本路径每帧全量重传**"。
+   这不是加限制，是把一个**已经在库里、只是没人知道**的性能悬崖前置。
+2. `chartPainter` 的跨层错位（见 P1-1）。
+
+### 4.5.3 JFGL 有**唯一一处**参考项目连等价物都没有的工程机制
+
+> chart-fx 的 `chartfx-dataset` 零 JavaFX 只是"模块 + 没人写"——**没有任何守卫**
+> （无 `module-info.java`，靠 `Automatic-Module-Name`）。
+> 而 JFGL 有 `ChartPackageIsolationTest` **递归遍历源码、按包名白名单**守卫。
+
+**这是本项目在工程机制上最值得保留的东西，两个参考项目都拿不出来。**
+
+另外两处对比结论：**扩展点**是"更清晰但有三处退化"——
+更清晰的一面由 fxcharts 反证（它的枚举 + 分散 6 处 `switch` **已经真漏了 3 个图型**：
+`BAR`/`NESTED_BAR`/`PARALLEL_COORDINATES` 零 case ⇒ **用户设了它，静默什么都不画**，
+而 JFGL 的 `rendererFor` 末尾是**显式抛异常**）；
+退化的一面是**不可扩展**（`rendererFor` 私有、无注册 API，用户想加自定义图型只能改库，
+而 chart-fx 的 `getRenderers()` 是公开可改列表）与**没有共享基类 ⇒ 6 份重复的 GL 状态收尾**。
+**配色**是三方里唯一做对的（另两个都逐像素算色；chart-fx 的缓存还建在**错误的粒度**上：
+本该 256 级、实际每个浮点值一个 entry）——但 `toLut()` **目前零消费者**，
+"换配色 = 换纹理"是**预期收益、尚未兑现**。
+
+### 4.5.4 ★ JFGL 文档对参考项目的**三处错误转述**（都该改）
+
+| # | JFGL 的说法 | 实际 | 性质 |
+|---|---|---|---|
+| 1 | `2026-09-20-jfgl-chart-framework.md` 称 chart-fx 有 `getXAxisId` / `getYAxisId`（按 id 选轴） | **`AxisId` 在 chart-fx 全仓 0 命中**；它的选轴是**方向 + 第一个匹配 + 对象身份**（`Chart.getFirstAxis(Orientation)`） | **硬错误** |
+| 2 | `chart/AxisRange.java` / `Axis.java` 说"抄 chart-fx……轴只持有 `AxisRange`" | chart-fx 里"数据声明的域"叫 **`AxisDescription`**；而它的 **`AxisRange`** 是**轴的窗口**（min/max + axisLength + scale + tickUnit）。**实质对，名字反了** | 名字撞车 |
+| 3 | `chart/DirtyRange.java` 与 `2026-09-20-jfgl-chart-framework-design.md` §5.1 说"chart-fx 的脏位是**图表级的一个全局标志**" | 实际是**每个 `DataSet` 自己的一张位掩码**（`io.fair_acc.dataset.events.ChartBits`，**24 个常量**，按**类别**：加/删/范围/名字/样式/元数据/置换…，位宽有 `> 32 → AssertionError` 钉死）。**"没有脏区间"这个实质结论完全成立**，但描述不准 | 稻草人 |
+
+**第 3 条最该改**：把它描述成"一个全局布尔"，会让熟悉 chart-fx 的人**一眼看出转述不准、
+从而怀疑整段论证**——哪怕结论是对的。
+**改成**"它的脏位是**类别**（哪一类变了），不是**区间**（哪一段变了）"，
+而且顺势给出一个**该抄没抄**的改进方向：
+**`dirtyRange` 可以升级成"类别 + 区间"两级判据**——"只改了颜色"这类变更就根本不必去问区间。
+
+### 4.5.5 这一节的诚实边界
+
+- 两个参考项目**没有跑构建**，JFGL 也没跑；对比结论全部来自读源码。
+- chart-fx 读了约 25 个文件的关键段（含代理），**`chartfx-math`（100+ 文件）、
+  `chartfx-samples`、`plugins/`、`hexagon` / `marchingsquares` / `financial` 渲染器、
+  所有测试都没读**；fxcharts 读了约 20 个文件（共 275），
+  **`eu.hansolo.fx.geometry`（约 4000 行的自有几何库）没读**。
+- **4.5.1 那条结论的强度：只有一半站得住，另一半已被反证**（见 4.5.1 里那个 ★★ 块）。
+  **"均值写回几何、min/max 进误差数组、折线只读均值"这三条机制是从代码路径读出来的、
+  且已逐行核实**；但**"所以在画面上看不见"没有像素证据，而且默认 `ErrorStyle.ERRORCOMBO`
+  会把那两个数组画出来**——所以初稿里"三条独立证据"之一是错的。
+  **据它立规矩（"不许取均值"）是对的，但依据是"结构"而不是"尖峰会消失"。**
+- 轴 1 里"索引缓冲能省 1/3 顶点处理"是从 `VertexFormat` 24 字节 + 无 `drawElements`
+  **推的，没有实测**——而 JFGL 自己的实测结论是"瓶颈在前端（图元装配/光栅化）"，
+  那正是顶点数的线性函数。**这条与它自己的测量方向一致，值得实测一次**，但只列为候选、不是结论。
+
+---
+
 ## 5. 我**没有**评审的（诚实边界）
 
 写清楚这个比多写三条优点有用——下面的结论我都没有证据。
