@@ -88,17 +88,26 @@ mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime
 **退出码 0 要过两道闸门，两道都不可省**（一条命令里跑完）：
 
 1. **`onInit` 里的纯计算自检**（`selfCheckShapeMath`，输出前缀 `[自检]`）——
-   **12 条**，末行也打 `[自检] 全部通过`。它**与自检模式无关**，正常跑 demo 也执行；
+   **21 条**，末行也打 `[自检] 全部通过`。它**与自检模式无关**，正常跑 demo 也执行；
    失败时打 `[自检] 失败 N 项，demo 不可信，退出` 并退 1，
-   **不会**打「已评估 k/11」（那句话属于第二道闸门，别把它当成唯一的判据）。
+   **不会**打「已评估 k/14」（那句话属于第二道闸门，别把它当成唯一的判据）。
    它崩在断言里时另有一行 stderr 定位（见上面 `stderr.encoding` 那条）。
-2. **合成事件脚本**（输出前缀 `[自检-合成]`）——**11 条**，末行 `[自检-合成] 全部通过`。
-   失败或超时（看门狗 60 秒 / 脉冲上限 900）退 1，并打 **已评估 k/11**——
+2. **合成事件脚本**（输出前缀 `[自检-合成]`）——**14 条**，末行 `[自检-合成] 全部通过`。
+   失败或超时（看门狗 60 秒 / 脉冲上限 900）退 1，并打 **已评估 k/14**——
    `k` 是"真的被求过值"的条数，不是"总共"（被静默跳过的断言比失败的更坏）。
 
-它证的是**合成事件真能到达 `wireMouse` 那三个处理器**，以及坐标换算、拾取往返、回调交付、
-状态更新这四件事；它**没有**证"真实鼠标事件能到达画布"（合成事件绕过 JavaFX 拾取，
-那条由 `ClickVerifier` 的 `Robot` 探针管），也**没有**证画面对不对。
+它证的是**合成事件真能到达 `wireMouse` 那四个处理器**（PRESSED / DRAGGED / RELEASED /
+**MOVED**——最后一个只有虚线预览用，而它是"没有键按下也要跟鼠标"的唯一输入源），
+以及坐标换算、拾取往返、回调交付、状态更新这四件事；它**没有**证"真实鼠标事件能到达画布"
+（合成事件绕过 JavaFX 拾取，那条由 `ClickVerifier` 的 `Robot` 探针管），也**没有**证画面对不对。
+
+> **★ 2026-09-26：两点式图形（矩形 / 圆 / 椭圆 / 直线）从"拖拽"改成"点两下"**，
+> 拾取选中从"左键单击"挪到**右键只按不拖**，新增 `Esc` 取消、虚线预览跟随鼠标、
+> 以及**圆的尺规变更**（从"内切于拖拽框"改成"圆心 = 第一点、半径 = 到第二点的距离"）。
+> 自检因此从 11 条改写成 **14 条**（①②③④ 由 `clickAt`/`clickRight` 驱动，
+> 新增 ⑤ 圆的尺规 / ⑥ `Esc` / ⑦ 两点式上拖拽什么都不做）。
+> `dragFromTo` 现在只剩一处用途：⑦ 那条**反面**断言。
+> 术语与取舍理由见 `docs/superpowers/specs/2026-09-24-jfgl-demo-design.md` §4.2。
 
 > **★ JavaFX + GL 应用的退出路径：`exitProcess` 会跑关闭钩子，而钩子会与 JavaFX 自己的
 > 关停并发碰 GL/D3D——实测撞出过原生崩溃。** 任何人写这类应用都会踩，与自检无关。
@@ -952,6 +961,20 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
   - **`Gc` 没有公开 `ChartTextMetrics`**：自己算布局要重写一遍口径
     （`lineHeight = fontSize × ChartLayout.LINE_HEIGHT_FACTOR`）。重写歪了网格与标题带就
     对不上，而画面只是"看着有点挤"。demo 里的 `GcTextMetrics` 就是这份重写。
+  - **`Gc` 没有暴露虚线描边**：`StrokeGenerator.strokeDashed(...)`（弧长切分、dash 模式 +
+    相位）**存在且有单测**（`StrokeDashTest`），但 `Gc` 的描边路径只调实线那个 `stroke(...)`。
+    于是任何想画虚线的应用都得在应用层重写一遍弧长切分——`example/demo/DemoShapes.kt` 的
+    `strokeDashedPolyline` 就是这么做的（**只用预览**：提交时仍然走 `Gc` 的
+    `fillRect` / `fillCircle` / `fillEllipse` / `drawLine` / `fillPolygon` / `strokePath`，
+    所以助手坏掉最多是预览难看，画出来的东西与它无关）。
+    与「`Gc` 没公开 `ChartTextMetrics`」同族：**能力在库里、但没接到公开 API 上**。
+    **它的闸门在哪、不在哪**（别高估）：`DemoShapes.kt` 里有一个
+    `isUsableDashPattern(on, off, pathLength)` 纯函数，`DemoShapeMath.kt` 的 ⑩/⑩b/⑩c
+    有 9 条断言钉它（含 `MAX_DASH_SEGMENTS` 的**边界两侧**与 `NaN` / `+Inf` / 和溢出）。
+    但那些是**判据的单元测试，不是行为测试**——只比较布尔值，**没有一条跑循环**。
+    所以：**"迭代有上界"是由判据的定义 + 论证保证的，不是验出来的；循环本身没有闸门。**
+    接线那一半（锚点 → `onMove` → 预览轮廓 → 虚线描边返回了）由 `JfglDemo` 的
+    合成事件自检 ① 用末尾探针 `previewDashedFrames` 钉住。
   - **没有"可拾取图元列表"抽象**：每个应用都要自己维护
     `列表 + 可变 pickId + register/unregister 配对 + 选中集的跨线程可见性`。
   - **`jfgl-javafx` 跑不了单测**：pom 里没有 junit、没有 surefire，kotlin 插件也只配了
