@@ -2133,7 +2133,8 @@ class JfglDemoApp : Application() {
                 val ax = nx(0.22) * scale
                 val ay = ny(0.58) * scale
                 val expR = hypot(nx(0.30) * scale - ax, ny(0.70) * scale - ay)
-                val dCenter = if (c == null) Double.NaN else hypot((c.cx - ax).toDouble(), (c.cy - ay).toDouble())
+                // `c.cx` 是 Float、`ax` 是 Double ⇒ 减法已是 Double，不用再 `toDouble()`。
+                val dCenter = if (c == null) Double.NaN else hypot(c.cx - ax, c.cy - ay)
                 val dR = if (c == null) Double.NaN else abs(c.r - expR)
                 val ok = s.size == 4 && c != null && dCenter <= 1.0 && dR <= 1.0
                 check(
