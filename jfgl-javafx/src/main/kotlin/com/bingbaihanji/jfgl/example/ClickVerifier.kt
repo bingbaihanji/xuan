@@ -386,6 +386,11 @@ class ClickVerifierApp : Application() {
     override fun start(stage: Stage) {
         val bridge = FXGLTransfer()
 
+        // ★ 回读拒绝守卫（实现见 MsaaVerifier.kt 的 requirePixelReadback）：本校验器的读数
+        //   全部来自 glReadPixels，而多采样画布上那次调用是**非法操作**——它会读回全 0，
+        //   然后让下面每一条断言报"画面全黑"式的假失败。
+        requirePixelReadback(bridge)
+
         // 注册 payload。**必须在 onInit 里**：start() 的此刻 GL 还没初始化，
         // gc() 返回 null，注册会静默不执行——然后所有探针都会拿到 null payload。
         bridge.onInit {

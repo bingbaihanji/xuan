@@ -329,6 +329,16 @@ class FftVerifierApp : Application() {
 
     override fun start(stage: Stage) {
         val bridge = FXGLTransfer()
+        // ★ 回读拒绝守卫（实现见 MsaaVerifier.kt 的 requirePixelReadback）。
+        //   ⚠️ 本校验器与其余六个的处境**不同**，照实写：它**不画任何像素**，读的是 SSBO
+        //   （`glGetBufferSubData`），那条路与画布帧缓冲的采样数**无关** ⇒ 多采样画布
+        //   **不会**让它读回全 0。**实测**（把这道守卫暂时短路 + 把 msaa 改成 4 跑一次）：
+        //   50 条断言全过、输出与 msaa=0 那一次**逐行相同**——**只有那条耗时读数会漂**
+        //   （0.074 ms → 0.088 ms；那是 GPU 时钟不是 MSAA，见 CLAUDE.md 的「GPU 时钟会骗人」）。
+        //   这里仍然挂同一道守卫，理由是**口径统一**：七个校验器一律 `msaa=0` 这条规则
+        //   比"每一个各自判断自己受不受影响"更不容易出错——而后者恰恰是"漏掉一个"的温床。
+        //   ★ 也就是说：**这道守卫在这里是纪律，不是实测的必要性**，两者别混。
+        requirePixelReadback(bridge)
         // 只在 onRender 里跑：GL 上下文只在 GLCanvas 的这几个回调里是当前的
         // （见 CLAUDE.md 的「线程模型」）。本校验器不画任何东西——它要的是 GL 上下文。
         bridge.onRender { verifyOnce() }

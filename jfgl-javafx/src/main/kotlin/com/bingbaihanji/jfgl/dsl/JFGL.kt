@@ -106,6 +106,50 @@ class JFGL {
     val overlay: Pane by lazy { Pane().apply { isPickOnBounds = false } }
 
     /**
+     * 抗锯齿配置对象。**永远非空**——没调用过 [antialias] 时它就是那份默认值
+     * （`msaa = 0`），于是建窗口那一侧不必判空。
+     */
+    internal val antialiasConfig = AntialiasConfig()
+
+    /**
+     * 配置**多重采样抗锯齿（MSAA）**。它是两个抗锯齿开关里的**构造时**那一个。
+     *
+     * <h2>`msaa` 只能在建窗口时给</h2>
+     * <p>采样数是**帧缓冲的属性**：`GLCanvas` 只有 `getMsaa()`、没有 setter（实测 jar 的公开签名），
+     * 所以这个块必须在**建窗口之前**执行——`jfgl { }` 的配置块正好满足这一点
+     * （它跑在 `Application.launch` 之前）。**运行期改它没有任何效果**，
+     * 这一点无法在 API 上拦住，所以写在这里。
+     *
+     * <h2>默认 0，而且这是承重的</h2>
+     * <p>`msaa > 0` 时**像素回读会失效**：多采样帧缓冲上 `glReadPixels` 是**非法操作**
+     * （实测 `GL_INVALID_OPERATION`，读出来全是 0），而本仓库的**七个像素校验器**
+     * 全部靠它回读 ⇒ 它们会报一大堆"画面全黑"式的**假失败**。
+     * 见 [com.bingbaihanji.jfgl.glview.FXGLTransfer.canReadPixels]——那条守卫是这件事的
+     * 唯一判据，而它由 `example/MsaaVerifier.kt` 用 `canReadPixels == (glGetError == 0)`
+     * 钉着。（**拾取不受影响**，实测 `msaa=4` 下 `pick` / `pickRect` 与 `msaa=0` 逐项相同。）
+     *
+     * <h2>想要细线质量，用 `Gc.antialias`，不要用这个</h2>
+     * <p>两个开关的分工是"**几何知不知道自己的中心线**"：MSAA 擅长**填充**的边缘，
+     * 而**细线/描边**（含图表系列）由 `gc.antialias = true` 走解析式羽化——
+     * 它是**运行期**的（进 `save`/`restore` 状态栈，可以只给某一条线开），
+     * 而且**不牺牲回读**。所以本仓库的推荐是：**细线开 `Gc.antialias`，
+     * 填充要抗锯齿才考虑 `msaa`**。
+     *
+     * <p>典型用法：
+     * ```kotlin
+     * jfgl {
+     *     antialias { msaa = 4 }        // 只在需要填充边缘平滑时
+     *     onRender { antialias = true; drawLine(...) }   // 细线走这条
+     * }
+     * ```
+     *
+     * @param block 配置块，接收者为 [AntialiasConfig]
+     */
+    fun antialias(block: AntialiasConfig.() -> Unit) {
+        antialiasConfig.block()
+    }
+
+    /**
      * 设置**场景图就绪**回调：在 JavaFX 应用线程上、窗口显示之前调用一次，
      * 参数是刚建好的 [Scene]。
      *
@@ -232,6 +276,27 @@ class JFGL {
 }
 
 /**
+ * 抗锯齿配置。现在只有一个字段，但它是**可扩展的口子**：抗锯齿的其余形态
+ * （若将来有）也挂在同一个块里，调用方的写法不用变。
+ *
+ * <p>它只在**建窗口之前**被读一次（[JFGLApplication.start] 里构造 [FXGLTransfer] 时），
+ * 理由见 [JFGL.antialias]。
+ */
+class AntialiasConfig {
+
+    /**
+     * 多重采样的采样数，**默认 0（关）**。
+     *
+     * <p>**只在构造 `GLCanvas` 时生效**——运行期改它不会有任何效果。
+     * 典型取值 2 / 4 / 8（本机 `GL_MAX_SAMPLES` = 32）。
+     *
+     * <p>`> 0` 时像素回读失效（见 [FXGLTransfer.canReadPixels]），
+     * 所以默认是 0：本仓库的七个像素校验器全部靠回读。
+     */
+    var msaa: Int = 0
+}
+
+/**
  * JavaFX 应用外壳：只负责搭出窗口并把 [FXGLTransfer] 的 GL 画布放进场景图。
  *
  * <p>之所以用伴生对象传递配置：`Application.launch` 要求目标类有一个无参构造器并由 JavaFX
@@ -262,7 +327,8 @@ internal class JFGLApplication : Application() {
      */
     override fun start(stage: Stage) {
         val config = config ?: error("JFGL 配置缺失：请通过 jfgl { } 启动，不要直接 launch JFGLApplication")
-        val bridge = FXGLTransfer()
+        // MSAA 只在这里给一次：采样数是帧缓冲的属性，GLCanvas 没有 setter（见 JFGL.antialias）。
+        val bridge = FXGLTransfer(msaa = config.antialiasConfig.msaa)
         bridge.onInit {
             // 走到这里 Gc 必然已经创建好；用 let 兜住"未来某天接线顺序变了"的情况，
             // 而不是用 !! 在回调里制造一个无从定位的空指针。

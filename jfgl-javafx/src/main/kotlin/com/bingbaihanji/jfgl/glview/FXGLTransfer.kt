@@ -36,7 +36,12 @@ import org.lwjgl.opengl.GL11.*
  *
  * @param executor OpenGL 实现库（默认 LWJGL_MODULE）
  * @param flipY Y 轴翻转
- * @param msaa 多重采样抗锯齿
+ * @param msaa 多重采样抗锯齿的采样数。**默认 0**（关）；**只能在构造时给**
+ *   ——采样数是帧缓冲的属性，`GLCanvas` 没有 setter（实测）。
+ *   `msaa > 0` 会让像素回读失效，见 [canReadPixels]。
+ *   它是**公开只读**的：七个校验器的回读守卫要把这个值打进失败信息
+ *   （"画布是 msaa=4 的多采样 FBO"），而 `example/MsaaVerifier.kt` 还要拿它
+ *   核对"请求值有没有真的生效"。
  * @param fps 目标帧率
  * @param swapBuffers 交换链缓冲数
  * @param interopType 互操作类型
@@ -50,7 +55,7 @@ import org.lwjgl.opengl.GL11.*
 class FXGLTransfer(
     private val executor: GLExecutor = LWJGL_MODULE,
     flipY: Boolean = GLCanvas.Defaults.FLIP_Y,
-    msaa: Int = GLCanvas.Defaults.MSAA,
+    val msaa: Int = GLCanvas.Defaults.MSAA,
     fps: Double = GLCanvas.Defaults.FPS,
     swapBuffers: Int = GLCanvas.Defaults.SWAP_BUFFERS,
     interopType: GLInteropType = GLCanvas.Defaults.INTEROP_TYPE,
@@ -197,6 +202,26 @@ class FXGLTransfer(
     // 可选：暴露画布的宽高（DPI 缩放后）
     val scaledWidth: Int get() = canvas.scaledWidth
     val scaledHeight: Int get() = canvas.scaledHeight
+
+    /**
+     * 当前画布能否用 `glReadPixels` 回读像素。**`msaa > 0` 时不能。**
+     *
+     * <p>理由已实测（`example/MsaaVerifier.kt` 把它逐次钉着）：多采样帧缓冲上
+     * `glReadPixels` 直接返回 `GL_INVALID_OPERATION`，读出来是全 0
+     * （不是"读到旧帧"、也不是"读到黑"——是**那次调用整个非法**）。
+     *
+     * <p>本仓库的全部七个像素校验器都靠它回读。**没有这条守卫，它们会读回全 0
+     * 然后报一大堆"画面全黑"式的假失败**——那比"明确拒绝"坏得多：
+     * 假失败会让人去查渲染，而真因在配置。
+     *
+     * <p>⚠️ **不受影响的是拾取**：拾取 FBO 是**独立创建的单采样** FBO
+     * （`gl/Framebuffer` 明文写着"恒为单采样"），实测 `msaa=4` 下
+     * `pick` / `pickRect` 与 `msaa=0` **逐项相同**。所以"`msaa>0`"与
+     * "拾取坏了"是两回事，别把这一条读成后者。
+     *
+     * @return `msaa <= 0` 时为 true；`msaa > 0` 时为 false
+     */
+    val canReadPixels: Boolean get() = msaa <= 0
 
     // 可选：修改帧率（动态）
     var fps: Double

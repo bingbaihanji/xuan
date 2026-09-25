@@ -284,6 +284,10 @@ class PathVerifierApp : Application() {
 
     override fun start(stage: Stage) {
         val bridge = FXGLTransfer()
+        // ★ 回读拒绝守卫（实现见 MsaaVerifier.kt 的 requirePixelReadback）：本校验器的读数
+        //   全部来自 glReadPixels，而多采样画布上那次调用是**非法操作**——它会读回全 0，
+        //   然后让下面每一条断言报"画面全黑"式的假失败。
+        requirePixelReadback(bridge)
         // 绘制回调也包一层：GL 线程上一个没接住的异常会让 JVM 以 0 正常退出，
         // 校验器就会报一个**静默的绿**（下面 verifyOnce 里那层是同样理由）。
         bridge.onFrame { gc -> drawFrame(gc) }
