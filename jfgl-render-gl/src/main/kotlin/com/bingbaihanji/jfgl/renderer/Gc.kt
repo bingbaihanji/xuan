@@ -84,10 +84,12 @@ class Gc constructor(private val batch: RenderBatch) {
      * <ol>
      *   <li><b>本类自己的描边</b>（[strokeOutline] / [emitTriangles]）——
      *       <b>只影响描边</b>：`Gc` 自己的填充与文本不受影响（它们本来就写 `aEdge = (0,0)`）；</li>
-     *   <li><b>图表系列</b>（Task 5 接上的第七个消费者）：经 [chartsLazy] 里那个
-     *       supplier 传给 `ChartRenderer`，再由六个渲染器各自作为 `uAntialias`
+     *   <li><b>图表系列</b>（Task 5 接上的一路：**六个**渲染器——折线 / 散点 / 阶梯 /
+     *       面积 / 柱状 / 频谱，与第 1 条合计七路消费者）：经 [chartsLazy] 里那个
+     *       supplier 传给 `ChartRenderer`，再由这六个各自作为 `uAntialias`
      *       传给片段着色器。**这一路里包含填充**（面积图的填充、柱状图的柱）
-     *       与散点的标记点——所以"只影响描边"这句话**只对第 1 条成立**。</li>
+     *       与散点的标记点（`LINE_AND_MARKERS` 的那一半走的就是散点渲染器）
+     *       ——所以"只影响描边"这句话**只对第 1 条成立**。</li>
      * </ol>
      * <p>于是一个应用想给**图表数据系列**开 AA，**设的就是这个属性**；
      * 不要另加一个"图表专用的 AA 开关"——同一件事摊成两处，迟早一处开一处没开，
