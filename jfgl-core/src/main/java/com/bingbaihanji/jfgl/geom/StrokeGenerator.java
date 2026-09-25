@@ -143,10 +143,17 @@ public final class StrokeGenerator {
      *       {@code ±1} 正是两条真实外缘，{@code +} 在
      *       {@code n = (-dy/len, dx/len)} 那一侧（即该段行进方向的左法线侧）。</li>
      *   <li><strong>沿向</strong>：到最近端帽的沿路径距离，同样除以半线宽。
-     *       开放路径取 {@code min(到起点, 到终点)} ⇒ 端线处恰为 0、中段最大、<strong>恒 ≥ 0</strong>；
+     *       <strong>{@code 0} 就是端帽线：带内为正，带外为负</strong>——
+     *       片段着色器正是靠这个符号区分"在线内"与"在线外"。
+     *       开放路径取 {@code min(到起点, 到终点)} ⇒ 端线处恰为 0、中段最大；
      *       闭合路径没有端帽，取 {@code 弧长 + 全长}，从而<strong>没有靠近 0 的顶点</strong>
      *       （否则会在路径起点凭空造出一条羽化边）。
-     *       端帽几何（SQUARE / ROUND）自己的顶点沿向可以小于 0——见 {@link #emitCap}。</li>
+     *       端帽几何（SQUARE / ROUND）自己的顶点沿向可以小于 0——见 {@link #emitCap}。
+     *       <p>还有一条值得写下来的性质：<strong>平头端的"带外"不需要任何特判</strong>。
+     *       着色器要的那圈端帽 fringe，只要把折线在两端各延长一点再交给本类即可——
+     *       延长部分的弧长大于全长，{@code min(arc, totalLength - arc)} 自然落到负区间。
+     *       这也是"端点外侧"在本类里唯一的表达方式：{@link #stroke} 本身从不发射端线以外的几何
+     *       （{@link Cap#BUTT} 直接不发射，SQUARE / ROUND 发射的端帽另有自己的沿向口径）。</li>
      * </ul>
      *
      * <p><strong>不变量</strong>：所有值都是有限值，不会出现 {@code NaN} / {@code Infinity}。
@@ -433,7 +440,8 @@ public final class StrokeGenerator {
      * 把沿路径的弧长换算成"沿向边距"（已归一化到半线宽）。
      *
      * <p>开放路径取"到<strong>最近</strong>端帽的距离" ⇒ 两端附近接近 0、中段最大
-     * （{@code totalLength/2/half}）。闭合路径没有端帽，取 {@code arc + totalLength}
+     * （{@code totalLength/2/half}）；弧长越过全长（调用方把折线延长出去的情形）则为负，
+     * 与"带外为负"的口径一致。闭合路径没有端帽，取 {@code arc + totalLength}
      * ⇒ <strong>恒 ≥ {@code totalLength/half}</strong>，远离 0 ⇒ 那片区域的沿向测试恒为
      * "完全覆盖"，不会在路径起点<strong>凭空造出一条羽化边</strong>。
      *
@@ -445,7 +453,7 @@ public final class StrokeGenerator {
      * @param totalLength 整条路径的总弧长
      * @param half        半线宽
      * @param closed      是否闭合
-     * @return 沿向边距（开放路径两端为 0、中段最大；闭合路径恒 ≥ {@code totalLength/half}）
+     * @return 沿向边距（开放路径：端线处为 0、带内为正、越过端线为负；闭合路径恒 ≥ {@code totalLength/half}）
      */
     private static float alongAt(float arc, float totalLength, float half, boolean closed) {
         float d = closed ? (arc + totalLength) : Math.min(arc, totalLength - arc);

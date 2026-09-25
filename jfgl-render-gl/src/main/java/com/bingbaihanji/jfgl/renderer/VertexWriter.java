@@ -222,7 +222,9 @@ public final class VertexWriter {
      * @param premultipliedRgba 预乘 alpha 后的 RGBA 颜色
      * @param id               拾取 ID
      * @param edgeCross        横向：到中心线的有符号距离 ÷ 半线宽（{@code ±1} = 两条真实外缘）
-     * @param edgeAlong        沿向：到最近端帽的沿路径距离 ÷ 半线宽（<strong>恒 ≥ 0</strong>）
+     * @param edgeAlong        沿向：到最近端帽的沿路径距离 ÷ 半线宽
+     *                         （{@code 0} = 端帽线，<strong>带内为正、带外为负</strong>；
+     *                         填充与文本写 0，它们靠 {@code fwidth == 0} 与描边区分）
      * @throws IllegalStateException 尚未调用 {@link #setState} 时；
      *                               或缓冲区已写满、消费方始终没有执行帧中途 flush 时
      */
