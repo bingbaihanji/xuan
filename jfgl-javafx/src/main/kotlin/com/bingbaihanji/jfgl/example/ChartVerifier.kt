@@ -100,6 +100,12 @@ import kotlin.system.exitProcess
  * 只有那两条 ★ 失败，其余 12 条全绿）。这与折返图那条判据（[ZIG_VALUES]）是同一件事，
  * 只是这里把"两个实例之间"的分辨尺度交给了 FFT 的主瓣。
  *
+ * <p>Task 5（子项目 A 的抗锯齿）补了<b>图表系列的解析式 AA</b> 那一节。它守的是
+ * 「{@code uAntialias} 真的接到了每一个渲染器上」——而漏接一个的表现是
+ * <b>那一种图型没有 AA、其余都有</b>，混在图里几乎注意不到；折线那一对另外按
+ * 四条判据判（关时无过渡 / 开时每列一个过渡 / 线心纯色数两模式相等 / 墨量对解析值）。
+ * **AA 默认关**，所以这一节之外的全部像素期望一字未改——它同时是那条默认值的闸门。
+ *
  * <h2>观察期与校验期</h2>
  *
  * <p>第 1 条需要"滚动若干帧"才成立（一帧是量不出增量的），第 3 条需要"前后两帧"，
@@ -956,6 +962,164 @@ private const val OVER_E_MARKER_RADIUS = 3f
 /** 变体 C 的文字墨迹的判别色：随便一个不与其它颜色冲突的 RGB。 */
 private val overSeriesRgb = 0xD07020
 
+// ---------------------------------------------------------------------------
+// Task 5：图表系列的解析式抗锯齿（顶点着色器的 vEdge + 片元的 uAntialias）
+//
+// 系列**不进 RenderBatch**（它们在 Gc.flush() 处当场 instanced 绘制），所以 Task 1 的
+// 顶点格式与它们无关——它们各自在顶点着色器里多算一个 varying，片元按同一条覆盖率公式
+// 羽化。下面这组判据与 PipelineVerifier 的 ★ 抗锯齿一节**同构**（四条），
+// 几何换成了图表画得出来的形状。
+//
+// ★ 几何与相位：每一个期望值都可以手算
+//   绘图区 300×22，y 窗口 [0,1] ⇒ sy(v) = AA_PLOT_Y + (1 − v)·22。
+//   两个相位（同一个折线图里的两条系列，一上一下，互不重叠）：
+//     A：v = 0.5  ⇒ 带心 723.25（**k + 0.25** 那一档）
+//     B：v = 0.25 ⇒ 带心 728.75（k + 0.75 那一档，与 A 关于像素栅格镜像）
+//   线宽 3 ⇒ 半宽 b = 1.5 ⇒ 带 = 带心 ± 1.5。
+//   覆盖率斜坡**恒为 1 个设备像素宽**（fwidth(vEdge) 就是 vary 每像素的变化量，
+//   与几何尺寸、缩放都无关）⇒
+//       cov = clamp(b + 0.5 − |q|, 0, 1)，q = 像素中心到带心的距离
+//   ⇒ cov = clamp(2 − |q|)。
+//
+//   相位 A：像素中心在 722.5 / 723.5 / 724.5 的三行落进带内
+//     （|q| = 0.75 / 0.25 / 1.25），其余行中心在带外（|q| = 1.75 ⇒ 没有片元）。
+//     **三行都不是边界**（|q| ≠ 1.5）⇒ 不发生"中心正好压在边界上"的 tie。
+//     覆盖率 1 / 1 / 0.75 ⇒ 每列 2 个纯色 + 1 个过渡（过渡那行是**下方**那行）。
+//   相位 B：镜像 ⇒ 727（cov 0.75）/ 728 / 729（cov 1），过渡在上方。
+//
+//   ★ **两个相位都要**，不是冗余：把片元的 `abs(vEdge)` 写成 `vEdge`（变异）之后
+//   斜坡变成**单侧**的（cov = 2 − q，q 带符号），于是相位 A 照样给出一个 0.75 的
+//   过渡像素、②**照过**；只有相位 B 三行全变成满覆盖、② 才倒。
+//   只留 A 的话那条变异会活下来（实测的相位选择就是这么定的）。
+//
+// ★ 墨量的解析参照是 **2.75 px/列**，不是带的全宽 3：
+//   斜坡以**带边缘**为心、宽 1 px，而图表这条路径**几何没有外扩**（顶点着色器只画到
+//   真实边缘为止，与 Gc 路径"双向外扩 1 设备像素"不同）⇒ 斜坡在外侧的那一半
+//   **没有片元**，每列固定少 ∫₀^0.5 (0.5 − t) dt × 2 = **0.25 px**。
+//   这是**声明过的降级**（同 Gc 那条"压缩轴上真外缘之外的羽化被切掉"），不是缺陷。
+//   这个 3 − 0.25 与线宽无关：斜坡宽度恒为 1 px，被切掉的那半恒为 0.25。
+//
+// ★ **④ 的参照系必须是这个解析值，不能是"AA 关的那条"**（PipelineVerifier 的学费）：
+//   硬边在这个几何上恰好是 3.0 px/列（三行全满覆盖，**比 AA 开多 8.3%**）——
+//   写成"两者相等"会是一条**恒假**断言。（45° 斜线上硬边比真实面积**少** 11.6%，
+//   差的方向由几何决定，不是"硬边总偏少"。）
+//
+// ★ **相位是先决条件，不是自由参数**：上面每个读数都建立在"带心落在 k+0.25 / k+0.75"
+//   上。改 AA_PLOT_Y / AA_PLOT_H / AA_VALUE_A / AA_VALUE_B 里的任何一个都要重算一遍
+//   （窗口的行号、过渡像素的行号、墨量）。判据里那两条"前置"断言（见 verifySeriesAntialias
+//   开头的两段）就是为了让这件事**响亮地失败**——否则判据会悄悄滑到别的相位上继续
+//   通过，而它守的东西已经不在了。
+// ---------------------------------------------------------------------------
+
+/**
+ * AA 探针的绘图区：**帧缓冲最底下那一条**（y ∈ [712, 734)）。
+ *
+ * <p>为什么在那里：别的绘图区把画布占满了（见各自的常量说明），而这一条**是空的**——
+ * 缺口图与跨环绕图都止于 y = 710。回读的那 22 行**整行**都在帧缓冲里
+ * （实测帧缓冲 988×738），由 [aaPrecondition] 那两条断言守着：
+ * 越界时读数会全是背景色，而"全是背景"看起来像"AA 没生效"，归因就错了。
+ *
+ * <p>y 取 **712.25** 而不是整数，是相位需要的一部分（见上面那段推导）：
+ * `712.25 + 0.5×22 = 723.25`。
+ */
+private const val AA_PLOT_X = 20f
+private const val AA_PLOT_Y = 712.25f
+private const val AA_PLOT_W = 300f
+private const val AA_PLOT_H = 22f
+
+/**
+ * 回读窗的**顶边**（设备行，整数）。
+ *
+ * <p>画用的绘图区顶边在 [AA_PLOT_Y] = 712.25，而回读只能按整数行取——
+ * 于是**局部行 = 设备行 − [AA_GRAB_Y]**，下面每一个行号常量都按这条换算。
+ * 读数与判据全部用局部行，打印时同时给出设备行（否则失败信息里的行号
+ * 与上面那段推导对不上）。
+ */
+private const val AA_GRAB_Y = 712
+
+/** 探针的绘图区（画用，y 取相位要求的小数）与回读窗（**整行**，从 [AA_GRAB_Y] 那一行开始）。 */
+private val aaPlotRect = Rect(AA_PLOT_X, AA_PLOT_Y, AA_PLOT_W, AA_PLOT_H)
+private val aaGrabRect = Rect(AA_PLOT_X, AA_GRAB_Y.toFloat(), AA_PLOT_W, AA_PLOT_H)
+
+/** 样本数。窗口取 [0, 7] ⇒ 每样本 300/7 ≈ 42.857 px（**非整数**，柱与标记的竖直边因此也有小数相位）。 */
+private const val AA_POINTS = 8
+
+/**
+ * 两条系列的数值：0.5 与 0.25 ⇒ 带心 723.25（相位 A）与 728.75（相位 B）。见上面那段推导。
+ *
+ * <p>★ <b>两个相位不是冗余，别省掉一个</b>（实测，见 M1）：
+ * `abs(vEdge) → vEdge` 把斜坡变成**单侧**的，而相位 A 的外缘行恰好落在
+ * "单侧公式照样给出 0.75"的那一侧 ⇒ **相位 A 的 ② 照过**，只有相位 B 三行全变满覆盖、
+ * ② 才倒（实测：相位 A 100 个、相位 B **0** 个）。
+ * 换句话说：**一个相位能验"羽化存在"，只有两个相位才验得出"羽化是对称的"**。
+ */
+private const val AA_VALUE_A = 0.5
+private const val AA_VALUE_B = 0.25
+
+/** 线宽 3 ⇒ 半宽 1.5。见上面那段推导（相位是按它算的，改它就要重算）。 */
+private const val AA_LINE_WIDTH = 3f
+
+/** 面积图/柱状图的下沿（数值）：0.25 ⇒ 屏幕行 728.75，与带心 B 同一个相位。 */
+private const val AA_BASELINE = 0.25f
+
+/** 散点标记的半径（着色器里的边长是它的两倍）。 */
+private const val AA_MARKER_RADIUS = 2f
+
+/** 探针的背景与墨色：背景纯黑、系列纯白 ⇒ **红通道就是覆盖率 × 255**，墨量可以逐项手算。 */
+private const val AA_BG_RGB = 0x000000
+private const val AA_INK_RGB = 0xFFFFFF
+private const val AA_INK_ARGB = 0xFFFFFFFF.toInt()
+
+/** 墨色与背景之间的亮度差：`255 − 0 = 255`。墨量 = Σ(红通道) = 覆盖率之和 × 它。 */
+private const val AA_INK_LUMA = 0xFF
+
+/** AA 开的那些绘制帧（供 [aaProbeIsOn] 判断；关的那些不在这个集合里）。 */
+private val AA_ON_FRAMES = setOf(
+    AA_LINE_ON, AA_STEP_ON, AA_AREA_ON, AA_BAR_ON, AA_SCATTER_ON, AA_SPECTRUM_ON
+)
+
+/** 六个图型各两帧（关、开）。**每两帧用的是同一张图、同一块绘图区**，唯一的变量是开关。 */
+private const val AA_LINE_OFF = 20
+private const val AA_LINE_ON = 21
+private const val AA_STEP_OFF = 22
+private const val AA_STEP_ON = 23
+private const val AA_AREA_OFF = 24
+private const val AA_AREA_ON = 25
+private const val AA_BAR_OFF = 26
+private const val AA_BAR_ON = 27
+private const val AA_SCATTER_OFF = 28
+private const val AA_SCATTER_ON = 29
+
+/**
+ * 频谱那两帧取在**第二幕**（帧 25..49，单位幅度、峰在 bin 62）里。
+ *
+ * <p>不能取在第四幕（帧 75 起是全 NaN，一个像素都不画），也不该跨幕——
+ * 两帧的谱必须是同一张，否则"开"与"关"比的不再是同一样东西。
+ */
+private const val AA_SPECTRUM_OFF = 30
+private const val AA_SPECTRUM_ON = 31
+
+/** 测量窗（**局部**坐标：局部行 = 设备行 − 712，局部列 = 设备列 − AA_PLOT_X）。 */
+private const val AA_W = 100
+
+/** 窗的列范围：离线的两端各 100 px 以上，端帽与窗边界互不干扰。 */
+private const val AA_X0 = 100
+private const val AA_X1 = AA_X0 + AA_W
+
+/** 相位 A 的窗（行 8..13 = 设备行 720..725）与其中的过渡行（设备行 724，cov 0.75）。 */
+private const val AA_ROWS_A0 = 8
+private const val AA_ROWS_A1 = 14
+private const val AA_FRINGE_ROW_A = 12
+
+/** 相位 B 的窗（行 14..19 = 设备行 726..731）与其中的过渡行（设备行 727，cov 0.75）。 */
+private const val AA_ROWS_B0 = 14
+private const val AA_ROWS_B1 = 20
+private const val AA_FRINGE_ROW_B = 15
+
+/** 相位 A/B 的**线心**行（覆盖率恒为 1 的那两行）：A → 722、723；B → 728、729。 */
+private val AA_CORE_ROWS_A = 10..11
+private val AA_CORE_ROWS_B = 16..17
+
 /**
  * 校验器的启动入口。
  *
@@ -1412,6 +1576,23 @@ class ChartVerifierApp : Application() {
     private var spectrumSnapshotB: Shot? = null
     private var spectrumSnapshotC: Shot? = null
     private var spectrumSnapshotD: Shot? = null
+
+    // -----------------------------------------------------------------------
+    // Task 5 的 AA 探针：六个图型各两张（关 / 开），同样观察期抓、校验期断言
+    // -----------------------------------------------------------------------
+
+    private var aaLinesOff: Shot? = null
+    private var aaLinesOn: Shot? = null
+    private var aaStepOff: Shot? = null
+    private var aaStepOn: Shot? = null
+    private var aaAreaOff: Shot? = null
+    private var aaAreaOn: Shot? = null
+    private var aaBarOff: Shot? = null
+    private var aaBarOn: Shot? = null
+    private var aaScatterOff: Shot? = null
+    private var aaScatterOn: Shot? = null
+    private var aaSpectrumOff: Shot? = null
+    private var aaSpectrumOn: Shot? = null
 
     // -----------------------------------------------------------------------
     // 图型实验的四张图（柱状 / 面积 ×2 / 阶梯）
@@ -2359,6 +2540,120 @@ class ChartVerifierApp : Application() {
         return chart
     }
 
+    // -----------------------------------------------------------------------
+    // Task 5：AA 探针的六张图（几何与相位见文件上方那段推导）
+    // -----------------------------------------------------------------------
+
+    /** 探针图的系列：8 个等值样本、纯白、线宽 3。 */
+    private fun aaSeries(data: ArrayChartData, type: ChartType): Series =
+        Series("AA", data, type)
+            .color(AA_INK_ARGB)
+            .lineWidth(AA_LINE_WIDTH)
+            .markerSize(AA_MARKER_RADIUS)
+            .baseline(AA_BASELINE)
+            // ★ 填充必须**不透明**：默认的 fillAlpha = 0.5 会让面积填充的满覆盖色
+            // 变成灰（127/128），而判据的"过渡像素"就是按"既非背景也非纯墨色"数的——
+            // 那样一来 **AA 关**的那一帧也会数出一大堆"过渡像素"，① 恒假。
+            // （不是判据挑剔：那一堆灰确实是满覆盖，只是"满覆盖"不等于"纯白"。）
+            .fillAlpha(1f)
+
+    /** 造一张探针图：一块 [aaPlotRect]、8 个等值样本（值 = [value]）。 */
+    private fun buildAaProbe(value: Double, type: ChartType): Chart {
+        val data = ArrayChartData(
+            arrayOf(
+                AxisRange(0.0, (AA_POINTS - 1).toDouble(), "样本", ""),
+                AxisRange(0.0, 1.0, "值", "")
+            ),
+            arrayOf(
+                DoubleArray(AA_POINTS) { it.toDouble() },
+                DoubleArray(AA_POINTS) { value }
+            )
+        )
+        val xAxis = Axis(AxisType.LINEAR, data.axisRange(0))
+            .setDisplayLength(AA_PLOT_W.toDouble())
+            .setWindow(0.0, (AA_POINTS - 1).toDouble())
+        val yAxis = Axis(AxisType.LINEAR, data.axisRange(1))
+            .setDisplayLength(AA_PLOT_H.toDouble())
+        val chart = Chart(xAxis, yAxis)
+        chart.addLayer("AA").add(aaSeries(data, type))
+        return chart
+    }
+
+    /**
+     * 折线探针：**两条系列、两个相位**（同一条几何的两种相位，见文件上方那段推导）。
+     *
+     * <p>两条都在同一张图、同一层里，于是**一帧里的两条线必然用同一个 AA 开关**——
+     * 这正是"两次绘制只差一个 uniform"的写法：关与开是两帧，其余一切逐项相同。
+     */
+    private fun buildAaLineProbe(): Chart {
+        val dataA = ArrayChartData(
+            arrayOf(
+                AxisRange(0.0, (AA_POINTS - 1).toDouble(), "样本", ""),
+                AxisRange(0.0, 1.0, "值", "")
+            ),
+            arrayOf(DoubleArray(AA_POINTS) { it.toDouble() }, DoubleArray(AA_POINTS) { AA_VALUE_A })
+        )
+        val dataB = ArrayChartData(
+            arrayOf(
+                AxisRange(0.0, (AA_POINTS - 1).toDouble(), "样本", ""),
+                AxisRange(0.0, 1.0, "值", "")
+            ),
+            arrayOf(DoubleArray(AA_POINTS) { it.toDouble() }, DoubleArray(AA_POINTS) { AA_VALUE_B })
+        )
+        val xAxis = Axis(AxisType.LINEAR, dataA.axisRange(0))
+            .setDisplayLength(AA_PLOT_W.toDouble())
+            .setWindow(0.0, (AA_POINTS - 1).toDouble())
+        val yAxis = Axis(AxisType.LINEAR, dataA.axisRange(1))
+            .setDisplayLength(AA_PLOT_H.toDouble())
+        val chart = Chart(xAxis, yAxis)
+        chart.addLayer("A").add(aaSeries(dataA, ChartType.LINE))
+        chart.addLayer("B").add(aaSeries(dataB, ChartType.LINE))
+        return chart
+    }
+
+    private val aaLines = buildAaLineProbe()
+    private val aaStep = buildAaProbe(AA_VALUE_A, ChartType.STEP)
+    private val aaArea = buildAaProbe(AA_VALUE_A, ChartType.AREA)
+    private val aaBar = buildAaProbe(AA_VALUE_A, ChartType.BAR)
+    private val aaScatter = buildAaProbe(AA_VALUE_A, ChartType.SCATTER)
+
+    /** 本帧要画的探针图；不是探针帧时返回 null。 */
+    private fun aaProbeChart(n: Int): Chart? = when (n) {
+        AA_LINE_OFF, AA_LINE_ON -> aaLines
+        AA_STEP_OFF, AA_STEP_ON -> aaStep
+        AA_AREA_OFF, AA_AREA_ON -> aaArea
+        AA_BAR_OFF, AA_BAR_ON -> aaBar
+        AA_SCATTER_OFF, AA_SCATTER_ON -> aaScatter
+        // 频谱直接复用观察期那张图（它的环在帧 0 就写满了一整环，
+        // 而这两帧落在第二幕里，谱是干净的单频）。同一张图**换一块绘图区**画第二遍。
+        AA_SPECTRUM_OFF, AA_SPECTRUM_ON -> spectrumChart
+        else -> null
+    }
+
+    /**
+     * 画本帧的 AA 探针（不是探针帧时什么都不做）。
+     *
+     * <h2>黑底必须走 Gc 的批量，而且必须在 flush 之前</h2>
+     * <p>{@code gc.fillRect} 只是把顶点写进批处理缓冲，而批要等 {@code endFrame}
+     * 才提交——所以"先 fillRect、再 flush、最后 charts.draw"这个顺序不能动：
+     * 少了那个 flush，黑底会盖在数据系列**上面**（与主场景里那个标注矩形同一条规矩，
+     * 见 [LABEL_X]）。这里多出来的这一次 flush 是安全的：此刻批里只有这一块黑底
+     * （布局底色与移动方块早在主场景那一次 flush 里落定了）。
+     *
+     * <p>开关按帧取：**关与开用的是同一张图、同一块绘图区**，唯一变化的是
+     * {@code gc.antialias}——它在 draw 的入口被取一次快照（见 {@code ChartRenderer}）。
+     */
+    private fun drawAaProbe(gc: Gc, n: Int) {
+        val chart = aaProbeChart(n) ?: return
+        gc.fill = AA_BG_RGB or (0xFF shl 24)
+        gc.fillRect(AA_PLOT_X, AA_PLOT_Y, AA_PLOT_W, AA_PLOT_H)
+        gc.flush()
+        gc.antialias = n in AA_ON_FRAMES
+        gc.charts.draw(chart, aaPlotRect, gc.width, gc.height)
+        // 还回去：本帧后面还有别的绘制（标注矩形），它们不该带着探针的开关。
+        gc.antialias = false
+    }
+
     /**
      * `onFrame` 回调的入口：**异常必须在这里被接住**，而且帧号必须照常推进。
      *
@@ -2442,6 +2737,8 @@ class ChartVerifierApp : Application() {
             drawDecorChart(gc)
             // 左/右图例、底部标题、带子边界、轴标题：四个变体按帧轮换，同样只在观察期画。
             drawOverflowChart(gc, n)
+            // Task 5 的 AA 探针：六个图型各两帧（关 / 开），同样只在观察期画。
+            drawAaProbe(gc, n)
         }
 
         // 4) 标注：在图表**之后**画的普通图元。它必须盖在数据系列之上——
@@ -2678,6 +2975,21 @@ class ChartVerifierApp : Application() {
         if (frame == SPECTRUM_SHOT_B) spectrumSnapshotB = grab(h, spectrumRect)
         if (frame == SPECTRUM_SHOT_C) spectrumSnapshotC = grab(h, spectrumRect)
         if (frame == SPECTRUM_SHOT_D) spectrumSnapshotD = grab(h, spectrumRect)
+        // Task 5 的 AA 探针：六个图型各抓关、开两张（`frame` 是"已完成帧数"，
+        // 所以 `frame == AA_X_OFF + 1` 抓到的正是绘制帧 `AA_X_OFF` 的画面）。
+        // 也只在观察期画（理由同上："画面只有这 7 种颜色"那条断言不许改弱）。
+        if (frame == AA_LINE_OFF + 1) aaLinesOff = grab(h, aaGrabRect)
+        if (frame == AA_LINE_ON + 1) aaLinesOn = grab(h, aaGrabRect)
+        if (frame == AA_STEP_OFF + 1) aaStepOff = grab(h, aaGrabRect)
+        if (frame == AA_STEP_ON + 1) aaStepOn = grab(h, aaGrabRect)
+        if (frame == AA_AREA_OFF + 1) aaAreaOff = grab(h, aaGrabRect)
+        if (frame == AA_AREA_ON + 1) aaAreaOn = grab(h, aaGrabRect)
+        if (frame == AA_BAR_OFF + 1) aaBarOff = grab(h, aaGrabRect)
+        if (frame == AA_BAR_ON + 1) aaBarOn = grab(h, aaGrabRect)
+        if (frame == AA_SCATTER_OFF + 1) aaScatterOff = grab(h, aaGrabRect)
+        if (frame == AA_SCATTER_ON + 1) aaScatterOn = grab(h, aaGrabRect)
+        if (frame == AA_SPECTRUM_OFF + 1) aaSpectrumOff = grab(h, aaGrabRect)
+        if (frame == AA_SPECTRUM_ON + 1) aaSpectrumOn = grab(h, aaGrabRect)
     }
 
     /**
@@ -2796,6 +3108,268 @@ class ChartVerifierApp : Application() {
      * `drawError` 那条也是同一个坑的另一半：绘制期间的异常若被 GL 事件循环吞掉，
      * 表现就是"什么都没画，但退出码 0"。
      */
+    // -----------------------------------------------------------------------
+    // Task 5：AA 探针的读数与判定
+    // -----------------------------------------------------------------------
+
+    /**
+     * 一块区域里的"抗锯齿三件套"读数。
+     *
+     * <p>三者都由"**背景纯黑、墨色是一个不透明的已知值**"这条约定定义：
+     * **过渡像素 = 既非背景色也非墨色**的那些（AA 关时它必须恒为 0——硬边没有中间值）。
+     * 墨色取纯白时红通道就是"覆盖率 × 255"，墨量可以逐项手算（折线那四条判据用的就是它）。
+     *
+     * @param fringe 过渡像素数
+     * @param pure   纯墨色像素数
+     * @param ink    墨量（红通道之和；只有墨色是纯白时它才等于"覆盖率之和 × 255"）
+     */
+    private class AaStats(val fringe: Int, val pure: Int, val ink: Int)
+
+    /**
+     * 取一块区域的读数；坐标是 [aaGrabRect] 的**局部**坐标。
+     *
+     * <p>[inkRgb] 是这一张图里系列的**实际颜色**，不是恒定的纯白：
+     * 频谱探针复用观察期那张图，而它的系列色是紫色。写成"恒等于纯白"会让
+     * **AA 关**那一帧的每一个墨迹像素都算成"过渡像素"，① 于是恒假——
+     * 而那个失败看起来像"AA 关的时候也有羽化"，归因全错。
+     */
+    private fun aaStats(s: Shot, x0: Int, x1: Int, y0: Int, y1: Int,
+                        inkRgb: Int = AA_INK_RGB): AaStats {
+        // 快照的像素是**不含 alpha 的 RGB**（与全帧回读同一个口径），而调用方手上
+        // 通常是 ARGB 常量 ⇒ 这里统一去掉 alpha 那一字节。不去的话比较恒不成立
+        // （表现为"纯墨色 0 个、过渡 390 个"，看起来像"关着也在羽化"）。
+        val inkRgbRgb = inkRgb and 0xFFFFFF
+        var fringe = 0
+        var pure = 0
+        var ink = 0
+        for (y in y0 until y1) {
+            for (x in x0 until x1) {
+                val rgb = s.at(x, y)
+                when (rgb) {
+                    inkRgbRgb -> {
+                        pure++
+                        ink += (rgb shr 16) and 0xFF
+                    }
+                    // 背景的红通道就是 0，什么都不用加
+                    AA_BG_RGB -> Unit
+                    else -> {
+                        fringe++
+                        ink += (rgb shr 16) and 0xFF
+                    }
+                }
+            }
+        }
+        return AaStats(fringe, pure, ink)
+    }
+
+    /** 逐行的读数（失败时"过渡像素落在哪一行"必须是可读的，不能只有一个总数）。 */
+    private fun aaRowProfile(s: Shot, x0: Int, x1: Int, y0: Int, y1: Int): String =
+        (y0 until y1).joinToString("  ") { y ->
+            val st = aaStats(s, x0, x1, y, y + 1)
+            "r$y(设备${y + AA_GRAB_Y}):纯${st.pure} 过${st.fringe} 墨${st.ink}"
+        }
+
+    /**
+     * ★ 图表系列的解析式 AA：**六个图型各一对快照**（关 / 开），折线那一对按四条判据判。
+     *
+     * <p>几何与相位的推导在文件上方那段长注释里；这里只写"判据为什么长这样"。
+     *
+     * <h2>另外五个图型只判 ① ②（关时无过渡、开时有），折线按四条判</h2>
+     * <p>①② 是**接线判据**：每一个渲染器都必须真的把 {@code uAntialias} 传下去，
+     * 而"漏掉一个"在画面上只表现为"那一种图型没有 AA"——混在图里几乎注意不到。
+     * 断言的量（过渡像素的有无）**恰好就是那个 uniform 的效果本身**，
+     * 所以删掉任何一个渲染器里那一行，它对应那条 ② 就倒（六个逐一实测过）。
+     *
+     * <p>折线那一对另外按 ③④ 判（线心纯色数、墨量对解析值）——那两条需要**相位可控**
+     * 的几何，而水平线是唯一能精确手算的（见那段推导）。其余图型的边缘位置由
+     * 柱宽/标记半径/FFT 幅值决定，写不出精确的解析值，硬写出来的只会是"猜一个容差"。
+     *
+     * <p><b>AREA 的窗口是个例外，而且不能改宽</b>：面积图有**两样东西**带边界
+     * （填充自己的上下沿 + 那条轮廓线），而轮廓线走的是折线渲染器、有自己的
+     * uAntialias。窗口只取**基线**那一段——轮廓线够不到那里，于是② 失败**只可能**
+     * 是填充渲染器没接线（实测：删掉 AreaSeriesRenderer 那一行，恰好只倒这一条；
+     * 若窗口取整个绘图区，轮廓线的羽化会把这条判据撑住、变异就活下来了）。
+     */
+    private fun reportSeriesAntialias(w: Int, h: Int, report: (String, Boolean, String) -> Unit) {
+        println("\n-- ★ 图表系列的解析式抗锯齿：六个图型的 uAntialias + 折线的四条判据 --")
+
+        // ---- 前置：回读窗与相位（**先决条件，不是自由参数**）----
+        //
+        // 窗在帧缓冲最底下那一条。越界时读数会**全是背景色**——而"全是背景"
+        // 看起来像"AA 没生效"，归因就反了，所以它必须是第一条断言。
+        report("★ AA 前置：回读窗整块在帧缓冲里（x ∈ [${AA_PLOT_X.toInt()}, ${(AA_PLOT_X + AA_PLOT_W).toInt()})、" +
+                "y ∈ [$AA_GRAB_Y, ${AA_GRAB_Y + AA_PLOT_H.toInt()})）",
+            w >= (AA_PLOT_X + AA_PLOT_W).toInt() && h >= AA_GRAB_Y + AA_PLOT_H.toInt(),
+            "帧缓冲 ${w}x$h")
+
+        // 相位：由带心（= AA_PLOT_Y + (1 − v)·AA_PLOT_H）推出"哪些行被光栅化"，
+        // 再与上面那批**硬编码**的行号常量比。两者不一致说明有人动了绘图区或数值，
+        // 而判据还按旧相位在数——那时它会**继续通过**，但它守的东西已经不在了。
+        // 判据：像素中心落在带内（|q| < b）的那些行；q = 行中心 − 带心。
+        val centerA = AA_PLOT_Y + (1f - AA_VALUE_A.toFloat()) * AA_PLOT_H
+        val centerB = AA_PLOT_Y + (1f - AA_VALUE_B.toFloat()) * AA_PLOT_H
+        fun bandRows(center: Float): List<Int> =
+            (0 until aaGrabRect.height.toInt()).filter {
+                abs((AA_GRAB_Y + it + 0.5f) - center) < AA_LINE_WIDTH * 0.5f
+            }
+        fun nearestEdgeGap(center: Float): Float =
+            (0 until aaGrabRect.height.toInt()).minOfOrNull {
+                abs(abs((AA_GRAB_Y + it + 0.5f) - center) - AA_LINE_WIDTH * 0.5f)
+            } ?: 0f
+        val rowsA = bandRows(centerA)
+        val rowsB = bandRows(centerB)
+        report("★ AA 前置：相位 A 的带心 = 723.25、被光栅化的行 = [722, 723, 724]（局部 [10, 11, 12]）",
+            rowsA == listOf(AA_FRINGE_ROW_A - 2, AA_FRINGE_ROW_A - 1, AA_FRINGE_ROW_A),
+            "实测带心 $centerA、行 $rowsA（局部；设备行 ${rowsA.map { it + AA_GRAB_Y }}）" +
+                    "，期望 [${AA_FRINGE_ROW_A - 2}, ${AA_FRINGE_ROW_A - 1}, $AA_FRINGE_ROW_A]" +
+                    " ——不一致说明 AA_PLOT_Y / AA_VALUE_A / 线宽被动过，**四条判据的行号要重算**")
+        report("★ AA 前置：相位 B 的带心 = 728.75、被光栅化的行 = [727, 728, 729]（局部 [15, 16, 17]）",
+            rowsB == listOf(AA_FRINGE_ROW_B, AA_FRINGE_ROW_B + 1, AA_FRINGE_ROW_B + 2),
+            "实测带心 $centerB、行 $rowsB（局部；设备行 ${rowsB.map { it + AA_GRAB_Y }}）" +
+                    "，期望 [$AA_FRINGE_ROW_B, ${AA_FRINGE_ROW_B + 1}, ${AA_FRINGE_ROW_B + 2}]" +
+                    " ——同上前提")
+        // 没有像素中心正好压在带边缘上（tie 会让光栅化的取舍规则参与进来，
+        // 而那个规则不在我们的控制里）。实测余量 0.25 px。
+        val gapA = nearestEdgeGap(centerA)
+        val gapB = nearestEdgeGap(centerB)
+        report("★ AA 前置：没有像素中心落在带边缘上（tie 会让取舍规则进到读数里）",
+            gapA > 0.2f && gapB > 0.2f,
+            "最近的像素中心到带边缘 相位A ${"%.3f".format(gapA)} px、相位B ${"%.3f".format(gapB)} px")
+
+        val lineOff = aaLinesOff
+        val lineOn = aaLinesOn
+        if (lineOff == null || lineOn == null) {
+            report("★ AA 折线：关 / 开两张快照都在", false,
+                "关=${lineOff != null}，开=${lineOn != null}")
+            return
+        }
+
+        println("  折线窗 x∈[$AA_X0, $AA_X1)（局部；设备 x∈[${AA_X0 + AA_PLOT_X.toInt()}, " +
+                "${AA_X1 + AA_PLOT_X.toInt()})）")
+        println("  相位 A 行 $AA_ROWS_A0..${AA_ROWS_A1 - 1}（设备 ${AA_ROWS_A0 + AA_GRAB_Y}.." +
+                "${AA_ROWS_A1 - 1 + AA_GRAB_Y}）  AA 关：${aaRowProfile(lineOff, AA_X0, AA_X1, AA_ROWS_A0, AA_ROWS_A1)}")
+        println("  相位 A 行 $AA_ROWS_A0..${AA_ROWS_A1 - 1}  AA 开：${aaRowProfile(lineOn, AA_X0, AA_X1, AA_ROWS_A0, AA_ROWS_A1)}")
+        println("  相位 B 行 $AA_ROWS_B0..${AA_ROWS_B1 - 1}（设备 ${AA_ROWS_B0 + AA_GRAB_Y}.." +
+                "${AA_ROWS_B1 - 1 + AA_GRAB_Y}）  AA 关：${aaRowProfile(lineOff, AA_X0, AA_X1, AA_ROWS_B0, AA_ROWS_B1)}")
+        println("  相位 B 行 $AA_ROWS_B0..${AA_ROWS_B1 - 1}  AA 开：${aaRowProfile(lineOn, AA_X0, AA_X1, AA_ROWS_B0, AA_ROWS_B1)}")
+
+        val offA = aaStats(lineOff, AA_X0, AA_X1, AA_ROWS_A0, AA_ROWS_A1)
+        val onA = aaStats(lineOn, AA_X0, AA_X1, AA_ROWS_A0, AA_ROWS_A1)
+        val offB = aaStats(lineOff, AA_X0, AA_X1, AA_ROWS_B0, AA_ROWS_B1)
+        val onB = aaStats(lineOn, AA_X0, AA_X1, AA_ROWS_B0, AA_ROWS_B1)
+        // 线心那两行：相位 A 是局部 10、11；相位 B 是局部 16、17（覆盖率恒为 1）。
+        val coreOffA = aaStats(lineOff, AA_X0, AA_X1, AA_CORE_ROWS_A.first, AA_CORE_ROWS_A.last + 1).pure
+        val coreOnA = aaStats(lineOn, AA_X0, AA_X1, AA_CORE_ROWS_A.first, AA_CORE_ROWS_A.last + 1).pure
+        val coreOffB = aaStats(lineOff, AA_X0, AA_X1, AA_CORE_ROWS_B.first, AA_CORE_ROWS_B.last + 1).pure
+        val coreOnB = aaStats(lineOn, AA_X0, AA_X1, AA_CORE_ROWS_B.first, AA_CORE_ROWS_B.last + 1).pure
+
+        // ① AA 关：一条过渡像素都不许有（硬边没有中间值）。
+        report("★ AA 折线① AA 关时两条相位都没有过渡像素",
+            offA.fringe == 0 && offB.fringe == 0,
+            "相位A ${offA.fringe} 个、相位B ${offB.fringe} 个（都期望 0）")
+        // ② AA 开：每列恰好 1 个过渡像素（带心取的是 k+0.25 / k+0.75 两档，
+        // 带内三行的覆盖率是 1 / 1 / 0.75 ⇒ 每列**只有一个外缘行**是部分覆盖的）。
+        // 两条相位都要：`abs(vEdge) → vEdge` 那条变异把斜坡变成单侧的，
+        // 相位 A 照过、相位 B 才倒（见文件上方那段推导）。
+        report("★ AA 折线② AA 开时两条相位各有 $AA_W 个过渡像素（每列 1 个，相位 A 在下缘、相位 B 在上缘）",
+            onA.fringe == AA_W && onB.fringe == AA_W,
+            "相位A ${onA.fringe} 个、相位B ${onB.fringe} 个，期望各 $AA_W" +
+                    "（相位 A 的过渡行是局部 $AA_FRINGE_ROW_A＝设备 ${AA_FRINGE_ROW_A + AA_GRAB_Y}，" +
+                    "相位 B 是局部 $AA_FRINGE_ROW_B＝设备 ${AA_FRINGE_ROW_B + AA_GRAB_Y}）")
+        // ③ 线心（覆盖率恒为 1 的那两行）的纯色像素数两模式**精确相等**，且 = 2W。
+        // 写成"总纯色数相等"是一条**恒假**断言：AA 开时最外那一圈本来就会变成过渡像素，
+        // 总数必然略减（关 3W、开 2W）。线心离边缘足够远，两模式都是满覆盖。
+        report("★ AA 折线③ 线心（2 行）纯色像素数两模式精确相等、且 = ${2 * AA_W}",
+            coreOffA == coreOnA && coreOnA == 2 * AA_W &&
+                    coreOffB == coreOnB && coreOnB == 2 * AA_W,
+            "相位A 关=$coreOffA 开=$coreOnA；相位B 关=$coreOffB 开=$coreOnB，期望各 ${2 * AA_W}")
+        // ④ 墨量对**解析值** 2.75 px/列 × 亮度差 255 × W（推导见文件上方那段：
+        //    带的全宽 3 减去"斜坡在外侧被切掉的那 0.25"——图表这条路径几何不外扩，
+        //    与 Gc 的双向外扩不同；**这是声明过的降级**，与"压缩轴外缘之外的羽化被切掉"并列）。
+        // ⚠️ 参照系**不是**"AA 关的那条"：硬边在这个几何上恰好是 3.0 px/列，
+        //    比 AA 开**多** 8.3%——写成"两者相等"会是恒假断言（PipelineVerifier 的学费）。
+        //
+        // ⚠️ **容差只有一侧被实测过，照实说**：解析偏离实测 **−25**（= 每列 −0.25，因为
+        //    0.75 × 255 = 191.25 被驱动**向下**取整），可解释；但"驱动反向取整"（+0.25/列
+        //    ⇒ +25 ⇒ 70150）这一侧**本机没有出现过**，界 `0.5W + 2 = 52` 对它只是**推导值**
+        //    （每列 1 个过渡像素 × 8 位量化界 0.5）。**别把这个界读成余量**：
+        //    它挡的是"覆盖率整体没生效/斜坡宽度写错"那一类——实测变异（把折线的
+        //    `uAntialias` 恒传 `0f`）墨量变成硬边的 76500，偏离 **+6375 ≫ 52**。
+        val analytic = 2.75 * AA_INK_LUMA * AA_W
+        val tol = 0.5 * AA_W + 2
+        report("★ AA 折线④ 墨量 == 解析值（2.75 px/列 × 亮度差 255 × $AA_W = ${"%.0f".format(analytic)}）",
+            abs(onA.ink - analytic) <= tol && abs(onB.ink - analytic) <= tol,
+            "相位A 实测 ${onA.ink}、相位B 实测 ${onB.ink}，解析 ${"%.0f".format(analytic)}，" +
+                    "允许 ±${"%.0f".format(tol)}（每列 1 个过渡像素 × 8 位量化界 0.5）")
+        // ④ 对照：AA 关的墨量必须**精确**等于 3 px/列 × 255 × W。
+        // 它钉的是"关着的时候几何没有被外扩"——外扩一行就会多出 W × 255。
+        report("★ AA 折线④ 对照：AA 关的墨量 == 3 px/列 × 亮度差 255 × $AA_W（硬边几何没有被外扩）",
+            offA.ink == 3 * AA_INK_LUMA * AA_W && offB.ink == 3 * AA_INK_LUMA * AA_W,
+            "相位A 实测 ${offA.ink}、相位B 实测 ${offB.ink}，期望各 ${3 * AA_INK_LUMA * AA_W}")
+
+        // ---- 其余五个图型：接线判据（关时无过渡 / 开时有）----
+        //
+        // 窗口按各自几何取，**列取整块绘图区**（这几条的窗口只界定行：
+        // 柱的左右两条竖边、标记的四条边都可能落在窗内的任何一列上，
+        // 只取 100 列会把 8 个标记里的 6 个切到窗外，读数小得看不出问题）：
+        //   · AREA 只取**基线**那一段——曲线那一段的羽化有一半来自轮廓线，
+        //     而轮廓线走折线路径、有自己的 uAntialias；混在一起就分不出是哪个渲染器的。
+        //   · 频谱复用观察期那张图，系列色是紫色 ⇒ 读数要带上它自己的墨色（见 aaStats）。
+        aaWiring(report, "阶梯 STEP", aaStepOff, aaStepOn, AA_ROWS_A0, AA_ROWS_A1)
+        aaWiring(report, "面积 AREA（基线那一段，只可能来自填充）", aaAreaOff, aaAreaOn, 14, 19)
+        aaWiring(report, "柱状 BAR", aaBarOff, aaBarOn, 8, 19)
+        aaWiring(report, "散点 SCATTER", aaScatterOff, aaScatterOn, 8, 14)
+        aaWiring(report, "频谱 SPECTRUM", aaSpectrumOff, aaSpectrumOn, 0, AA_PLOT_H.toInt(),
+            spectrumArgb)
+
+        // 交叉：**平坦的阶梯段画出来的就是一条普通水平线**——同一块绘图区、同一个值、
+        // 同一个线宽，两帧逐项读数应当完全相同。它替"阶梯的拐角会不会把平坦段画歪"
+        // 立一道闸门（那两个渲染器的顶点公式不同，值一样不代表几何一样）。
+        val stepOff = aaStepOff
+        val stepOn = aaStepOn
+        if (stepOff != null) {
+            val sOff = aaStats(stepOff, AA_X0, AA_X1, AA_ROWS_A0, AA_ROWS_A1)
+            report("★ AA 交叉：平坦的阶梯与同一条水平线逐项读数相同（相位 A 那一段）",
+                sOff.fringe == offA.fringe && sOff.pure == offA.pure && sOff.ink == offA.ink,
+                "阶梯 过${sOff.fringe}/纯${sOff.pure}/墨${sOff.ink}，" +
+                        "折线 过${offA.fringe}/纯${offA.pure}/墨${offA.ink}")
+        }
+        if (stepOn != null) {
+            val sOn = aaStats(stepOn, AA_X0, AA_X1, AA_ROWS_A0, AA_ROWS_A1)
+            report("★ AA 交叉：同上，AA 开的那一对",
+                sOn.fringe == onA.fringe && sOn.pure == onA.pure && sOn.ink == onA.ink,
+                "阶梯 过${sOn.fringe}/纯${sOn.pure}/墨${sOn.ink}，" +
+                        "折线 过${onA.fringe}/纯${onA.pure}/墨${onA.ink}")
+        }
+    }
+
+    /**
+     * 一个图型的**接线判据**：AA 关的那一帧没有过渡像素、开的那一帧有。
+     *
+     * <p>这两条合起来才成立：只有 ② 会被"AA 永远是开的"骗过去，只有 ① 会被
+     * "AA 永远没生效"骗过去（那时 ① 恒真）。
+     */
+    private fun aaWiring(report: (String, Boolean, String) -> Unit, label: String,
+                         off: Shot?, on: Shot?, y0: Int, y1: Int,
+                         inkRgb: Int = AA_INK_RGB) {
+        if (off == null || on == null) {
+            report("★ AA $label：关 / 开两张快照都在", false, "关=${off != null}，开=${on != null}")
+            return
+        }
+        val a = aaStats(off, 0, AA_PLOT_W.toInt(), y0, y1, inkRgb)
+        val b = aaStats(on, 0, AA_PLOT_W.toInt(), y0, y1, inkRgb)
+        println("  $label 行 $y0..${y1 - 1}（设备 ${y0 + AA_GRAB_Y}..${y1 - 1 + AA_GRAB_Y}）、" +
+                "全宽（设备 x ${AA_PLOT_X.toInt()}..${(AA_PLOT_X + AA_PLOT_W).toInt() - 1}），" +
+                "墨色 #%06X".format(inkRgb))
+        println("    关：过${a.fringe}/纯${a.pure}   开：过${b.fringe}/纯${b.pure}")
+        report("★ AA $label ①：AA 关时没有过渡像素", a.fringe == 0,
+            "实测 ${a.fringe} 个（期望 0；纯墨色 ${a.pure} 个）")
+        report("★ AA $label ②：AA 开时有过渡像素（> 0）", b.fringe > 0,
+            "实测 ${b.fringe} 个（期望 > 0；纯墨色 ${b.pure} 个）" +
+                    "——0 说明这个渲染器没有把 uAntialias 传下去，" +
+                    "而画面上只表现为\"这一种图型没有 AA\"")
+    }
+
     private fun verifyOnce() {
         try {
             verifyAll()
@@ -4276,6 +4850,9 @@ class ChartVerifierApp : Application() {
                         "${overE.countIn(0, 0, OVER_W - 1, OVER_PADDING.toInt() - 1, overSeriesRgb) + overE.countIn(0, OVER_H - OVER_PADDING.toInt(), OVER_W - 1, OVER_H - 1, overSeriesRgb)} px")
 
         }
+        // ---- Task 5：图表系列的解析式抗锯齿（六个图型 + 折线的四条判据）----
+        reportSeriesAntialias(w, h) { label, ok, detail -> report(label, ok, detail) }
+
         println("\n画面出现的颜色：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")
         println("背景 ${counts[background] ?: 0} px，绘图区底色 ${counts[plotBackground] ?: 0} px")
         println("斜坡 ${counts[rampRgb] ?: 0} px，溢出 ${counts[spillRgb] ?: 0} px")

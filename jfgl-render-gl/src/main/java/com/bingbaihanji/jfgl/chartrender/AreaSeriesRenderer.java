@@ -182,6 +182,14 @@ final class AreaSeriesRenderer implements SeriesRenderer {
             ShaderProgram shader = c.areaShader();
             shader.use();
             setCommonUniforms(shader, c, layout, plot, series, windowStart, windowEnd, 0);
+            // 系列是否开 AA 由调用方决定（Gc.antialias 透传下来）。
+            // 这里用 uniform 是安全的：一个系列一条 draw call，不涉及 VertexWriter 的合批。
+            //
+            // ★ 它只作用于**填充**那一趟：下面那条轮廓线走折线路径，由
+            // LineSeriesRenderer 自己设同一个 uniform（两处都是同一个 Gc.antialias，
+            // 所以一条面积图的两半不会一个开一个关）。这一行漏掉的表现是
+            // "填充的上下边缘是硬的、轮廓线是羽化的"——而那看起来像线比填充清楚一点。
+            shader.setUniform("uAntialias", c.antialias() ? 1f : 0f);
 
             double windowFloor = Math.floor(windowStart);
             for (WindowRange.Segment seg : segments) {

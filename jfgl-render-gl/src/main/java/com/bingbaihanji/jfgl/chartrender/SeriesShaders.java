@@ -21,6 +21,24 @@ package com.bingbaihanji.jfgl.chartrender;
  * <p>所有顶点着色器都声明了 {@code flat out uint vId}，而绘制用的片段着色器不声明对应的
  * {@code in}——GLSL 允许，未使用的输出会被丢弃。这样它们能共用同一对片段源码。
  *
+ * <h2>★ 隐式契约：{@code vEdge} 的第二个分量 = 0 表示"这一轴不是边界"</h2>
+ * <p>五个顶点着色器都输出 {@code out vec2 vEdge}，而它们对两个分量的填法是**有约定**的：
+ * 单轴图型（折线 / 阶梯 / 面积）把 {@code .y} 写成 <b>0</b>，盒式图型（散点 / 柱）两个分量
+ * 都填真实的"到边界的归一化距离"。共享的 {@link #LINE_FRAGMENT} 依赖这条约定把
+ * "一个轴的覆盖率"与"两个轴的覆盖率之积"写成**同一段代码**：
+ * 常量分量的 {@code fwidth} 恒为 0 ⇒ 那一轴的覆盖率退化成 1 ⇒ 乘积等于单轴。
+ *
+ * <p><b>这条契约的两个前提，别当成理所当然：</b>
+ * <ul>
+ *   <li>常量分量插值之后仍是常量，且它的 {@code fwidth} 恒为 <b>0</b>（而不是某个极小的数）；
+ *       GLSL 规范里 {@code fwidth} 是"邻域差分"，对常量表达式应当为 0，但**实测只在
+ *       NVIDIA 4.6（本机）上确认过**——换驱动要重跑 {@code ChartVerifier} 的 AA 一节
+ *       （折线/阶梯/面积那三条 ② 会立刻把"那一轴没退化成 1"报出来）；</li>
+ *   <li>因此**新增顶点着色器时，单轴图型的 {@code .y} 必须写 0**；写成别的常量
+ *       （哪怕是一个恒定的 1）语义就变了——那一轴会按"到边界的距离恒为 1"算出 0.5 的覆盖率，
+ *       整条带子凭空淡一半，而画面看起来只是"颜色浅了点"。</li>
+ * </ul>
+ *
  * <h2>位置在着色器里算，不在 CPU 算</h2>
  * <p>这是 ② 的核心：数据在 GPU 里存的是<b>数值</b>不是屏幕坐标，
  * 于是滚动、缩放、自动量程、窗口尺寸变化全都是改 uniform，<b>零重传</b>。
@@ -72,12 +90,24 @@ final class SeriesShaders {
                                       uniform int  uPickId;
                                       
                                       out vec4 vColor;
+                                      // "我在描边带的哪一侧"——与 Gc 路径的 aEdge.x 同一个意思。
+                                      // 规范化到 [-1,1]：±1 就是带的两条外缘。
+                                      //
+                                      // ★ 它是 vec2 而不是 float：**第二个分量恒为 0**，表示"这一轴
+                                      // 不是边界"。片元对两个分量**各自**算一个覆盖率再相乘，
+                                      // 而常量分量的 fwidth 恒为 0、覆盖率退化成 1
+                                      // ⇒ 乘积就是单轴的覆盖率（见 LINE_FRAGMENT 的说明）。
+                                      out vec2 vEdge;
                                       flat out uint vId;
-                                      
+
                                       void main() {
                                           vId = uint(uPickId);   // 发号从 1 开始、恒为正，转换无损
                                           vColor = uColor;
-                                      
+                                          // 取 aCorner.y 而不是 aCorner.x：后者挑的是线段的哪一端
+                                          // （下面那句 `base = aCorner.x < 0.5 ? p0 : p1`），
+                                          // 与"我在带的哪一侧"（下面那句 `offset` 的符号）是两件事。
+                                          vEdge = vec2(aCorner.y * 2.0 - 1.0, 0.0);
+
                                           // 任一端是 NaN 就把整个四边形退化到裁剪空间之外。
                                           //
                                           // 不能靠"NaN 自然传播"：NaN 位置的光栅化行为是未定义的——
@@ -186,11 +216,27 @@ final class SeriesShaders {
                                       uniform int   uPickId;
 
                                       out vec4 vColor;
+                                      // "我在标记带的哪一侧"。
+                                      //
+                                      // 与折线那条不同：这里的 aCorner 两个分量都只是
+                                      // "居中四边形的 x / y"，几何是个**方块**（见下面那句
+                                      // `(aCorner - vec2(0.5)) * half * 2.0`），四条边都是边界，
+                                      // 所以**两个分量都要留给片元**，由片元对每轴各算一个覆盖率再相乘
+                                      // （盒式解析 AA 的乘积形式；两个轴的半宽不同时它也是对的，
+                                      // 而 max(|x|,|y|) 那种 SDF 只用得上一个斜坡宽度）。
+                                      //
+                                      // ★ **不能在这里先取 max 再传一个标量**——四个角的
+                                      // `max(|2·0−1|, |2·0−1|)` **全都等于 1**，于是 vary 是一个
+                                      // **常量 1**：fwidth 恒为 0 ⇒ 覆盖率恒为 1 ⇒ **一点 AA 都没有**，
+                                      // 而画面看起来"只是没那么细腻"。（实测：这样写之后
+                                      // 散点那两条判据的关/开两帧**逐像素相同**。）
+                                      out vec2 vEdge;
                                       flat out uint vId;
 
                                       void main() {
                                           vId = uint(uPickId);   // 发号从 1 开始、恒为正，转换无损
                                           vColor = uColor;
+                                          vEdge = aCorner * 2.0 - 1.0;
 
                                           // NaN 的点整个退化到裁剪空间之外。
                                           //
@@ -285,11 +331,21 @@ final class SeriesShaders {
                                       uniform int   uPickId;
 
                                       out vec4 vColor;
+                                      // "我在描边带的哪一侧"——取法与 LINE_VERTEX 逐字相同。
+                                      //
+                                      // 本条也用 aCorner.y：aCorner.x 在这里是点序号 0/1/2
+                                      // （一个实例六个角），拿它算边界会把"拐角"那两列标成带的边缘。
+                                      // 阶梯的拐角是同一个带的延续（法向取角平分线），
+                                      // 它的外缘本来就该按到带中心的距离羽化。
+                                      //
+                                      // 第二个分量恒为 0（单轴图型，见 LINE_VERTEX）。
+                                      out vec2 vEdge;
                                       flat out uint vId;
 
                                       void main() {
                                           vId = uint(uPickId);
                                           vColor = uColor;
+                                          vEdge = vec2(aCorner.y * 2.0 - 1.0, 0.0);
 
                                           // 任一端是 NaN 就把整个实例退化到裁剪空间之外（理由同 LINE_VERTEX）
                                           if (isnan(aY0) || isnan(aY1)) {
@@ -397,11 +453,29 @@ final class SeriesShaders {
                                      uniform int   uPickId;
 
                                      out vec4 vColor;
+                                     // "我在填充带的哪一侧"。
+                                     //
+                                     // ★ 这里只取 aCorner.y，不要取两个轴的 max。
+                                     // aCorner.x 是"线段的哪一端"（0 左 / 1 右），而面积的左右两端
+                                     // 落在绘图区/裁剪边界上——那两条边是裁剪切出来的，
+                                     // 不是图形自己的边缘，不该被羽化。把它们也标成边界，
+                                     // 绘图区左右各会多出一条半透明的竖带，而"边缘淡了一点"
+                                     // 是最难被注意到的那一类画面差异（`Gc` 的 aEdge 那套里
+                                     // "被裁掉的那两条边不参与羽化"是同一条约定）。
+                                     //
+                                     // 而 aCorner.y 恰好就是"取数据值（顶）还是取基线（底）"，
+                                     // 顶边与底边才是这条填充真正的两条边界。
+                                     //
+                                     // 第二个分量恒为 0（单轴图型，见 LINE_VERTEX）。
+                                     out vec2 vEdge;
                                      flat out uint vId;
 
                                      void main() {
                                          vId = uint(uPickId);
                                          vColor = uColor;
+                                         // aCorner.y = 0（数据值）→ +1；= 1（基线）→ −1。
+                                         // 两个都是 ±1，取绝对值之后谁正谁负无关紧要。
+                                         vEdge = vec2(1.0 - aCorner.y * 2.0, 0.0);
 
                                          if (isnan(aY0) || isnan(aY1)) {
                                              gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
@@ -480,11 +554,25 @@ final class SeriesShaders {
                                     uniform int   uPickId;
 
                                     out vec4 vColor;
+                                    // "我在柱的哪一侧"。柱是一个矩形：四条边全是边界，
+                                    // 所以与 SCATTER_VERTEX 一样取两个轴里离得远的那个（方形 SDF）。
+                                    //
+                                    // ★ 与 AREA_VERTEX 的区别在这里：面积的左右两端是裁剪边界
+                                    // （所以那边只取 y），而柱的左右两条是柱子自己的边缘
+                                    // （由 uBarHalfWidth 撑出来），不羽化的话细柱左右就是硬边——
+                                    // 而柱宽本来就小，"两边有点毛"这一点在画面上完全看不出。
+                                    //
+                                    // ★ **两个分量都要留给片元**（与 SCATTER_VERTEX 同一条理由）：
+                                    // 柱的宽高比可能是几十倍（半宽 17 px、半高 2.75 px），两个轴各需要
+                                    // 自己那个 1 像素宽的斜坡；在顶点上先取 max 会把 vary 压成常量 1
+                                    // ⇒ fwidth = 0 ⇒ 一点 AA 都没有（实测：关/开两帧逐像素相同）。
+                                    out vec2 vEdge;
                                     flat out uint vId;
 
                                     void main() {
                                         vId = uint(uPickId);
                                         vColor = uColor;
+                                        vEdge = aCorner * 2.0 - 1.0;
 
                                         // 该样本没有值（NaN = 缺口）时整根柱不画。
                                         //
@@ -520,13 +608,85 @@ final class SeriesShaders {
      * <p><strong>颜色是直通（非预乘）的，最后一步必须做预乘。</strong>
      * 半透明线段的端点会互相重叠，不预乘就会出现二次混合的暗缝——
      * 与 {@code RenderBatch} 里"混合因子顺序不能调换"是同一类问题。
+     *
+     * <h2>解析式抗锯齿：覆盖率来自 {@code vEdge}，不是多次采样</h2>
+     * <p>与 {@code Gc} 的描边路径同一条公式：片元按"到边界的归一化距离"算一个覆盖率，
+     * 与颜色一起预乘出去。{@code fwidth} 给出的是 vary 在每个像素上的变化量，
+     * 因此斜坡**恒为 1 个设备像素宽**，与几何尺寸、缩放都无关。
+     *
+     * <h2>为什么 {@code vEdge} 是 vec2、覆盖率是**乘积**</h2>
+     * <p>五种几何所需的"边界"不一样：折线/阶梯/面积只有**一条轴**上有边界
+     * （带的法向、或填充的上下沿），散点与柱状是个**盒子**、四条边都要。
+     * 而一个**标量** vary 装不下盒子：四个角上的"到边界距离"全都等于 1，
+     * 在顶点上算完再插值出来就是一个**常量**（fwidth = 0 ⇒ 覆盖率恒为 1 ⇒ 没有 AA）。
+     * 所以两个分量都传下来，片元**逐轴各算一个覆盖率，再相乘**：
+     * <ul>
+     *   <li>单轴图型的第二个分量恒为 0 ⇒ 它的 {@code fwidth} 恒为 0 ⇒ 那个轴的覆盖率
+     *       退化成 1 ⇒ 乘积就是单轴的覆盖率，**与只算一个轴逐位相同**；</li>
+     *   <li>盒式图型两个轴各有自己的斜坡宽度（柱的半宽 17 px、半高 2.75 px 差几十倍），
+     *       乘积形式对它们各自成立，且在角上给出的是"两轴覆盖率之积"这个盒式近似。</li>
+     * </ul>
+     *
+     * <p>⚠️ <b>不要为了省一个分量而在顶点上先取 {@code max}。</b>那样写出来的着色器
+     * 编译得过、画得出图、只是<b>完全没有抗锯齿</b>——实测关/开两帧逐像素相同。
+     * 这一条由 {@code ChartVerifier} 的柱状与散点两组判据钉着。
+     *
+     * <h2>★ 已声明的降级：外侧那半个斜坡没有片元，每列少 0.25 px 墨量</h2>
+     * <p>覆盖率斜坡以**几何的真实边界**为心、宽 1 个设备像素。而图表这条路径
+     * <b>几何不外扩</b>（顶点着色器只画到真实边缘为止）——
+     * <b>这与 {@code Gc} 的描边路径不同</b>：那边在 CPU 侧把几何双双向外扩了 1 个设备像素
+     * （见 {@code Gc.strokeOutline}），正是为了把整个斜坡装进几何里。
+     * 于是这里斜坡**在外侧的那一半没有片元**，覆盖率推不到 0：
+     * 每列固定少 {@code ∫₀^0.5 (0.5 − t) dt × 2 = 0.25} 个像素的墨量
+     * （带的全宽是 3 时解析值是 2.75，不是 3）。
+     *
+     * <p><b>它是声明过的降级，不是缺陷</b>——与 {@code Gc} 那条
+     * "非等比缩放下压缩轴真外缘之外的羽化被切掉"并列同类：都是"几何止于真实边缘"
+     * 这一条实现选择带来的、<b>方向单向</b>（只会让边缘略淡）的后果。
+     * 这个 0.25 <b>与线宽无关</b>：斜坡宽度恒为 1 个设备像素，被切掉的那半恒为 0.25。
+     * 要修好得让几何也外扩 1 像素（那时外扩量同样吃 {@code matrixScale} 的降级），
+     * 属于新特性，不在本期。
+     *
+     * <p>它被 {@code ChartVerifier} 的 ④ 按**解析值 2.75 px/列**钉着（不是拿"AA 关的读数"
+     * 当参照——硬边在这个几何上恰好是 3.0 px/列，比 AA 开**多** 8.3%）。
+     *
+     * <p><strong>{@code uAntialias} 用 {@code if} 而不是乘进公式里</strong>：
+     * 关掉时必须是**逐位**的旧行为（{@code vec4(rgb * a, a)}）。乘进去在
+     * {@code uAntialias = 0} 时结果相同，但 {@code fwidth} 仍然参与运算——
+     * 它在某些驱动上对常量 vary 会给出 0 以外的值，那是"关着也可能改变画面"的一条路。
+     * <b>关就是关，不要留任何一条能碰到像素的路径。</b>
+     *
+     * <p><strong>预乘必须两个通道一起乘</strong>（与 {@code Gc} 路径那条"乘标量不破坏
+     * 预乘性"同一件事）：{@code vec4(rgb * a, a)} 才是预乘色，写成
+     * {@code vec4(rgb, a * a)} 会丢掉预乘性，半透明系列整片偏色。
+     *
+     * <h2>这里可以用 uniform，而 {@code RenderBatch} 那边不行</h2>
+     * <p>{@code RenderBatch} 的顶点侧把"要不要真实边距"烘焙进顶点缓冲，所以它
+     * <b>不能</b>用 {@code uAntialias}（同一个批里可能有开有关）。图表系列不合并批次
+     * ——<b>一个系列一条 draw call</b>——所以一个 uniform 是安全的，
+     * 而那正是"开"与"关"两种画面的分界只有一处的地方。
      */
     static final String LINE_FRAGMENT = """
                                         #version 330 core
                                         in vec4 vColor;
+                                        // 两个轴各自的"到边界的归一化距离"：1 = 正在边界上，0 = 在正中。
+                                        in vec2 vEdge;
+                                        uniform float uAntialias;    // 1.0 = 开，0.0 = 关
                                         out vec4 fragColor;
                                         void main() {
-                                            fragColor = vec4(vColor.rgb * vColor.a, vColor.a);
+                                            float a = 1.0;
+                                            if (uAntialias > 0.5) {
+                                                vec2 e = abs(vEdge);
+                                                vec2 w = fwidth(vEdge);
+                                                // 逐轴一个覆盖率。w == 0 的轴是常量分量（单轴图型
+                                                // 的第二分量），它退化成"满覆盖"——乘积于是等于
+                                                // 另一个轴的覆盖率，与只算一个轴逐位相同。
+                                                vec2 cov = vec2(
+                                                    (w.x > 0.0) ? clamp(0.5 - (e.x - 1.0) / w.x, 0.0, 1.0) : 1.0,
+                                                    (w.y > 0.0) ? clamp(0.5 - (e.y - 1.0) / w.y, 0.0, 1.0) : 1.0);
+                                                a = cov.x * cov.y;
+                                            }
+                                            fragColor = vec4(vColor.rgb * vColor.a * a, vColor.a * a);
                                         }
                                         """;
 

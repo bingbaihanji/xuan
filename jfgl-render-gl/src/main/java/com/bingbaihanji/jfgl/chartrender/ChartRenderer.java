@@ -15,6 +15,7 @@ import com.bingbaihanji.jfgl.util.Rect;
 
 import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 /**
@@ -167,16 +168,36 @@ public final class ChartRenderer implements Disposable {
      */
     private final ChartPainter painter;
 
+    /**
+     * "数据系列是否做解析式抗锯齿"的取值入口。
+     *
+     * <h2>为什么是一个 supplier 而不是一个 boolean</h2>
+     * <p>本类是<b>一次创建、长期使用</b>的（由 {@code Gc.charts} 懒创建），
+     * 而 AA 开关是<b>每次 draw 都可能不同</b>的绘制状态——存成 boolean 就会把
+     * "创建那一刻的开关"永久固化下来。存 supplier 之后，每次 {@link #draw} 的入口
+     * 取一次快照，于是"这一帧开没开"这件事永远跟着调用方走。
+     *
+     * <p><strong>{@code Gc} 传的是 {@code { antialias }}（它自己那个属性）。</strong>
+     * 图表后端在更下层，看不见 {@code Gc}——依赖方向只允许向上，
+     * 所以这个值必须由装配方（{@code Gc}）显式注入，与 {@code pickRegistry} /
+     * {@code withPickPass} / {@code chartPainter} 三个依赖同一条纪律。
+     *
+     * <p>默认（不注入时）恒为 {@code false}：<b>AA 关是"什么都不发生"的那一侧</b>，
+     * 默认值必须落在它上面（否则既有像素期望会集体移动）。
+     */
+    private final BooleanSupplier antialias;
+
     private boolean disposed = false;
 
     /**
-     * 创建一个<b>画不了装饰</b>的图表渲染器（不注入绘制入口）。
+     * 创建一个<b>画不了装饰、也不做系列抗锯齿</b>的图表渲染器。
      *
-     * <p>{@link #drawChart} 在这种实例上会抛异常，见 {@link #painter}。
+     * <p>{@link #drawChart} 在这种实例上会抛异常，见 {@link #painter}；
+     * 数据系列则恒按"AA 关"画（理由见 {@link #antialias}）。
      */
     public ChartRenderer(GLAbstraction gl, PickRegistry pickRegistry,
                          Consumer<Runnable> pickPass) {
-        this(gl, pickRegistry, pickPass, null);
+        this(gl, pickRegistry, pickPass, null, () -> false);
     }
 
     /**
@@ -190,13 +211,17 @@ public final class ChartRenderer implements Disposable {
      *                     （理由见字段说明）
      * @param painter      标题与图例的绘制入口；{@code Gc} 传它自己的那个，
      *                     传 null 表示这个实例不支持 {@link #drawChart}
+     * @param antialias    数据系列是否做解析式 AA 的取值入口；{@code Gc} 传它自己的
+     *                     {@code antialias} 属性（理由见 {@link #antialias}）
      */
     public ChartRenderer(GLAbstraction gl, PickRegistry pickRegistry,
-                         Consumer<Runnable> pickPass, ChartPainter painter) {
+                         Consumer<Runnable> pickPass, ChartPainter painter,
+                         BooleanSupplier antialias) {
         this.gl = gl;
         this.pickRegistry = pickRegistry;
         this.pickPass = pickPass;
         this.painter = painter;
+        this.antialias = antialias;
         this.lineShader = gl.createShader(SeriesShaders.LINE_VERTEX, SeriesShaders.LINE_FRAGMENT);
         this.pickShader = gl.createShader(SeriesShaders.LINE_VERTEX, SeriesShaders.PICK_FRAGMENT);
         this.scatterShader =
@@ -314,10 +339,13 @@ public final class ChartRenderer implements Disposable {
                             + axes.length + " 根。");
         }
         ChartRenderLayout layout = new ChartRenderLayout(plotRect, axes[0], axes[1]);
+        // AA 开关在这里**取一次快照**：一次 draw 里所有系列、所有 pass 用同一个值。
+        // 图表的后端看不见 Gc，这个值由装配方注入（见 antialias 字段）。
         GLRenderContextImpl ctx = new GLRenderContextImpl(
                 gl, lineShader, pickShader, scatterShader, scatterPickShader,
                 stepShader, stepPickShader, areaShader, areaPickShader,
-                barShader, barPickShader, pickPass, layout, viewportWidth, viewportHeight);
+                barShader, barPickShader, pickPass, layout, viewportWidth, viewportHeight,
+                antialias.getAsBoolean());
 
         for (Layer layer : chart.layers()) {
             int barCount = requireSameBarGaps(layer);

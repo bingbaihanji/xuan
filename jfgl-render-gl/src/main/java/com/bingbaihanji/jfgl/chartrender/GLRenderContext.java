@@ -15,11 +15,15 @@ import com.bingbaihanji.jfgl.gl.ShaderProgram;
  * <p>{@code SeriesRenderer} 的实现<b>第一行就向下转型</b>取它。
  *
  * <h2>这里只声明已经有人用的东西</h2>
- * <p>本接口只有折线渲染器一个消费者，所以这里只有它真正用到的那几项。
- * 拾取相关的成员（{@code pickShader} / {@code pickId} / {@code withPickPass}）
- * 是在 Task 13 <b>接拾取</b>时随消费者一起加进来的——
- * 预先声明一个没人实现也没人调用的方法，
+ * <p>每一项都是<b>随它的消费者一起</b>加进来的（{@code pickShader} / {@code pickId} /
+ * {@code withPickPass} 是在 Task 13 <b>接拾取</b>时加的，{@code antialias} 是在
+ * Task 5 接抗锯齿时加的）——预先声明一个没人实现也没人调用的方法，
  * 只会让"它到底有没有被验证过"变成一个说不清的问题。
+ *
+ * <p>消费者是<b>六个</b>渲染器（折线 / 散点 / 阶梯 / 面积 / 柱状 / 频谱），
+ * 其中散点那一份还被 {@code LINE_AND_MARKERS} 的标记点那一半复用。
+ * {@link #antialias()} 正是那种"加进去就必须六个都接上"的成员：
+ * 漏掉一个的表现是<b>那一种图型没有 AA 而其余有</b>，在混合图里几乎注意不到。
  */
 public interface GLRenderContext extends RenderContext {
 
@@ -114,6 +118,18 @@ public interface GLRenderContext extends RenderContext {
      * 拿错的表现是<b>柱子宽度不对</b>——而宽度不对在单张图上没有任何参照物。
      */
     int barCount();
+
+    /**
+     * 本帧的系列是否做解析式抗锯齿（{@code Gc.antialias} 透传下来）。
+     *
+     * <p>它由装配方（{@code ChartRenderer}）在<b>每次 draw 的入口</b>取一次快照，
+     * 所以一次 draw 里所有系列、所有 pass 用的是同一个值——这正是"一个系列一条
+     * draw call"这条前提允许用 uniform 的原因（见 {@code SeriesShaders.LINE_FRAGMENT}）。
+     *
+     * <p><b>默认关</b>：AA 关时片段着色器输出的是逐位旧行为，于是既有的像素期望
+     * 全部不动（这是"保护那批断言"的必要条件）。
+     */
+    boolean antialias();
 
     /** 绘图区与映射。 */
     ChartRenderLayout layout();

@@ -161,6 +161,10 @@ final class BarSeriesRenderer implements SeriesRenderer {
         shader.use();
         setCommonUniforms(shader, c, layout, plot, series,
                 pxPerSample, halfWidth, barOffset, 0f, 0);
+        // 系列是否开 AA 由调用方决定（Gc.antialias 透传下来）。
+        // 这里用 uniform 是安全的：一个系列一条 draw call，不涉及 VertexWriter 的合批。
+        // 放在 setCommonUniforms **之外**：那一套两个 pass 共用，而 uAntialias 只属于绘制。
+        shader.setUniform("uAntialias", c.antialias() ? 1f : 0f);
 
         double windowFloor = Math.floor(windowStart);
         for (WindowRange.Segment seg : segments) {

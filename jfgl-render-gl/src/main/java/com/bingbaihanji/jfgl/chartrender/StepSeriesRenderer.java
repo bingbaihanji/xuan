@@ -160,6 +160,11 @@ final class StepSeriesRenderer implements SeriesRenderer {
         ShaderProgram shader = c.stepShader();
         shader.use();
         setCommonUniforms(shader, c, layout, plot, series, windowStart, windowEnd, 0f, 0);
+        // 系列是否开 AA 由调用方决定（Gc.antialias 透传下来）。
+        // 这里用 uniform 是安全的：一个系列一条 draw call，不涉及 VertexWriter 的合批。
+        // 放在 setCommonUniforms **之外**而不是里面：那一套是绘制与 ID pass 共用的，
+        // 而 uAntialias 只属于绘制那一趟（ID pass 的片段程序里压根没有它）。
+        shader.setUniform("uAntialias", c.antialias() ? 1f : 0f);
 
         // 横轴的锚点：绝对下标是 long，着色器里用不了，所以传"本段第一个实例相对窗口左端的偏移"。
         double windowFloor = Math.floor(windowStart);

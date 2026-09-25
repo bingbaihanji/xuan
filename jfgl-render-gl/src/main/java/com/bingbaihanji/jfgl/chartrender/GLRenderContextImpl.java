@@ -63,6 +63,9 @@ final class GLRenderContextImpl implements GLRenderContext {
 
     private final int viewportHeight;
 
+    /** 本帧的系列是否做解析式 AA；由 {@code ChartRenderer} 在 draw 入口取一次快照。 */
+    private final boolean antialias;
+
     /** 当前正在渲染的系列。 */
     private Series currentSeries;
 
@@ -83,7 +86,7 @@ final class GLRenderContextImpl implements GLRenderContext {
                         ShaderProgram areaShader, ShaderProgram areaPickShader,
                         ShaderProgram barShader, ShaderProgram barPickShader,
                         Consumer<Runnable> pickPass, ChartRenderLayout layout,
-                        int viewportWidth, int viewportHeight) {
+                        int viewportWidth, int viewportHeight, boolean antialias) {
         this.gl = gl;
         this.lineShader = lineShader;
         this.pickShader = pickShader;
@@ -99,6 +102,7 @@ final class GLRenderContextImpl implements GLRenderContext {
         this.layout = layout;
         this.viewportWidth = viewportWidth;
         this.viewportHeight = viewportHeight;
+        this.antialias = antialias;
     }
 
     /** 设置当前正在渲染的系列。必须在 {@link #setCurrentBuffer} 之前调用。 */
@@ -189,6 +193,17 @@ final class GLRenderContextImpl implements GLRenderContext {
     @Override
     public int barSlot() {
         return barSlot;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>存的是**值**不是"能读回 Gc 的东西"：一个 draw 的入口取一次快照，
+     * 于是同一个 draw 里所有系列、两个 pass 用的是同一个值。
+     */
+    @Override
+    public boolean antialias() {
+        return antialias;
     }
 
     @Override

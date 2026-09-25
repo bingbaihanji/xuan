@@ -257,6 +257,11 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
         shader.setUniform("uPxPerSample", (float) (plot.width / (windowEnd - windowStart)));
         shader.setUniform("uHalfWidth", series.lineWidth() * 0.5f);
         shader.setUniform("uPickTolerance", 0f);
+        // 系列是否开 AA 由调用方决定（Gc.antialias 透传下来）。
+        // 这里用 uniform 是安全的：一个系列一条 draw call，不涉及 VertexWriter 的合批。
+        // 频谱与折线**共用同一个程序**（lineShader），但 uniform 是逐次 draw 设的，
+        // 所以两者各自跟着当下的 Gc.antialias 走，不会互相串。
+        shader.setUniform("uAntialias", c.antialias() ? 1f : 0f);
         int argb = series.color();
         shader.setUniform("uColor",
                 ((argb >> 16) & 0xFF) / 255f,

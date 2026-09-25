@@ -213,7 +213,11 @@ class Gc constructor(private val batch: RenderBatch) {
      * ```
      */
     private val chartsLazy = lazy {
-        ChartRenderer(batch.glAbstraction(), pickRegistry, batch::withPickPass, chartPainter)
+        // 它还多收一个依赖（尾随 lambda）：数据系列的 AA 开关就是本类的 [antialias]。
+        // 传 supplier 而不是当下的值——图表后端由本类懒创建、长期持有，
+        // 存值会把"创建那一刻的开关"固化下来（见 ChartRenderer 的 antialias 字段）。
+        ChartRenderer(batch.glAbstraction(), pickRegistry, batch::withPickPass,
+            chartPainter) { antialias }
     }
 
     /** 图表绘制入口。见 [chartsLazy]。 */

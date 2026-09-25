@@ -247,6 +247,13 @@ final class ScatterSeriesRenderer implements SeriesRenderer {
         shader.setUniform("uMarkerSize", markerEdge(series));
         // 绘制时容差为 0，所以 max() 取到的就是真实边长
         shader.setUniform("uPickTolerance", 0f);
+        // 系列是否开 AA 由调用方决定（Gc.antialias 透传下来）。
+        // 这里用 uniform 是安全的：一个系列一条 draw call，不涉及 VertexWriter 的合批。
+        // 只设在**绘制**这一趟：ID pass 的片段程序里没有 uAntialias（ID 不能有半透明）。
+        //
+        // ★ 这一行同时覆盖 **LINE_AND_MARKERS 的标记点那一半**——它由
+        // LineSeriesRenderer 调本类的 renderMarkers 画（见那边类文档）。
+        shader.setUniform("uAntialias", c.antialias() ? 1f : 0f);
         // Series.color() 返回 ARGB 整数，按 0xAARRGGBB 拆分量。
         int argb = series.color();
         shader.setUniform("uColor",
