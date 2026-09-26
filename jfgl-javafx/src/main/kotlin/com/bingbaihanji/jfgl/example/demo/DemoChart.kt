@@ -109,6 +109,25 @@ internal object DemoChart {
     var selectedKind: Int = 0
 
     /**
+     * 平滑曲线开关（菜单「平滑曲线」）。**默认关**，与 [Series.smooth] 的默认值一致。
+     *
+     * <p>**它只对折线与面积生效**——`STEP` / `SPECTRUM` / `SCATTER` / `BAR` 一律忽略，
+     * 见 [Series.smooth] 的 KDoc（其中 `SPECTRUM` 是硬理由：它的实例属性指向 FFT 的输出缓冲，
+     * 而那个缓冲**没有邻居余量**）。
+     */
+    @Volatile
+    var smoothOn: Boolean = false
+
+    /**
+     * 平滑开关对某个图型**是否适用**。
+     *
+     * <p>它决定两件事：`build` 里要不要 `Series.smooth(true)`，以及**缓存键**要不要带上平滑
+     * （见 [chart]）——两处必须用**同一个**判定，否则会出现"缓存按 A 分、绘制按 B 画"。
+     */
+    private fun smoothApplies(type: ChartType): Boolean =
+        type == ChartType.LINE || type == ChartType.AREA
+
+    /**
      * ★ **只读观测入口**（合成事件自检第 10、11 条用）：[draw] **跑到末尾**的帧数。
      *
      * <p>为什么需要它：本项目 GL 线程上的异常是**静默吞掉**的，所以"图表画出来了"
@@ -202,9 +221,20 @@ internal object DemoChart {
      */
     private fun chart(): Chart {
         val k = selectedKind
-        // `getOrPut` 把**同一个** Chart 一直发给同一个图型——这正是 ChartRenderer 要的：
+        val smooth = smoothApplies(KINDS[k].second) && smoothOn
+        // ★ **缓存键必须带上平滑**：缓存的 Chart 里那两个 Series 在**创建时**就定下了
+        //   `smooth()`，只用图型做键的话，切换平滑**静默无效**——菜单点了，画面一动不动，
+        //   而没有任何报错（GL 线程的异常在本项目本来就是吞掉的，这里连异常都没有）。
+        //
+        //   **为什么用"再加一维"而不是"清空缓存重建"**：`ChartRenderer` 按 `Series` 的
+        //   **对象身份**缓存 GPU 缓冲与拾取号，而它**没有回收接口**（见 CLAUDE.md 的待办 §6.6）。
+        //   清空重建 ⇒ 每切一次漏两块缓冲与**两个拾取号**，号耗尽时 `PickRegistry` 抛异常、
+        //   而那是 GL 线程上的异常 ⇒ **静默地不再画图表**。
+        //   并进键里 ⇒ 上限 4 图型 × 2 = **8 条**（仍然有界），来回切**不再分配**。
+        //
+        // `getOrPut` 把**同一个** Chart 一直发给同一对 (图型, 平滑)——这正是 ChartRenderer 要的：
         // 它按 Series 的**对象身份**缓存，只要对象不变，那两张 map 就不增长。
-        return cachedCharts.getOrPut(k) { build(k) }
+        return cachedCharts.getOrPut(k * 2 + if (smooth) 1 else 0) { build(k, smooth) }
     }
 
     /**
@@ -212,8 +242,10 @@ internal object DemoChart {
      * 理由见 [cachedChart]。
      *
      * @param kindIndex [KINDS] 里的下标
+     * @param smooth    这两个系列要不要画成平滑曲线。**由 [chart] 算好传进来**
+     *                  （它必须与缓存键用的是同一个判定）
      */
-    private fun build(kindIndex: Int): Chart {
+    private fun build(kindIndex: Int, smooth: Boolean): Chart {
         val data = ArrayChartData(
             arrayOf(
                 AxisRange(0.0, (MONTHS.size - 1).toDouble(), "月份", ""),
@@ -246,8 +278,8 @@ internal object DemoChart {
             .tickLabelReserve(ChartSide.LEFT, TICK_RESERVE)
             .padding(ChartInsets(8f, 8f, 8f, 8f))
             .apply {
-                addLayer("数据").add(styleFor(Series("销售额", data, type).color(COLOR_SALES)))
-                    .add(styleFor(Series("成本", data2, type).color(COLOR_COST)))
+                addLayer("数据").add(styleFor(Series("销售额", data, type).color(COLOR_SALES), smooth))
+                    .add(styleFor(Series("成本", data2, type).color(COLOR_COST), smooth))
             }
     }
 
@@ -261,11 +293,13 @@ internal object DemoChart {
      * <p>`Series` 的样式 setter **拒绝 NaN / ±Infinity**（抛 `IllegalArgumentException`），
      * 所以下面的常量都必须是有限数。
      */
-    private fun styleFor(s: Series): Series = when (s.type()) {
+    private fun styleFor(s: Series, smooth: Boolean): Series = when (s.type()) {
         ChartType.BAR -> s.baseline(0f).categoryGap(0.25f).barGap(0.2f)
-        ChartType.AREA -> s.baseline(0f).fillAlpha(0.35f)
+        // 面积：顶边按 [smooth] 画成曲线（基线边不参与平滑——它是直的）
+        ChartType.AREA -> s.baseline(0f).fillAlpha(0.35f).smooth(smooth)
         ChartType.SCATTER -> s.markerSize(4f)
-        else -> s.lineWidth(2f)
+        // 折线是 [smooth] 唯一的另一个用武之地
+        else -> s.lineWidth(2f).smooth(smooth)
     }
 
     /**

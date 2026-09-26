@@ -1539,6 +1539,22 @@ class JfglDemoApp : Application() {
         }
         val chartMenu = Menu("图型").apply { items.addAll(chartItems) }
 
+        // 平滑曲线。**只对折线与面积生效**——`STEP`/`SPECTRUM`/`SCATTER`/`BAR` 一律忽略它
+        // （见 `Series.smooth` 的 KDoc；频谱那条是硬理由：它的实例属性指向 FFT 的输出缓冲，
+        // 而那个缓冲没有邻居余量）。所以切到柱状/散点时勾着它也不会有变化，**这是对的**。
+        val smoothItem = CheckMenuItem("平滑曲线（折线 / 面积）").apply {
+            isSelected = DemoChart.smoothOn
+            setOnAction {
+                DemoChart.smoothOn = isSelected
+                status.text = if (isSelected) {
+                    "平滑曲线：已开（折线与面积；柱状/散点不受影响）"
+                } else {
+                    "平滑曲线：已关"
+                }
+            }
+        }
+        chartMenu.items.addAll(SeparatorMenuItem(), smoothItem)
+
         val fileMenu = Menu("文件").apply {
             items.addAll(
                 MenuItem("清空画布").apply { setOnAction { clearAll() } },
