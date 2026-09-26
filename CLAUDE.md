@@ -194,7 +194,7 @@ jfgl-render-gl/src/test/.../gpu/        FftWindowTest、FftKernelTest
 **六个像素校验器**（`Pipeline` / `Path` / `Pick` / `Click` / `Text` / `Chart`
 ——靠 `glReadPixels` 从**画布 FBO** 回读）
 + `FftVerifier`（**不画任何东西**，读的是 SSBO，不是像素校验器）
-+ `MsaaVerifier`（**要跑两次**，由 `jfgl-javafx/scripts/msaa-verify.sh` 比对）。
++ `MsaaVerifier`（**要跑三次**：`msaa=0` / `4` / `-1`，由 `jfgl-javafx/scripts/msaa-verify.sh` 比对）。
 后两者的处境与那六个的区别见「抗锯齿」一节。）
 
 当前 **385 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
@@ -906,7 +906,9 @@ gc.endFrame()
      与 **★ 非等比缩放一节**（帧号 `ANISO_FRAME`，钉降级的方向）；
    - `ChartVerifier` 的 **★ 图表系列的解析式抗锯齿一节**（六个图型的 `uAntialias`
      + 折线的四条判据 + 交叉验证）；
-   - `MsaaVerifier`——它**要跑两次**（`-Djfgl.probe.msaa=0` 与 `4`），**由脚本比对**：
+   - `MsaaVerifier`——它**要跑三次**（`-Djfgl.probe.msaa=0`、`4`、**`-1`**）
+     ，**由脚本比对**（`-1` 那一档见脚本顶部：按 openglfx 的约定负数 = 最大采样数，
+     所以它又是一条多采样路径，也是**守卫最容易判错**的一档）：
 
    ```bash
    bash jfgl-javafx/scripts/msaa-verify.sh        # 退出码 0/1；内部用 trap ... EXIT 清理
@@ -915,7 +917,8 @@ gc.endFrame()
    `MsaaVerifier` 守的是**另外三件事**：① 快照路径与 `glReadPixels` 路径的交叉印证
    （`msaa` 非 0 时后者非法，前者照常）；② **回读守卫的前提**
    （`canReadPixels == (glGetError == 0)`）；③ 跨进程的两条读数
-   （`msaa=4` 的过渡像素 **1782 > `msaa=0` 的 0**、线心纯色数 **2673 == 2673**）。
+   （`msaa=4` 与 `msaa=-1` **各比一次**：过渡像素 **1782 > `msaa=0` 的 0**、
+   线心纯色数 **2673 == 2673**——两个多采样档的读数逐项相同）。
    ⚠️ **它的快照必须按设备缩放取**（`SnapshotParameters` 给 `Scale(deviceScale)`）：
    不这么做的话快照是**逻辑尺寸**（892×692），对设备分辨率的纹理做**重采样**，
    而**重采样自己会产生中间值**——实测那一版的整幅图有 **`msaa=0` 36 种**、
