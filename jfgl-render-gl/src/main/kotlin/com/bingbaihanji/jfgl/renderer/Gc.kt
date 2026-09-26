@@ -214,6 +214,12 @@ class Gc constructor(private val batch: RenderBatch) {
      * <p>它持有 GL 资源，而 [RenderBatch] 不认识它（[ChartRenderer] 在更上层的包里），
      * 所以释放由 [disposeCharts] 转一手，调用方是 `FXGLTransfer` 的 `onDispose`。
      *
+     * <p><b>不再画的系列会自己走。</b>[beginFrame] 每帧调一次
+     * [ChartRenderer.releaseUnused]，把连续两帧没被画过的系列释放掉
+     * （缓冲删掉、拾取号归还）。所以"每帧重建 `Chart`"（= 每帧 new 出新的 `Series`）
+     * 是安全的写法——**没有 `retain` / `release` 这类要记得调的 API**，
+     * 理由与逐步的算例见 `ChartRenderer.releaseUnused` 的文档。
+     *
      * <p>两个依赖都是**刻意从这里传进去**的：图表的拾取因此与普通图元共用同一套
      * ——[pickRegistry]（ID 空间只有一本，两本会撞号）与 `batch::withPickPass`
      * （拾取缓冲只有一块）。于是 [pick] / [pickRect] 对数据系列同样有效，
@@ -351,7 +357,19 @@ class Gc constructor(private val batch: RenderBatch) {
     // ------------------------------------------------------------------
 
     /**
-     * 开始一帧：设定视口尺寸、把变换重置为像素→NDC 的基础矩阵、清空全部状态栈与顶点缓冲。
+     * 开始一帧：设定视口尺寸、把变换重置为像素→NDC 的基础矩阵、清空全部状态栈与顶点缓冲，
+     * 并让图表后端回收上一帧起就没再画过的系列。
+     *
+     * <h3>图表资源的自动回收挂在这里，而且只有这里</h3>
+     * <p>[ChartRenderer.releaseUnused] 需要一个"帧首"时机，而本方法是全项目**唯一**
+     * 每帧恰好一次的位置（`FXGLTransfer` 每帧配对调 `beginFrame`/`endFrame`）。
+     * 挂在这里意味着调用方不必学 `retain`/`release` 那套 API：
+     * **不再画的系列自己会被释放**（详见 `ChartRenderer` 的类文档）。
+     *
+     * <p>`isInitialized()` 那一层判断是**承重的**，不是省一次调用的微优化：
+     * 少了它，每一个不用图表的应用都会在这一行把 [ChartRenderer] 建出来
+     * ——那要编译 10 个着色器程序并建 VAO，而 `charts` 本来是懒创建的，
+     * 那份开销正是懒创建要避免的。
      *
      * @param width  帧缓冲宽度（像素），必须为正
      * @param height 帧缓冲高度（像素），必须为正
@@ -360,6 +378,10 @@ class Gc constructor(private val batch: RenderBatch) {
      */
     fun beginFrame(width: Int, height: Int) {
         check(!frameActive) { "beginFrame 已调用过：beginFrame 与 endFrame 必须配对，不能嵌套" }
+        // 放在最前面：它要删 VBO，而这一行之前没有任何本帧的 GL 状态被设置过。
+        if (chartsLazy.isInitialized()) {
+            chartsLazy.value.releaseUnused()
+        }
         state.beginFrame(width, height)
         styleDepth = 0
         writer.reset()

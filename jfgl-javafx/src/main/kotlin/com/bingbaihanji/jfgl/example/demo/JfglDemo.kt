@@ -2502,10 +2502,22 @@ class JfglDemoApp : Application() {
             }
         ),
 
-        // ⑪ ★ 四种图型遍历：每一步都要**真的重建** Chart（身份跳变），
-        //    而**切回已经建过的图型时必须回到原来那个实例**（不然每绕一圈漏两块 GPU 缓冲）。
-        //    这一步判的正是"欠重建"那个盲区：`chart()` 变成永远返回缓存时，
-        //    身份不再跳变、号数停在原地，而画面看起来毫无问题（只是菜单变死）。
+        // ⑭ ★ 四种图型遍历：每一步都要**真的重建** Chart（身份跳变），
+        //    而**切回已经建过的图型时必须回到原来那个实例**（缓存生效 = 菜单没变死）。
+        //    这一步判的正是"欠重建"那个盲区：`chart()` 变成永远返回同一个实例时，
+        //    身份不再跳变，而画面看起来毫无问题（只是菜单变死）。
+        //
+        // ★ **号那一条在 2026-09-26 反过来了**（本次改动）。它以前断言"每换一种 +2、
+        //   切回旧的复用（号不变）"——那测的是 `DemoChart.cachedCharts` 这张表在防泄漏。
+        //   现在 `ChartRenderer` 自己会回收（`releaseUnused`，由 `Gc.beginFrame` 每帧调一次，
+        //   见那边的文档）：**切走的图型那两条系列连续两帧没被画过就被释放、号被归还**，
+        //   所以号数**不再随切换次数增长**。新判据正是这件事的反面读法：
+        //   `r[i].ids <= r[i-1].ids`——每切一次，图表占的号**只可能减，不可能增**。
+        //   这条对"库不回收"是定向敏感的（那时每切一种新图型就 +2，序列严格递增）。
+        //
+        //   为什么读数是 6 而不是 2：读数取在"新图型刚画过一帧"那一刻，而宽限是**两帧**，
+        //   所以上一个图型那两条号**这一帧还没被归还**。判据因此写成 `<=` 而不是 `==`：
+        //   它量的是"没有增长"，不是"恰好等于某个数"——后者会随读数的时机而变。
         //
         // ★ 每段的等待条件是"**图表又画了一帧**"（探针涨 1），不是"身份变了"——
         //   后者在变异 B 下永远等不到，那这条失败就会被报成"工序超预算"，
@@ -2528,19 +2540,23 @@ class JfglDemoApp : Application() {
                 val r = selfTestKindReadings
                 val chartIds = registrySize() - selfTestChartBaseline
                 val ok = r.size == 5 &&
-                        r[0].ids == selfTestSizeAfterKind0 + 2 && r[0].identity != selfTestIdentityKind0 &&
-                        r[1].ids == r[0].ids + 2 && r[1].identity != r[0].identity &&
-                        r[2].ids == r[1].ids + 2 && r[2].identity != r[1].identity &&
-                        r[3].ids == r[2].ids && r[3].identity == selfTestIdentityKind0 &&
-                        r[4].ids == r[3].ids && r[4].identity == r[0].identity &&
+                        r[0].identity != selfTestIdentityKind0 &&
+                        r[1].identity != r[0].identity &&
+                        r[2].identity != r[1].identity &&
+                        r[3].identity == selfTestIdentityKind0 &&
+                        r[4].identity == r[0].identity &&
+                        r[1].ids <= r[0].ids && r[2].ids <= r[1].ids &&
+                        r[3].ids <= r[2].ids && r[4].ids <= r[3].ids &&
                         chartIds <= 8
                 val series = if (r.size == 5) r.joinToString(" → ") {
                     "${DemoChart.KINDS[it.kind].first}:号${it.ids}/身份${it.identity}"
                 } else "只记到 ${r.size} 步"
                 check(
-                    "⑭ ★ 遍历四种图型：每换一种就重建（身份跳变、号 +2），切回旧的复用（号不变、身份回归）", ok,
-                    "$series ；起点（折线）身份=$selfTestIdentityKind0、号=$selfTestSizeAfterKind0；" +
-                        "图表系列一共占 $chartIds 个拾取号（上限 8 = 4 图型 × 2 系列）"
+                    "⑭ ★ 遍历四种图型：每换一种就重建（身份跳变）、切回旧的复用（身份回归）；" +
+                        "而号**不随切换增长**（切走的那两条被库回收、号被归还）", ok,
+                    "$series ；起点（折线）身份=$selfTestIdentityKind0、进入图表模式时号=$selfTestSizeAfterKind0；" +
+                        "图表系列一共占 $chartIds 个拾取号（上限 8 = 4 图型 × 2 系列）。" +
+                        "四个号读数必须是**不增**的——递增就说明回收没发生（每换一种新图型 +2）"
                 )
             }
         ),

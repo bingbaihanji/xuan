@@ -197,11 +197,13 @@ jfgl-render-gl/src/test/.../gpu/        FftWindowTest、FftKernelTest
 + `MsaaVerifier`（**要跑三次**：`msaa=0` / `4` / `-1`，由 `jfgl-javafx/scripts/msaa-verify.sh` 比对）。
 后两者的处境与那六个的区别见「抗锯齿」一节。）
 
-当前 **385 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+当前 **405 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
 `@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`（跨模块加 `-pl 模块名`）。
-分布：`geom/` 91、`renderer/` 107、`gl/` 12、`text/` 32、`chart/` 80、`chartrender/` 49、
-`gpu/` 14（合计 385；子项目 A 抗锯齿那一步加了 15 条——`geom/` +12（`StrokeGenerator`
-的 `aEdge`）、`renderer/` +3（`VertexFormatTest` +1 与 `VertexWriterTest` +2）。
+分布：`geom/` 91、`renderer/` 107、`gl/` 12、`text/` 32、`chart/` 80、`chartrender/` 69、
+`gpu/` 14（合计 405；子项目 A 抗锯齿那一步加了 15 条——`geom/` +12（`StrokeGenerator`
+的 `aEdge`）、`renderer/` +3（`VertexFormatTest` +1 与 `VertexWriterTest` +2）；
+平滑曲线那一步（`deca1a7`）给 `chartrender/` 加了 20 条
+——`SmoothCurveTest` / `SeriesBufferTest` / `SeriesUploadPlanTest`）。
 ⚠️ **`renderer/` 里没有任何一条覆盖"`Gc.antialias` 的样式栈"**——全仓没有 `GcTest`，
 `Gc` 只能靠校验器（见「测试」节开头与「抗锯齿」一节）。
 
@@ -1290,19 +1292,34 @@ DSL 的 `jfgl { antialias { msaa = 4 } }`——见「抗锯齿」一节
   - **`jfgl-javafx` 跑不了单测**：pom 里没有 junit、没有 surefire，kotlin 插件也只配了
     `src/main/kotlin`。所以本模块的纯计算只能靠"启动自检 + 非 0 退出"
     （`ClickDslExample` 与 `JfglDemo` 都是这个模式）。`src/test` 目录存在但是空的。
-  - **★ `ChartRenderer` 没有"这个系列不再画了"的回收接口**（设计文档 §6.6）：
-    它用 `IdentityHashMap` 按 **`Series` 对象身份**缓存每个系列的 GPU 缓冲与拾取号
+  - ✅ **已修（2026-09-26）：`ChartRenderer` 的系列资源现在自动回收**（设计文档 §6.6）。
+    原先它用 `IdentityHashMap` 按 **`Series` 对象身份**缓存 GPU 缓冲与拾取号
     （`buffers` 与 `pickIds.computeIfAbsent(series, pickRegistry::register)` 两处），
-    而这两张 map **只在 `ChartRenderer.dispose()` 里清空**，中间没有任何回收路径。
-    后果：任何"每帧重建 `Chart`"的写法——而那是最自然的写法，因为 `Chart` 看起来是个
-    纯计算对象——都会**每帧泄漏一块 `SeriesBuffer`（显存）并每帧消耗两个拾取号**；
-    号耗尽时 `PickRegistry` 会抛异常，**而 GL 线程上的异常在本项目是静默吞掉的**，
-    所以症状是"前几百帧完全正常，然后图表忽然不画了，没有任何报错"。
-    demo 的处置是**按图型缓存 `Chart`**（`DemoChart.cachedCharts`），代价是菜单四项
-    ⇒ 上限 8 块缓冲与 8 个号（**有界**，来回切不再分配）。
-    该补的是库：一个"本帧只保留这些系列"的入口（形如 `retainSeries` / `releaseSeries`），
-    在 `draw` 结束时回收不再出现的系列。**属于扩 API 面，本期只记录**
-    ——`DemoChart.kt` 的 KDoc 明确承诺了这条要记进这里。
+    而这两张 map **只在 `dispose()` 里清空**、中间没有任何回收路径 ⇒
+    任何"每帧重建 `Chart`"的写法（最自然的写法，因为 `Chart` 看起来是个纯计算对象）
+    都会**每帧泄漏一块 `SeriesBuffer` 并消耗两个拾取号**；号耗尽时 `PickRegistry`
+    抛异常，**而 GL 线程上的异常在本项目是静默吞掉的** ⇒
+    症状是"前几百帧完全正常，然后图表忽然不画了，没有任何报错"。
+    **做法是自动回收，不是 `retainSeries` / `releaseSeries`**：一个要记得调的 API
+    仍然会被忘记，而忘记的症状是静默的——正是这条缺陷本身的形态。
+    机制：`ChartRenderer` 记一个**代**（每帧 +1）与一张 `IdentityHashMap<Series, Long> lastSeen`
+    （`draw` 把每个画到的系列标成当前代），帧首回收**连续两帧没被画过**的系列
+    （`buffer.dispose()` + `pickRegistry.unregister(id)` + 三张表一并移除）；
+    时机由帧的所有者给——`Gc.beginFrame` 每帧调一次 `releaseUnused()`
+    （`charts` 是懒创建的，没建过图表的应用一行都不受影响），**没有新增公开的帧边界 API**。
+    **★ 宽限两代是刻意的，不是随手取的**：改成"上一帧没画就收"之后，
+    "**每隔一帧画一次**"的用法会**每画一次就销毁又重建一次缓冲**——而重建意味着
+    **重传整个环**（1M 点 = 4 MB），画面却逐像素相同（实测：变异后 B 组 14 次画
+    每次都传 44 字节，拾取号在 {7, 9, 19} 之间循环）。
+    两帧的宽限让那种用法的最大间隔恰好是 1 代，一次都不回收；
+    而"真的不再画了"仍在**连续两帧**之内释放（第 k 帧之后不再画 ⇒ 第 k+3 帧的帧首释放）。
+    `ChartVerifier` 的**「回收实验」一节 7 条**钉着它（三路探针：A 每帧 new 两个
+    `Series` ⇒ 台账不增长；B 同一个对象每隔一帧画 ⇒ 宽限挡得住；C 每帧都画 ⇒ 不误收），
+    两条变异各自定向：删掉 `Gc.beginFrame` 里那句 ⇒ 只剩 ① 两条倒（size 48 → 100，
+    每帧恰好 +2）；`GRACE_GENERATIONS` 2 → 1 ⇒ 只剩 ② 两条倒。
+    `DemoChart.cachedCharts` **保留但换了理由**：它不再防泄漏（库负责了），
+    现在的理由是"停在同一个图型上时零重传"（重建必然重传整环）；
+    代价是切走超过两帧再切回来仍要重传一次——那是刻意的取舍。
 
 **声明了但完全没用到的依赖**
 JOML（数学全是手写的）、`lwjgl-glfw`、jspecify、logback、byte-buddy(+agent)、JNA。

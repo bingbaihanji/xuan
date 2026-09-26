@@ -244,11 +244,59 @@ private val ZIG_VALUES = doubleArrayOf(0.0, 1.0, 0.0, 1.0, 0.0)
 private const val STREAM_FRAMES = 100
 
 /**
- * 全部断言在**第几帧**上跑。留 4 帧余量：实验图在观察期结束时就不画了，
- * 那几帧正好顺带验证"上一帧画过的东西这一帧**整体**消失"没有留下任何痕迹
+ * 观察期结束到回收期之间的**空档**帧数。实验图在观察期结束时就不画了，
+ * 这几帧正好顺带验证"上一帧画过的东西这一帧**整体**消失"没有留下任何痕迹
  * （颜色集合那条断言会数出来）。
  */
-private const val TOTAL_FRAMES = STREAM_FRAMES + 4
+private const val SETTLE_FRAMES = 4
+
+/**
+ * 回收实验的起始帧（= 观察期 + 空档）。
+ *
+ * <p><b>它恰好等于改动前的 {@code TOTAL_FRAMES}</b>（104）——所以"断言从哪一帧起跑"
+ * 这件事一字未改，变的只是后面又多接了一段回收期。
+ */
+private const val RECLAIM_START = STREAM_FRAMES + SETTLE_FRAMES
+
+/**
+ * 回收实验的帧数：探针一共画这么多帧（`n ∈ [RECLAIM_START, RECLAIM_END)`）。
+ *
+ * <p>30 是按**读数要进入稳态**定的，不是随手取的：A 组每帧都 new 两个系列，
+ * 而回收有两代的宽限（见 `ChartRenderer.GRACE_GENERATIONS`），于是"同时活着的
+ * A 组系列数"要到第 3 帧才停止爬坡（2 → 4 → 6，之后一直是 6）。
+ * 断言只取 {@code RECLAIM_START + 3} 之后的读数，正好跳过那两帧。
+ * 剩下的 27 帧足够看出"每帧 +2"这种线性增长——**不开回收时它会从 6 涨到 60**。
+ */
+private const val RECLAIM_FRAMES = 30
+
+/**
+ * 回收期探针画到**这一帧为止**（不含）。
+ *
+ * <p><b>★ 这个上界比"回收期多长"要紧，第一版就栽在它上面（实测）。</b>
+ * 校验帧 {@code f} 上回读到的画面是**绘制帧 {@code f − 1}** 画出来的
+ * （`frame` 是"已完成帧数"，见 [drawScene]）。所以探针的上界必须比
+ * [TOTAL_FRAMES] **至少早一帧**——第一版写的是 `n < TOTAL_FRAMES`，
+ * 于是绘制帧 {@code TOTAL_FRAMES − 1} 上三块探针还在画，校验帧里就多出
+ * 336 个白像素（三条 112px 的线，探针系列的默认色恰好也是白），
+ * "移动方块不多不少 40×40" 当场变成 1936。
+ *
+ * <p>既有那几张实验图用的是 {@code n < STREAM_FRAMES}（100）配
+ * {@code TOTAL_FRAMES}（104），中间那 4 帧就是同一个道理。
+ */
+private const val RECLAIM_END = RECLAIM_START + RECLAIM_FRAMES
+
+/**
+ * 全部断言在**第几帧**上跑。
+ *
+ * <p>它比改动前往后挪了 {@link RECLAIM_FRAMES} + {@link SETTLE_FRAMES} 帧
+ * （104 → 138），而**校验帧的画面一字未改**：`drawScene` 里除观察期与回收期
+ * 那两段外都不看帧号（唯一的例外是 [movingSquareX] 的奇偶），而
+ * {@code TOTAL_FRAMES − 1}（137）与改动前的 103 **同奇偶**（都是奇数），
+ * 方块仍在同一个位置。回收期那一段带着 {@link RECLAIM_END} 的上界，
+ * 所以校验帧上探针早已不画——"画面恰好只有这 7 种颜色"与各色像素计数
+ * 因此一字未改（实测：改动前后那 7 个数字逐字相同）。
+ */
+private const val TOTAL_FRAMES = RECLAIM_END + SETTLE_FRAMES
 
 // ---- 一、流式实验：量"本帧上传了多少字节" ----
 
@@ -1333,6 +1381,74 @@ private val smoothCurveArgb = smoothCurveRgb or (0xFF shl 24)
 private val smoothGapArgb = smoothGapRgb or (0xFF shl 24)
 private val smoothAreaArgb = smoothAreaRgb or (0xFF shl 24)
 
+// ---------------------------------------------------------------------------
+// 回收实验：图表的 GPU 资源跟着使用走（ChartRenderer.releaseUnused）
+//
+// 它验的是**台账**，不是像素：`ChartRenderer` 按 Series 的对象身份缓存缓冲与拾取号，
+// 而"每帧重建 Chart"（= 每帧 new 出新的 Series）是最自然的写法。以前那种写法
+// 每帧泄漏一块缓冲并消耗两个拾取号，号耗尽时抛异常——而 GL 线程上的异常在本项目
+// 是静默吞掉的，症状是"前几百帧完全正常，然后图表忽然不画了，没有任何报错"。
+//
+// 三路探针各问一件事（判据互相独立，见各自的断言）：
+//   A 每帧 **new** 一个 Chart 和两个 Series  ⇒ 问"台账不再增长"
+//   B **同一个 Series 对象**，但只在奇数帧画 ⇒ 问"宽限真的挡得住每隔一帧的用法"
+//   C **同一个 Chart**，每帧都画            ⇒ 问"还在用的东西没有被回收掉"
+//
+// ⚠️ 三块探针画在**屏幕里**，不是屏幕外：本实验要读**拾取号**，而 `Gc.pick`
+// 只能命中"这一帧真的画在画面上、且没被 scissor 裁掉"的东西——画到屏幕外的话
+// 三个读数恒为 0，而"号不变"与"号恒为 0"在那条断言里长得一模一样。
+// ---------------------------------------------------------------------------
+
+/**
+ * 三块探针绘图区：帧缓冲**最底下那一条空带**（y 712..736）。
+ *
+ * <p>位置是照 {@link AA_PLOT_Y} 那一段的推导挑的：AA 探针占 x 20..320、
+ * 平滑缺口探针占 x 330..630（两者都在 y 712..734），再往右到 x 984 是空的。
+ * 三块横着排开：636 / 754 / 872，各 112 px 宽，右端 984。
+ *
+ * <p>⚠️ **它依赖帧缓冲 ≥ 984×736**（本机 125% 缩放下实测 988×738）。
+ * 这与 AA 那一组是同一条前提，所以 {@code reclaimPrecondition} 会先把它报出来：
+ * 越界时三个拾取号会全是 0，而"全是 0"看起来像"回收把还在用的号也收走了"，
+ * 归因就完全错了。
+ */
+private const val RECLAIM_A_PLOT_X = 636f
+private const val RECLAIM_B_PLOT_X = 754f
+private const val RECLAIM_C_PLOT_X = 872f
+private const val RECLAIM_PLOT_Y = 712f
+private const val RECLAIM_PLOT_W = 112f
+private const val RECLAIM_PLOT_H = 24f
+
+/**
+ * 探针系列的数据点数与取值，与拾取探针图（{@code pickProbeData}）同一种形状：
+ * **一条水平线**，值取 y 窗口 [0,1] 的正中。
+ *
+ * <p>取水平线是为了让"探针点落在线上"这句话不需要算斜线的法向：
+ * 值 0.5 在窗口 [0,1] 里映射到绘图区正中，即设备行 {@code 712 + 12 = 724}。
+ * 拾取热区半宽 4px，所以取正中那一行必然命中——它命不中的话是**绘图区没在
+ * 帧缓冲里**（前提那条断言会先报出来），不是回收的事。
+ */
+private const val RECLAIM_POINTS = 11
+private const val RECLAIM_VALUE = 0.5
+
+/** 探针点相对绘图区左上角的偏移（取正中：宽 112/2 = 56、高 24/2 = 12）。 */
+private const val RECLAIM_PROBE_DX = 56f
+
+/** 探针点相对绘图区顶边的设备行（= y 窗口正中那一行）。 */
+private const val RECLAIM_PROBE_ROW = 12f
+
+/**
+ * 探针系列的色，以及它的 ARGB。
+ *
+ * <p><b>给它们一个别处都没有的颜色是刻意的</b>（不是随手挑的）：
+ * 探针万一漏进校验帧，"画面恰好只有这 7 种颜色"会直接点名这个颜色。
+ * 用默认色（**白**，`0xFFFFFF`）的话，漏进去的后果是"移动方块不多不少 40×40"
+ * 变成 1936——排查方向会跑向方块与鬼影，而真因是三块探针没按时收工。
+ * 这个坑是实测踩出来的（见 {@link RECLAIM_END}）。
+ */
+private val reclaimRgb = 0x123456
+
+private val reclaimArgb = reclaimRgb or (0xFF shl 24)
+
 /**
  * 校验器的启动入口。
  *
@@ -2192,6 +2308,298 @@ class ChartVerifierApp : Application() {
 
     /** 变换守卫的探针结果：带着 `translate` 调 `drawChart` 时抛出的那个异常。 */
     private var transformGuardError: Throwable? = null
+
+    // -----------------------------------------------------------------------
+    // 回收实验（见文件上方那一段"回收实验"的说明）
+    // -----------------------------------------------------------------------
+
+    private val reclaimRectA = Rect(RECLAIM_A_PLOT_X, RECLAIM_PLOT_Y,
+        RECLAIM_PLOT_W, RECLAIM_PLOT_H)
+
+    private val reclaimRectB = Rect(RECLAIM_B_PLOT_X, RECLAIM_PLOT_Y,
+        RECLAIM_PLOT_W, RECLAIM_PLOT_H)
+
+    private val reclaimRectC = Rect(RECLAIM_C_PLOT_X, RECLAIM_PLOT_Y,
+        RECLAIM_PLOT_W, RECLAIM_PLOT_H)
+
+    /**
+     * A/B/C 三路探针共用的数据（一份静态的 [ArrayChartData]，一条水平线）。
+     *
+     * <p>共用是刻意的：A 组每帧 new 两个 `Series`，三个 `Series` 指向**同一份数据**
+     * 才能保证"重建缓冲要重传的字节数"在 A/B/C 三处是同一个数
+     * ——否则"传了 44 字节"与"传了 80 字节"的差别会掺进数据本身的差别。
+     */
+    private val reclaimData = ArrayChartData(
+        arrayOf(
+            AxisRange(0.0, (RECLAIM_POINTS - 1).toDouble(), "样本", ""),
+            AxisRange(0.0, 1.0, "值", "")
+        ),
+        arrayOf(
+            DoubleArray(RECLAIM_POINTS) { it.toDouble() },
+            DoubleArray(RECLAIM_POINTS) { RECLAIM_VALUE }
+        )
+    )
+
+    /**
+     * B 组的系列：**同一个对象跨帧复用**，但只在奇数帧画（见 [drawReclaimProbes]）。
+     *
+     * <p>它的存在就是为了那条宽限：如果回收做成"上一帧没画就收"，
+     * 这个系列会**每画一次就销毁并重建一次缓冲**——而重建意味着把整个环重传。
+     * 画面上逐像素相同，只有 GPU 上传量悄悄翻倍。
+     */
+    private val reclaimBSeries = Series("回收B", reclaimData, ChartType.LINE).color(reclaimArgb)
+
+    private val reclaimBChart: Chart = buildReclaimChart(reclaimBSeries, reclaimRectB)
+
+    /** C 组的系列：**每帧都画**，所以它一次都不该被回收。 */
+    private val reclaimCSeries = Series("回收C", reclaimData, ChartType.LINE).color(reclaimArgb)
+
+    private val reclaimCChart: Chart = buildReclaimChart(reclaimCSeries, reclaimRectC)
+
+    /**
+     * 一帧的读数。做成一个小类而不是几条平行的列表：B 组只在奇数帧有值，
+     * 用平行列表的话下标会错开，而"数错了哪一帧"的失败看起来像"回收坏了"。
+     */
+    private class ReclaimSample(
+        /** 这一份读数取自哪一个绘制帧。 */
+        val frame: Int,
+        /** `Gc.pickRegistry.size()`：全项目共用的那一本注册表。 */
+        val registrySize: Int,
+        /** `ChartRenderer.cachedBufferCount()`。 */
+        val bufferCount: Int,
+        /** B 组读回的拾取号；这一帧没画它时为 0。 */
+        val bId: Int,
+        /** B 组这一帧的上传字节数；这一帧没画它时为 0。 */
+        val bUpload: Int,
+        /** C 组读回的拾取号。 */
+        val cId: Int,
+        /** C 组这一帧的上传字节数。 */
+        val cUpload: Int,
+    )
+
+    /** 回收期逐帧记下的读数（只 append，断言在校验帧上做）。 */
+    private val reclaimSamples = ArrayList<ReclaimSample>()
+
+    /**
+     * 回收实验的四条判据（设计说明见文件上方"回收实验"那一段）。
+     *
+     * <h2>判据为什么只能是台账，不能是像素</h2>
+     * <p>回收只发生在"不再画了"之后，而那时画面上本来就没有它——于是
+     * "<b>回收真的发生了</b>"与"<b>每帧泄漏一块缓冲</b>"这两件事的
+     * <b>画面逐像素相同</b>，本文件其它任何一条像素断言都分不开它们。
+     * 所以这里读的是三个台账口径：
+     * <ul>
+     *   <li>{@code Gc.pickRegistry.size()}——拾取号有没有被归还（公开入口）；</li>
+     *   <li>{@code ChartRenderer.cachedBufferCount()}——缓冲有没有被释放
+     *       （与 {@code takeUploadedBytes} 同类：为一个断言而存在的观测口）；</li>
+     *   <li>{@code takeUploadedBytes(series)}——"缓冲对象还是原来那一个"没有公开入口，
+     *       而 <b>重建的唯一可见后果就是重传整环</b>，所以"有没有重传"是它的等价判据，
+     *       而且是用户真的会感觉到的那一面。</li>
+     * </ul>
+     *
+     * <h2>读数只取 RECLAIM_START + 3 之后</h2>
+     * <p>A 组每帧 new 两个系列，而回收有<b>两代宽限</b>，所以"同时活着的 A 组系列数"
+     * 要到第 3 帧才停止爬坡（2 → 4 → 6，之后一直是 6）。
+     * 把爬坡那两帧算进去的话，断言会因为**正确的实现**而失败。
+     *
+     * <h2>每条断言都打印它量到的实际值</h2>
+     * <p>而且打印窗口覆盖断言窗口：下面先把 30 帧的读数整表打出来，再做断言。
+     * 失败时不用再去猜"到底是多少"。
+     */
+    private fun verifyReclaim(w: Int, h: Int, report: (String, Boolean, String) -> Unit) {
+        println("\n-- 回收实验：图表资源跟着使用走（ChartRenderer.releaseUnused）--")
+
+        val needW = RECLAIM_C_PLOT_X + RECLAIM_PLOT_W
+        val needH = RECLAIM_PLOT_Y + RECLAIM_PLOT_H
+        report("前提：回收实验的三块探针绘图区都在帧缓冲里", w >= needW && h >= needH,
+            "帧缓冲 ${w}x$h，探针要 x ≥ $needW、y ≥ $needH。" +
+                    "越界时三个拾取号会全是 0——而\"全是 0\"看起来像\"回收把还在用的号" +
+                    "也收走了\"，归因就完全错了（与 AA 那一组是同一条前提）")
+
+        val tail = reclaimSamples.filter { it.frame >= RECLAIM_START + 3 }
+        if (tail.size < RECLAIM_FRAMES - 3) {
+            // 没有这条前提的话，下面的判据会在**空集合**上恒真——一条静默的绿。
+            report("前提：回收实验的读数取满了 ${RECLAIM_FRAMES - 3} 帧", false,
+                "实际 ${tail.size} 帧（共记下 ${reclaimSamples.size} 帧，" +
+                        "回收期是 [$RECLAIM_START, $RECLAIM_END)）")
+            return
+        }
+
+        // 两组"第一次被画"的样本：它们在建缓冲那一帧上，**落在断言窗口之外**
+        // （窗口从 RECLAIM_START + 3 起，理由见函数文档），但要把它们的读数打出来
+        // ——它们证明这个读数口真的能看见"整环重传"（44 字节 = 11 个样本 × 4），
+        // 于是窗口里那一片 0 才有意义，而不是"这个口读数恒为 0"。
+        val firstBDraw = reclaimSamples.first { it.frame % 2 == 1 }
+        val firstCDraw = reclaimSamples.first()
+
+        println("  回收期逐帧读数（帧号 / pickRegistry.size / cachedBufferCount / " +
+                "B 号 / B 上传 / C 号 / C 上传）：")
+        for (s in reclaimSamples) {
+            // "B 这一帧没画"用 `-` 标出来：写成 0 的话与"号真的读成了 0"分不开，
+            // 而后者正是断言要抓的东西。
+            val bDrawn = s.frame % 2 == 1
+            println(
+                "    ${s.frame} / ${s.registrySize} / ${s.bufferCount} / " +
+                        "${if (bDrawn) s.bId.toString() else "-"} / " +
+                        "${if (bDrawn) s.bUpload.toString() else "-"} / " +
+                        "${s.cId} / ${s.cUpload}"
+            )
+        }
+
+        // ---- ① 每帧重建 Chart：台账不增长 ----
+        //
+        // 这一段是本次修复的正面判据。它的"对照组"（不能恒真）由变异给出：
+        // 把 Gc.beginFrame 里那句 releaseUnused() 删掉，这两个读数就会**每帧 +2**
+        // ——A 组每帧留下两个新 Series，而没有任何东西回收它们。
+        // 下面的 detail 里把那个对照组的**精确**数字写出来：不开回收时
+        // `size` 在这 ${tail.size} 帧里会单调涨 ${2 * (tail.size - 1)}（每帧恰好 +2）。
+        val regFirst = tail.first().registrySize
+        val regLast = tail.last().registrySize
+        report("① 每帧重建 Chart（每帧 new 两个 Series）${tail.size} 帧后，" +
+                "pickRegistry 的规模不增长",
+            tail.all { it.registrySize == regFirst },
+            "第 ${tail.first().frame} 帧 size=$regFirst，第 ${tail.last().frame} 帧 size=$regLast；" +
+                    "本段 size 的取值集合=${tail.map { it.registrySize }.toSortedSet()}。" +
+                    "对照组（把 Gc.beginFrame 里的 releaseUnused() 删掉）这一段会涨 " +
+                    "${2 * (tail.size - 1)} 个号（每帧恰好 +2，A 组两个新系列）")
+
+        val bufFirst = tail.first().bufferCount
+        val bufLast = tail.last().bufferCount
+        report("① 每帧重建 Chart ${tail.size} 帧后，缓存的缓冲数不增长",
+            tail.all { it.bufferCount == bufFirst },
+            "第 ${tail.first().frame} 帧 bufferCount=$bufFirst，" +
+                    "第 ${tail.last().frame} 帧 bufferCount=$bufLast；" +
+                    "本段 bufferCount 的取值集合=${tail.map { it.bufferCount }.toSortedSet()}。" +
+                    "对照组（不开回收）这一段会涨 ${2 * (tail.size - 1)} 块" +
+                    "（每帧泄漏两块 SeriesBuffer）")
+
+        // ---- ② 每隔一帧画一次：宽限挡得住，缓冲与号都不动 ----
+        //
+        // 这一条是**反面**：B 组一直画着同一个 Series 对象，所以它一次都不该被回收。
+        // 它对"宽限"这个词是定向敏感的：把 GRACE_GENERATIONS 从 2 改成 1
+        //（"上一帧没画就收"）之后，B 组在每一帧的帧首被释放、又在同一帧里被重建，
+        // 于是"不重传"那条立刻倒，而画面逐像素相同。
+        val bFrames = tail.filter { it.frame % 2 == 1 }
+        val bIds = bFrames.map { it.bId }.toSortedSet()
+        report("② 每隔一帧画一次（奇数帧画、偶数帧不画）：拾取号始终不变且非 0",
+            bIds.size == 1 && bIds.first() != 0,
+            "本段画了 ${bFrames.size} 次，读到的号集合=$bIds（期望恰好一个元素且非 0）。" +
+                    "号变了说明这个还在用的系列被回收后又重新注册（拾取会静默失效）；" +
+                    "0 说明这一帧压根没画出来（先看上面那条前提）")
+
+        val bUploads = bFrames.map { it.bUpload }
+        report("② 每隔一帧画一次：缓冲没有被回收（每一次都不重传）",
+            bUploads.all { it == 0 },
+            "本段 ${bUploads.size} 次画它的上传字节取值集合=${bUploads.toSortedSet()}" +
+                    "（期望只有 0）。非 0 就是\"缓冲被销毁又重建\"的直接证据——" +
+                    "重建必然把整环重传（1M 点就是 4 MB），而画面逐像素相同。" +
+                    "这个读数口本身不是恒 0 的：它第一次被画（帧 " +
+                    "${firstBDraw.frame}，在建缓冲那一帧上，落在本段之外）实测传了 " +
+                    "${firstBDraw.bUpload} 字节")
+
+        // ---- ③ 一直画同一个 Chart：还在用的东西不会被回收 ----
+        val cIds = tail.map { it.cId }.toSortedSet()
+        report("③ 一直画同一个 Chart：拾取号始终不变且非 0",
+            cIds.size == 1 && cIds.first() != 0,
+            "本段 ${tail.size} 帧读到的号集合=$cIds（期望恰好一个元素且非 0）")
+
+        val cUploads = tail.map { it.cUpload }
+        report("③ 一直画同一个 Chart：缓冲没有被回收（每一帧都不重传）",
+            cUploads.all { it == 0 },
+            "本段 ${cUploads.size} 帧的上传字节取值集合=${cUploads.toSortedSet()}" +
+                    "（期望只有 0）。非 0 说明回收把**正在画**的系列也收掉了——" +
+                    "那表现为每帧重传整环，而且拾取号会跟着变。" +
+                    "同样地，这个读数口不是恒 0 的：它第一次被画（帧 " +
+                    "${firstCDraw.frame}，建缓冲那一帧，落在本段之外）实测传了 " +
+                    "${firstCDraw.cUpload} 字节")
+    }
+
+    /**
+     * 造一张探针图：一条水平线，两个轴都按数据自己的范围给窗口。
+     *
+     * <p>不设标题、不设图例——本实验走的是低层的 `draw`，装饰本来就不参与，
+     * 那两行只是把"这里没有装饰"写在代码里。
+     */
+    private fun buildReclaimChart(series: Series, rect: Rect): Chart {
+        val xAxis = Axis(AxisType.LINEAR, reclaimData.axisRange(0))
+            .setDisplayLength(rect.width.toDouble())
+            .setWindow(0.0, (RECLAIM_POINTS - 1).toDouble())
+        val yAxis = Axis(AxisType.LINEAR, reclaimData.axisRange(1))
+            .setDisplayLength(rect.height.toDouble())
+        val chart = Chart(xAxis, yAxis)
+        chart.addLayer("回收实验").add(series)
+        return chart
+    }
+
+    /**
+     * 造**一个全新的** Chart 与两个全新的 Series（A 组每帧调一次）。
+     *
+     * <p>它必须每帧都新建，一次都不能省：这条断言要的正是"用户每帧都 new 出新的
+     * `Series` 对象"那种用法（`Chart` 看起来是个纯计算对象，所以那是最自然的写法）。
+     * 把 Chart 缓存起来就没有东西可泄漏了，测的也就不是那条缺陷了。
+     */
+    private fun buildReclaimAFrame(): Chart {
+        val xAxis = Axis(AxisType.LINEAR, reclaimData.axisRange(0))
+            .setDisplayLength(RECLAIM_PLOT_W.toDouble())
+            .setWindow(0.0, (RECLAIM_POINTS - 1).toDouble())
+        val yAxis = Axis(AxisType.LINEAR, reclaimData.axisRange(1))
+            .setDisplayLength(RECLAIM_PLOT_H.toDouble())
+        val chart = Chart(xAxis, yAxis)
+        chart.addLayer("回收A")
+            .add(Series("回收A-甲", reclaimData, ChartType.LINE).color(reclaimArgb))
+            .add(Series("回收A-乙", reclaimData, ChartType.LINE).color(reclaimArgb))
+        return chart
+    }
+
+    /**
+     * 回收实验的三路探针，**只在回收期画**（`n ∈ [RECLAIM_START, TOTAL_FRAMES)`）。
+     *
+     * <p>"只在回收期画"与其它实验图是同一条纪律：校验帧的画面上不许有它们的颜色，
+     * 否则"画面恰好只有这 7 种颜色"那条既有断言会失败。上界之所以是
+     * {@link RECLAIM_END} 而不是 {@code TOTAL_FRAMES}，见 {@link RECLAIM_END} 的说明。
+     *
+     * <p>读数在本方法末尾取，取的是**本帧全部画完之后**的台账。
+     * 三路探针的绘制顺序（A → B → C）在同一帧内固定，所以逐帧的读数可比。
+     *
+     * @param n 本帧的绘制帧下标（与 `frame` 差 1，见 [drawScene]）
+     */
+    private fun drawReclaimProbes(gc: Gc, n: Int) {
+        // A 组：每帧新建 Chart + 两个 Series。
+        gc.charts.draw(buildReclaimAFrame(), reclaimRectA, gc.width, gc.height)
+        // B 组：同一个 Series 对象，只在**奇数帧**画（偶数帧完全不碰它）。
+        val bDrawn = n % 2 == 1
+        if (bDrawn) {
+            gc.charts.draw(reclaimBChart, reclaimRectB, gc.width, gc.height)
+        }
+        // C 组：同一个 Chart，每帧都画。
+        gc.charts.draw(reclaimCChart, reclaimRectC, gc.width, gc.height)
+
+        // 上传字节数必须**当场取走**（`takeUploadedBytes` 是取走即清零的语义）。
+        // B 组没画的那一帧不取：它的缓冲还在（宽限），但那一帧压根没有上传，
+        // 取回来的 0 与"重建之后传了整环"是两件事，混在一起就分不开了。
+        val bUpload = if (bDrawn) gc.charts.takeUploadedBytes(reclaimBSeries) else 0
+        val cUpload = gc.charts.takeUploadedBytes(reclaimCSeries)
+
+        // 拾取号只能在**它这一帧画着的时候**问（`Gc.pick` 读的是本帧的 ID 缓冲）。
+        val bId = if (bDrawn) pickAtReclaimProbe(gc, reclaimRectB) else 0
+        val cId = pickAtReclaimProbe(gc, reclaimRectC)
+
+        reclaimSamples.add(
+            ReclaimSample(
+                frame = n,
+                registrySize = gc.pickRegistry.size(),
+                bufferCount = gc.charts.cachedBufferCount(),
+                bId = bId,
+                bUpload = bUpload,
+                cId = cId,
+                cUpload = cUpload,
+            )
+        )
+    }
+
+    /** 在探针绘图区的正中央读一次拾取号（那里必然压着那条水平线）。 */
+    private fun pickAtReclaimProbe(gc: Gc, rect: Rect): Int =
+        gc.pick(rect.x + RECLAIM_PROBE_DX, rect.y + RECLAIM_PROBE_ROW)?.id() ?: 0
 
     /**
      * 造一个变体：图例放哪一边 + 可选的底部标题 + 外边距。
@@ -3114,6 +3522,14 @@ class ChartVerifierApp : Application() {
         //     第 1 组要"滚动若干帧"才成立、第 3 组要"前后两帧"才成立，
         //     而观察期一过就让画面回到 Task 10/11 的原样——于是前 15 条断言的
         //     期望值（尤其是"画面只有这 7 种颜色"）一字未改。
+        if (n >= RECLAIM_START && n < RECLAIM_END) {
+            // 回收实验：**只在回收期画**（理由与其它实验图相同——校验帧的画面上
+            // 不许有它们的颜色，见"画面恰好只有这 7 种颜色"那条断言）。
+            // 上界是 RECLAIM_END 而**不是** TOTAL_FRAMES：校验帧回读到的是
+            // 绘制帧 TOTAL_FRAMES − 1，上界写成 TOTAL_FRAMES 的话探针会留在
+            // 那张画面里（第一版就是这么错的，实测多出 336 个白像素）。
+            drawReclaimProbes(gc, n)
+        }
         if (n < STREAM_FRAMES) {
             drawStreamingChart(gc)
             drawGapChart(gc)
@@ -5494,6 +5910,9 @@ class ChartVerifierApp : Application() {
 
         // ---- Task 5：图表系列的解析式抗锯齿（六个图型 + 折线的四条判据）----
         reportSeriesAntialias(w, h) { label, ok, detail -> report(label, ok, detail) }
+
+        // ---- 回收实验：图表的 GPU 资源跟着使用走 ----
+        verifyReclaim(w, h) { label, ok, detail -> report(label, ok, detail) }
 
         println("\n画面出现的颜色：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")
         println("背景 ${counts[background] ?: 0} px，绘图区底色 ${counts[plotBackground] ?: 0} px")

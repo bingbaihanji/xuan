@@ -14,6 +14,7 @@ import com.bingbaihanji.jfgl.util.Disposable;
 import com.bingbaihanji.jfgl.util.Rect;
 
 import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -41,6 +42,17 @@ import java.util.function.Consumer;
  * <p>所有权链条是 {@code FXGLTransfer.onDispose → RenderBatch.dispose()}，
  * 而本类由 {@code Gc.charts} 懒创建、挂在这条链的下游。{@code RenderBatch} 不认识
  * 本类（它在更上层的包里），所以由 {@code FXGLTransfer} 经 {@code Gc} 转一手。
+ *
+ * <h2>资源跟着使用走：不再画的系列会被自动回收</h2>
+ * <p>{@link #buffers} 与 {@link #pickIds} 都按 {@code Series} 的<b>对象身份</b>缓存，
+ * 而 {@code Chart} 看起来是个纯计算对象——于是"每帧重建 {@code Chart}"（每帧 new 出新的
+ * {@code Series}）是最自然的写法。以前那种写法<b>每帧泄漏一块缓冲并消耗两个拾取号</b>，
+ * 症状是"前几百帧完全正常，然后图表忽然不画了，没有任何报错"。
+ *
+ * <p>现在有了一条回收路径：{@link #releaseUnused} 由帧的所有者（{@code Gc.beginFrame}）
+ * 每帧调一次，把<b>连续两帧没有被 {@link #draw} 画过</b>的系列释放掉。
+ * 调用方<b>不需要学任何新 API</b>——不用的东西自己会走。取舍与逐步的算例见
+ * {@link #releaseUnused} 与 {@link #GRACE_GENERATIONS} 的文档。
  *
  * <h2>拾取：每个系列一个 ID，而且用的是 {@code Gc} 的那本注册表</h2>
  * <p>ID 在<b>渲染层</b>分配（{@code Series} 上没有 {@code pickId()}），
@@ -192,6 +204,47 @@ public final class ChartRenderer implements Disposable {
      * 与本 Task 的判据无关，暂不补。
      */
     private final BooleanSupplier antialias;
+
+    /**
+     * 当前的"代"：每调用一次 {@link #releaseUnused()} 加一，也就是<b>一帧一代</b>。
+     *
+     * <p>{@link #draw} 把每个画到的系列标记成<b>当前代</b>（见 {@link #lastSeen}），
+     * 回收则按"距今几代"判断。用代而不是帧号是因为本类<b>不知道帧号</b>——
+     * 它只在 {@code Gc.beginFrame} 与 {@code draw} 两个时机被碰到，
+     * 中间隔着多少帧对它没有意义。
+     */
+    private long generation = 0;
+
+    /**
+     * 系列 → 它最后一次被 {@link #draw} 画到的那一代。
+     *
+     * <p>同样用 {@link IdentityHashMap}：{@code Series} 没有值语义，
+     * 与 {@link #buffers} / {@link #pickIds} 必须<b>用同一种身份口径</b>索引，
+     * 否则"画过的那个系列"与"有缓冲的那个系列"是两个不同的键，
+     * 回收会去删一个不存在的条目（而 {@code IdentityHashMap} 的 {@code remove}
+     * 对不存在的键是静默的）。
+     *
+     * <p><b>它同时也是"本渲染器认识哪些系列"的那份名单</b>：三张表的键集在
+     * {@link #draw} 里同步增删，所以遍历它一处就能覆盖另外两处。
+     */
+    private final Map<Series, Long> lastSeen = new IdentityHashMap<>();
+
+    /**
+     * 回收的宽限代数：一个系列<b>连续这么多代（= 这么多帧）没被画过</b>才回收。
+     *
+     * <h2>为什么不是 1（"上一帧没画就收"）</h2>
+     * <p>取 1 的话，"<b>每隔一帧画一次</b>"这种用法会<b>每画一次就销毁并重建一次缓冲</b>
+     * ——而重建意味着把整个环<b>重传</b>（1M 点就是 4 MB）。它不是错误用法，
+     * 只是帧率与数据节奏对不齐，<b>症状还完全看不出来</b>：画面逐像素相同，
+     * 只有 GPU 上传量悄悄翻了几百倍。取 2 之后，那种用法的最大间隔恰好是 1 代
+     * （见 {@link #releaseUnused} 的算例），于是它一次都不回收；
+     * 而"真的不再画了"仍然在<b>连续两帧</b>之内释放。
+     *
+     * <p>取 3 或更大没有好处：宽限越长，"不再画的系列"占着显存与拾取号的时间越久，
+     * 而它换来的只是让间隔更长的用法也不抖——那种用法的间隔是任意的，
+     * 加多少都不够。
+     */
+    private static final long GRACE_GENERATIONS = 2;
 
     private boolean disposed = false;
 
@@ -368,6 +421,11 @@ public final class ChartRenderer implements Disposable {
                 // 注意号分配走的是 Gc 的注册表（不能自己新建一份，理由见 pickRegistry 字段），
                 // 而注册表对 payload 是强引用，因此 dispose 时必须注销。
                 ctx.setPickId(pickIds.computeIfAbsent(series, pickRegistry::register));
+                // 记下"这个系列这一代活着"。回收（releaseUnused）只看这一个标记，
+                // 所以它必须与 buffers / pickIds 两处的增删在同一个循环里发生
+                // ——放在 renderer.render 之前：render 抛异常时这一帧的资源
+                // 仍然已经被登记过（下一帧按"没被画过"回收掉，不会漏）。
+                lastSeen.put(series, generation);
                 // 柱状系列的并排槽位（渲染器看不到兄弟系列，见 setBarSlots 的说明）。
                 // "一共几根"在这里就用掉了，所以只需再数一次递增的那个序号。
                 if (series.type().drawsBars()) {
@@ -512,9 +570,14 @@ public final class ChartRenderer implements Disposable {
      * <p>因此：同一帧里问两次，第二次得到 0；从没被 {@link #draw} 画过的系列也返回 0。
      * 两者都是这套语义的自然结果，不是缺陷。
      *
+     * <p><b>第三种返回 0 的情况是"已经被回收"</b>（见 {@link #releaseUnused}）：
+     * 那说明这个系列<b>连续两帧没有被画过</b>了，缓冲已经删掉。这与前两种是不同的事，
+     * 但返回值一样是 0——调用方若想知道"它还在不在"，看的是自己的绘制循环，
+     * 不是这个入口。</p>
+     *
      * @param series 要问的系列，必须是 {@link #draw} 里用的<b>同一个对象</b>
      *               （{@code Series} 没有值语义，缓冲用 IdentityHashMap 索引）
-     * @return 自上次取走以来上传的字节数；没画过时为 0
+     * @return 自上次取走以来上传的字节数；没画过、或已被回收时为 0
      */
     public int takeUploadedBytes(Series series) {
         SeriesBuffer buffer = buffers.get(series);
@@ -524,6 +587,132 @@ public final class ChartRenderer implements Disposable {
         int bytes = buffer.uploadedBytesThisFrame();
         buffer.beginFrame();
         return bytes;
+    }
+
+    /**
+     * 帧首回收：把<b>连续 {@link #GRACE_GENERATIONS} 帧没有被 {@link #draw} 画过</b>
+     * 的系列释放掉（缓冲删掉、拾取号注销、三张表里一并移除），然后把代加一。
+     *
+     * <h2>为什么是自动的，而不是一对 retain / release 方法</h2>
+     * <p>本类按 {@code Series} 的<b>对象身份</b>缓存 GPU 缓冲与拾取号（见 {@link #buffers}），
+     * 而 {@code Chart} 看起来是个纯计算对象——于是"每帧重建 {@code Chart}"
+     * （= 每帧 new 出新的 {@code Series}）是最自然的写法。在自动回收之前，那种写法
+     * <b>每帧泄漏一块 {@code SeriesBuffer}（显存）并消耗两个拾取号</b>，
+     * 号耗尽时 {@link PickRegistry#register} 抛异常，而 GL 线程上的异常在本项目是
+     * <b>静默吞掉</b>的 ⇒ 症状是「前几百帧完全正常，然后图表忽然不画了，没有任何报错」。
+     *
+     * <p>做成显式的 {@code retain} / {@code release} 没有解决它：要记得调的 API
+     * 仍然会被忘记，而<b>忘记的症状是静默的</b>——正是这条缺陷本身的形态。
+     * 所以做成"<b>资源跟着使用走</b>"：谁这一帧被画过，谁就活着；不再出现的自动释放。
+     * 调用方不需要学任何新 API。
+     *
+     * <h2>代的算术（"第几帧做什么"，GRACE = 2）</h2>
+     * <p>设第 {@code n} 帧的帧首调用本方法时 {@code generation == n}，{@link #draw}
+     * 把系列标记成 {@code n + 1}。判据是 {@code generation - lastSeen >= 2}，
+     * 即 {@code n - (k + 1) >= 2} ⇒ 在第 {@code k + 3} 帧的帧首释放。
+     * 三个算例（都按这个实现推的，不是想当然）：
+     *
+     * <table border="1">
+     *   <caption>回收与宽限</caption>
+     *   <tr><th>用法</th><th>帧</th><th>结果</th></tr>
+     *   <tr>
+     *     <td>每帧都画</td>
+     *     <td>每一帧都被标记为当前代 ⇒ 差值恒 0</td>
+     *     <td><b>永不回收</b>，缓冲与拾取号恒定</td>
+     *   </tr>
+     *   <tr>
+     *     <td>每隔一帧画一次<br>（第 k、k+2、k+4… 帧画）</td>
+     *     <td>第 k+1 帧（没画）差值 1、第 k+2 帧（画之前）差值 1</td>
+     *     <td><b>永不回收</b>——最大差值就是 1，够不到 2。
+     *         这正是 {@link #GRACE_GENERATIONS} 取 2 的全部理由</td>
+     *   </tr>
+     *   <tr>
+     *     <td>第 k 帧之后不再画</td>
+     *     <td>第 k+1、k+2 两帧的帧首都还没到 2；第 k+3 帧的帧首到 2</td>
+     *     <td><b>在第 k+3 帧的帧首释放</b>：确确实实是"连续两帧没被画过"
+     *         （第 k+1、k+2 两帧都不是它）</td>
+     *   </tr>
+     * </table>
+     *
+     * <h2>落点：由帧的所有者每帧调一次，本类不自己找时机</h2>
+     * <p>本类<b>没有</b>"帧边界"这个概念（它只被 {@code draw} 与 {@code Gc.beginFrame}
+     * 碰到）。所以时机由帧的所有者给：{@code Gc.beginFrame} 每帧恰好一次，且它
+     * 已经懒持有本类，于是在那里调一次。本方法是 public 的<b>只因包边界</b>
+     * （{@code Gc} 在 {@code renderer} 包，本类在 {@code chartrender} 包），
+     * <b>不是</b>给调用方学的新 API；不要自己找地方调它，重复调只会把代推快。
+     *
+     * <p><b>没建过图表的应用一行都不受影响</b>：{@code Gc.charts} 是懒创建的，
+     * 没被访问过时 {@code beginFrame} 里那一句根本不会执行（见 {@code Gc} 的实现），
+     * 于是连本方法都不会被调到，更不会白编译那 10 个着色器程序。
+     *
+     * <p><b>已经释放后调用是无副作用的空操作</b>：那时三张表都空了，
+     * "没有东西可回收"就是正确答案。这里<b>不抛</b>——本方法会被帧循环调用，
+     * 而 GL 线程上的异常在本项目是静默吞掉的，一个为"资源已释放"而抛的异常
+     * 只会把一次干净的关停变成一次没有报告的冻结。
+     *
+     * <h2>★ 一条没有验证过的后果：在途的异步拾取会解析成 null</h2>
+     * <p>回收会 {@code pickRegistry.unregister(id)}，而在途的异步拾取
+     * （{@code pickAsync} / {@code clickAsync}：双 PBO + fence，请求提交之后要到
+     * <b>后续帧</b>才从 PBO 读回并经 {@code Platform.runLater} 回调）若正好落在
+     * <b>释放的那一两帧内</b>，回调拿到的 {@code PickHit} 会是 {@code payload == null}。
+     *
+     * <p>这条路本身是自洽的——{@code PickHit} 的文档里已经写明
+     * "ID 已注册但载荷为 null 与未注册，都表现为 null"——但用户看到的是
+     * <b>"点了一下没反应"</b>。
+     *
+     * <p><b>★ 照实说：这一条没有验证过</b>（没有断言、也没有实测）。它的窗口很小
+     * （要么正好在释放的那一帧提交、要么在下一帧读回），而且回收的前提本身就是
+     * "<b>这个系列连续两帧没被画过</b>"——也就是说用户<b>已经不在看它</b>了。
+     * 写在这里是为了下一个人不必重新推一遍；真要验它，需要构造出"停止画某系列"与
+     * "点它"在两帧内先后发生，而在现有校验器的几何上不好表达。
+     */
+    public void releaseUnused() {
+        if (disposed) {
+            return;
+        }
+        // 遍历 lastSeen：它与 buffers / pickIds 的键集在 draw 里同步增删，
+        // 所以这一处遍历就覆盖了另外两处。两种 remove 都做 null 检查——
+        // 三个键集虽然同步，但"同步"是靠纪律维持的，而漏删一个键的症状
+        // 是回收之后仍有一个活着的缓冲/号悬在那里，只能靠别的实验发现。
+        for (Iterator<Map.Entry<Series, Long>> it = lastSeen.entrySet().iterator();
+                it.hasNext(); ) {
+            Map.Entry<Series, Long> entry = it.next();
+            if (generation - entry.getValue() < GRACE_GENERATIONS) {
+                continue;
+            }
+            Series series = entry.getKey();
+            it.remove();
+            SeriesBuffer buffer = buffers.remove(series);
+            if (buffer != null) {
+                buffer.dispose();
+            }
+            Integer id = pickIds.remove(series);
+            if (id != null) {
+                // 注销是**承重**的，不是顺手清理：注册表对 payload 是强引用，
+                // 不注销的话被移除的 Series 会一直被引用着——而它早就不在画面上了。
+                pickRegistry.unregister(id);
+            }
+        }
+        generation++;
+    }
+
+    /**
+     * 返回当前缓存的 GPU 常驻缓冲数（= 被本渲染器认作"画过且还没回收"的系列数）。
+     *
+     * <h2>它为什么存在</h2>
+     * <p>{@link #releaseUnused} 的成效在画面上<b>没有任何痕迹</b>——回收只发生在
+     * "不再画了"之后，而那时画面上本来就没有它。于是"回收真的发生了"与
+     * "每帧泄漏一块缓冲"这两件事的<b>画面逐像素相同</b>，任何像素断言都分不开它们。
+     * 没有这个入口，那条断言只能退化成"跑完没崩"（而不回收在号耗尽之前也不会崩）。
+     *
+     * <p>与 {@link #takeUploadedBytes}、{@code RenderBatch.pickPassCount()} 是同一类东西：
+     * <b>为一个断言而存在的观测口</b>，生产代码不该依赖它。它只是
+     * {@code buffers.size()} 的透传，不含任何算术。
+     *
+     * @return 当前持有的缓冲数；从没画过任何系列时为 0
+     */
+    public int cachedBufferCount() {
+        return buffers.size();
     }
 
     /**
@@ -589,6 +778,11 @@ public final class ChartRenderer implements Disposable {
      *
      * <p>幂等。顺序是"先注销拾取 ID、再删 GL 资源"：注册表持有 payload 的强引用，
      * 不注销的话，被移除的 {@code Series} 会一直被引用着——而它在画面上早就没了。
+     *
+     * <p>{@link #lastSeen} 也一并清空：它虽然不持 GL 资源，但它对本类的
+     * {@code Series} 是<b>强引用</b>，留着会让"已经 dispose 的渲染器"继续把
+     * 那批对象钉在堆上。清空之后 {@link #releaseUnused} 就没有名单可遍历了
+     * （它本来也已经是空操作，见 {@link #disposed} 那一层）。
      */
     @Override
     public void dispose() {
@@ -599,6 +793,7 @@ public final class ChartRenderer implements Disposable {
         pickIds.clear();
         buffers.values().forEach(SeriesBuffer::dispose);
         buffers.clear();
+        lastSeen.clear();
         lineRenderer.dispose();
         scatterRenderer.dispose();
         stepRenderer.dispose();
