@@ -49,6 +49,35 @@ private const val SCENE_H = 700.0
  */
 internal const val SELFTEST_PROPERTY = "jfgl.demo.selftest"
 
+/**
+ * **MSAA 采样数的启动属性**（`-Djfgl.demo.msaa=4`）。**默认 0（单采样）。**
+ *
+ * <p><strong>★ 为什么它是启动属性而不是菜单项</strong>：采样数是**帧缓冲的属性**，
+ * `GLCanvas` 只有 `getMsaa()`、**没有 setter**（实测过 jar 的公开签名）——所以
+ * **运行期改它没有任何效果**。菜单里那条只能是个**禁用的说明项**，见 [buildMenuBar] 的
+ * 「抗锯齿」菜单；真正要开 MSAA 只能在这里给，然后重启。
+ *
+ * <p>已知取值（openglfx 的约定）：正数是具体采样数、**负数是"取最大可用采样数"**
+ * （`GL_MAX_SAMPLES`，本机 32）、0 才是单采样。**别把负数读成"关"**——
+ * 它是多采样画布（这一点由 `MsaaVerifier` 钉着）。
+ *
+ * <p><strong>它管的是填充边缘</strong>；描边与图表系列的抗锯齿由
+ * [antialias]（运行期、菜单里可切）负责。两者互补，见 `CLAUDE.md` 的「抗锯齿」一节。
+ */
+internal const val MSAA_PROPERTY = "jfgl.demo.msaa"
+
+/** [MSAA_PROPERTY] 的解析结果。非法值**出声**（而不是静默退回 0）。 */
+private val DEMO_MSAA: Int = run {
+    val raw = System.getProperty(MSAA_PROPERTY) ?: return@run 0
+    val v = raw.toIntOrNull()
+    if (v == null) {
+        System.err.println("[demo] 属性 $MSAA_PROPERTY=$raw 不是整数，按 0（单采样）处理")
+        0
+    } else {
+        v
+    }
+}
+
 /** [SELFTEST_PROPERTY] 的原始值。**只读一次**，理由见 [SELFTEST_ON]。 */
 private val SELFTEST_RAW: String? = System.getProperty(SELFTEST_PROPERTY)
 
@@ -226,6 +255,18 @@ class JfglDemoApp : Application() {
     private var style = ShapeStyle.FILL_AND_STROKE
     private var color = PALETTE[0]
     private var lineWidth = 2f
+
+    /**
+     * 描边与图表系列的**解析式抗锯齿**开关（菜单「抗锯齿」里的那一项）。
+     *
+     * <p>**`@Volatile`**：菜单在 JavaFX 线程写，而 [drawScene] 在 GL 线程每帧读。
+     * 它**不是** `Gc.antialias` 本身——那是个 `save`/`restore` 状态，**每帧都会被重置**，
+     * 所以只能每帧从本字段拷进去一次（见 [drawScene] 的开头）。
+     *
+     * <p>**默认关**，与库的默认值一致：开了之后描边边缘会多出半透明像素，
+     * 而本仓库的像素校验器有一批精确到 ±0 的期望值。见 `CLAUDE.md` 的「抗锯齿」一节。
+     */
+    @Volatile private var antialias = false
 
     /** 文本模式的字号。**只在 JavaFX 线程读写。** */
     private var fontSize = FONT_SIZES[1]
@@ -482,7 +523,9 @@ class JfglDemoApp : Application() {
             Platform.runLater { exitProcess(1) }
             return
         }
-        val bridge = FXGLTransfer()
+        // MSAA 只能在这里给（采样数是帧缓冲的属性、运行期改不了，见 [MSAA_PROPERTY]）。
+        // 默认 0 = 单采样 ⇒ 与加这个参数之前逐位相同。
+        val bridge = FXGLTransfer(msaa = DEMO_MSAA)
         bridge.onInit {
             // ★ 启动自检**放在 `gc()` 的 let 之外**——它只用 println / System.err，
             //   **根本不需要 `Gc`**。包在 `let` 里的话就多出一条"静默跳过"路径：
@@ -1079,6 +1122,13 @@ class JfglDemoApp : Application() {
 
     /** 画一帧。**在 GL 线程上执行**，不要在这里碰任何 JavaFX 控件。 */
     private fun drawScene(gc: Gc) {
+        // ★ **每帧把菜单的开关拷进 `Gc`**（抗锯齿）。**为什么必须每帧设**：
+        //   `Gc.antialias` 是 `save`/`restore` 状态栈里的一员，而本帧的绘制里
+        //   到处都有 `save`/`restore`（选中高亮、框选、预览…），任何一次 restore
+        //   都可能把它弹回旧值；在帧首统一设一次，能保证"菜单说什么就是什么"。
+        //   它读的是 `@Volatile` 字段（菜单在 JavaFX 线程写），一次 volatile 读是零成本的。
+        gc.antialias = antialias
+
         // ★ 帧计数（自检的节拍器）。**只在自检模式下自增**——生产路径一行都不多。
         //   合成事件必须在 JavaFX 线程发（`fireEvent` 要碰场景图），而拾取要走一帧
         //   （`clickAsyncAtNode` 的请求在下一帧 `endFrame` 之后才提交、再下一帧才读回、
@@ -1510,8 +1560,36 @@ class JfglDemoApp : Application() {
         chartMenu.disableProperty().bind(chartModeActive.not())
         // 颜色三种模式都可用（文本也用颜色）
 
+        // 抗锯齿。**两项的可用性刻意不同**，那正是这一整个菜单要讲的事：
+        //   ① 描边与图表系列 —— `Gc.antialias`，运行期状态，**可以随时切**；
+        //   ② 填充边缘 —— MSAA，采样数是**帧缓冲**的属性、`GLCanvas` 没有 setter，
+        //      **运行期改它没有任何效果**。所以那一项做成**禁用的说明项**而不是
+        //      一个点了没反应的复选框——本仓库的口径是"明确拒绝"好过"静默无效"。
+        val antialiasItem = CheckMenuItem("描边与图表系列（可随时切）").apply {
+            isSelected = antialias
+            setOnAction {
+                antialias = isSelected
+                status.text = if (isSelected) {
+                    "抗锯齿：描边与图表系列已开（填充边缘仍由 MSAA 管，见旁边那项）"
+                } else {
+                    "抗锯齿：已关"
+                }
+            }
+        }
+        val msaaItem = MenuItem(
+            if (DEMO_MSAA == 0) "填充边缘（MSAA）：当前关，用 -Djfgl.demo.msaa=4 启动可开"
+            else "填充边缘（MSAA）：当前 $DEMO_MSAA（启动时给，运行期改不了）"
+        ).apply {
+            isDisable = true
+        }
+        val antialiasMenu = Menu("抗锯齿").apply {
+            items.addAll(antialiasItem, SeparatorMenuItem(), msaaItem)
+        }
+
         return MenuBar().apply {
-            menus.addAll(fileMenu, modeMenu, kindMenu, styleMenu, colorMenu, fontMenu, chartMenu)
+            menus.addAll(
+                fileMenu, modeMenu, kindMenu, styleMenu, colorMenu, fontMenu, chartMenu, antialiasMenu
+            )
         }
     }
 
