@@ -140,7 +140,9 @@ internal const val MSAA_PROPERTY = "jfgl.probe.msaa"
  * 七个入口全写 `FXGLTransfer()`（`msaa` 恒为默认 0），于是文档里"用 `msaa=0` 跑"
  * 之外根本没有第二条路可走，守卫**只在有人改源码时才会触发**（实测过：
  * 给 `PipelineVerifier` 传 `-Djfgl.probe.msaa=4` 当时**不会有任何拒绝**）。
- * 现在 `-Djfgl.probe.msaa=4` 会让七个校验器**在 `start()` 里明确拒绝并以 1 退出**。
+ * 现在 `-Djfgl.probe.msaa=4` 会让七个校验器**在 `start()` 里明确拒绝并以 1 退出**；
+ * **负数（如 `-1`，openglfx 的"最大采样数"）同样被拒绝**——判据是 `msaa == 0` 而不是
+ * `<= 0`，见 [FXGLTransfer.canReadPixels]。
  *
  * @return 系统属性 [MSAA_PROPERTY] 的值；非法或缺席时为 0
  */
