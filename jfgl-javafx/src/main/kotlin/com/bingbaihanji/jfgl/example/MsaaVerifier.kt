@@ -63,10 +63,10 @@ import kotlin.math.min
  * </pre>
  * 四条判据（W = 窗宽）：
  * <pre>
- *   ① `msaa=0`（硬边）窗内**一个过渡像素都没有** = 0；`msaa>0` = **2W**
+ *   ① `msaa == 0`（硬边）窗内**一个过渡像素都没有** = 0；`msaa != 0` = **2W**
  *  ② **线心那 3 行的纯色像素数 = 3W**，两种模式**精确相等**（线心没移位、没变淡）
  *  ③ 窗内**纯色总数**：`msaa=0` = **4W**（硬边走像素中心采样，多覆盖行 n−2）、
- *     `msaa>0` = **3W**（行 n−2 退化成 0.75 的过渡行）
+ *     `msaa != 0` = **3W**（行 n−2 退化成 0.75 的过渡行）
  *  ④ 三类像素之和 == **窗的解析像素数** `W × 7`（7 是独立字面量 `WINDOW_ROWS`）
  * </pre>
  *
@@ -105,6 +105,13 @@ import kotlin.math.min
  *   "-Dexec.args=-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -Djfgl.probe.msaa=4 -cp %classpath com.bingbaihanji.jfgl.example.MsaaVerifier"
  * ```
  *
+ * <p>★ **本文件是全仓库唯一不挂回读守卫的校验器，这是刻意的、别"统一"掉它**：
+ * 它的职责恰恰是**在 `msaa != 0` 的多采样画布上读数**（否则那两条跨进程判据根本无从产出），
+ * 所以它不能拒绝多采样画布——它读的是**快照**（JavaFX 合成器那条路，绕开 `glReadPixels`）。
+ * 把 `requirePixelReadback(bridge)` 加进它的 `start()` 会让这个校验器**永远无法运行**，
+ * 跨进程那两条判据随之一起死掉。它另有一条断言把守卫的**前提**钉住
+ * （`canReadPixels == (glGetError == 0)`），那才是它该做的事。
+ *
  * <p>**它不 dispose**：跑完直接 `halt`。理由与自检那条相反——自检要反复跑、漏 GL 对象
  * 会积累；本校验器是**一次性**的，进程一死对象就没了，而 `halt` 避开关闭钩子正是为了
  * 不撞上本仓库实测过的那次原生崩溃（`exitProcess` 跑钩子会与 JavaFX 自己的关停并发碰
@@ -140,8 +147,9 @@ internal const val MSAA_PROPERTY = "jfgl.probe.msaa"
 internal fun readRequestedMsaa(): Int = System.getProperty(MSAA_PROPERTY, "0").toIntOrNull() ?: 0
 
 /**
- * **回读拒绝守卫**：七个像素校验器（`PipelineVerifier` / `PathVerifier` / `PickVerifier` /
- * `ClickVerifier` / `TextVerifier` / `ChartVerifier` / `FftVerifier`）在**入口各调一次**。
+ * **回读拒绝守卫**：七个校验器（**其中六个是像素校验器**——`PipelineVerifier` / `PathVerifier` /
+ * `PickVerifier` / `ClickVerifier` / `TextVerifier` / `ChartVerifier`；第七个 `FftVerifier`
+ * **不画像素**，读的是 SSBO，本来不受影响）在**入口各调一次**。
  *
  * <p>`msaa > 0` 时它抛异常、进程以非零码退出，**而不是**让那些校验器读回全 0
  * 再报一大堆"画面全黑"式的假失败。**假失败比"明确拒绝"坏得多**：
@@ -167,7 +175,8 @@ internal fun readRequestedMsaa(): Int = System.getProperty(MSAA_PROPERTY, "0").t
  */
 internal fun requirePixelReadback(bridge: FXGLTransfer) {
     check(bridge.canReadPixels) {
-        "画布是 msaa=${bridge.msaa} 的多采样 FBO——本仓库的七个像素校验器一律要求在 msaa=0 下跑：" +
+        "画布是 msaa=${bridge.msaa} 的多采样 FBO——本仓库的六个像素校验器一律要求在 msaa=0 下跑" +
+            "（第七个 FftVerifier 不画像素、本来不受影响，但它也走这条口径）：" +
             "多采样 FBO 上 glReadPixels 是非法操作（实测 GL_INVALID_OPERATION，由 MsaaVerifier 钉着），" +
             "读回来的像素全是 0，会让每一条像素断言报「画面全黑」式的假失败——" +
             "而真因在配置里，不在渲染里。请用 msaa=0 跑（默认值就是 0；" +
@@ -322,8 +331,9 @@ class MsaaVerifierApp : Application() {
             "★ 回读守卫的前提：canReadPixels == (glReadPixels 无错误)",
             bridge.canReadPixels == (err == GL_NO_ERROR),
             "canReadPixels=${bridge.canReadPixels}，glGetError=$err" +
-                (if (bridge.canReadPixels) "（msaa=0：回读合法，读数可用）"
-                else "（msaa>0：多采样 FBO 上 glReadPixels 非法，读数全是 0）")
+                (if (bridge.canReadPixels) "（本进程 msaa=0：回读合法，读数可用）"
+                else "（本进程 msaa=${bridge.msaa}：多采样 FBO 上 glReadPixels 非法，读数全是 0。" +
+                    "注意 **负数也算多采样**：openglfx 的约定是 `-1 = 最大采样数`）")
         )
         if (bridge.canReadPixels) {
             printProfile("A glReadPixels", w, h, buf, bottomUp = true)
@@ -453,6 +463,7 @@ class MsaaVerifierApp : Application() {
         // 全局量里混着圆与斜线的边缘，判据只取下面那个窗）。
         val hist = HashMap<Int, Int>()
         for (p in pixels) hist.merge(p and 0xFFFFFF, 1, Int::plus)
+        // （原式还带一个 `it.key >= 0`——那是**恒真**的：`lum()` 只返回 0..255。已删。）
         val edge = hist.entries.filter { it.key != BG_RGB && it.key != LINE_RGB }.sumOf { it.value }
         println("  整幅图：不同 RGB 值 ${hist.size} 个；背景=${hist[BG_RGB] ?: 0}  纯白=${hist[LINE_RGB] ?: 0}" +
             "  ★ 既非两者之一的像素=$edge")

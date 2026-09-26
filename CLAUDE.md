@@ -201,7 +201,9 @@ jfgl-render-gl/src/test/.../gpu/        FftWindowTest、FftKernelTest
 `@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`（跨模块加 `-pl 模块名`）。
 分布：`geom/` 91、`renderer/` 107、`gl/` 12、`text/` 32、`chart/` 80、`chartrender/` 49、
 `gpu/` 14（合计 385；子项目 A 抗锯齿那一步加了 15 条——`geom/` +12（`StrokeGenerator`
-的 `aEdge`）、`renderer/` +3（顶点格式与 `Gc.antialias` 的样式栈））。
+的 `aEdge`）、`renderer/` +3（`VertexFormatTest` +1 与 `VertexWriterTest` +2）。
+⚠️ **`renderer/` 里没有任何一条覆盖"`Gc.antialias` 的样式栈"**——全仓没有 `GcTest`，
+`Gc` 只能靠校验器（见「测试」节开头与「抗锯齿」一节）。
 
 `geom/`、`math/`、`util/`、`ViewTransform`、`text/{SdfGenerator, TextLayout}`、`chart/`、
 `gpu/FftWindow`（窗系数与相干增益补偿，纯算术）都是纯计算、不依赖 GL 上下文，最适合写单测。
@@ -594,18 +596,22 @@ gc.endFrame()
 - **`msaa` 只能在建窗口时给**：采样数是**帧缓冲**的属性，`GLCanvas` 只有 `getMsaa()`、
   没有 setter（实测 jar 的公开签名）。`jfgl { }` 的配置块跑在 `Application.launch`
   **之前**，正好是这个时机；**运行期改它没有任何效果**（API 上拦不住，所以写在文档里）。
-- ★ **`msaa > 0` 时像素回读失效，拾取不受影响**——两件事，别混：
+- ★ **`msaa` 非 0 时像素回读失效，拾取不受影响**——两件事，别混：
+  （**"非 0"包含负数**：openglfx 的约定是 `-1 = 最大采样数`，**不是"关"**——
+  实现 `msaa < 0 -> Framebuffer.MultiSampled(..., GL_MAX_SAMPLES)`，实测 `msaa=-1`
+  给出 `GL_SAMPLES=32` 的多采样画布、`glReadPixels` 同样非法。所以判据只能是 `== 0`。）
   - 多采样 FBO 上 `glReadPixels` 是**非法操作**（实测 `GL_INVALID_OPERATION`，读回全 0。
     注意：不是"读到旧帧"、也不是"读到黑"，是**那次调用整个非法**），而本仓库
     **靠画布 FBO 回读的那六个像素校验器全部靠它回读**（`Pipeline` / `Path` / `Pick` /
-    `Click` / `Text` / `Chart`）。所以有 `FXGLTransfer.canReadPixels`（= `msaa <= 0`），
+    `Click` / `Text` / `Chart`）。所以有 `FXGLTransfer.canReadPixels`（= **`msaa == 0`**
+    ——**不是 `<= 0`**：负数与 1 都会被驱动变成多采样，见本节开头），
     七个校验器入口各调一次 `requirePixelReadback(bridge)`——**一份共享判定，不是七份抄写**
-    （"共用属性名 ≠ 共用判定"是本仓库刚吃过的亏）。`msaa>0` 时**明确拒绝**，
+    （"共用属性名 ≠ 共用判定"是本仓库刚吃过的亏）。`msaa` 非 0 时**明确拒绝**，
     而不是读回全 0 之后报一堆"画面全黑"式的**假失败**：假失败会让人去查渲染，
     而真因在配置里。
     ⚠️ **第七个 `FftVerifier` 是例外，就地写在这里**（别把"六个"读成"七个"）：它
     **不画像素**，读的是 SSBO（`glGetBufferSubData`），那条路与画布 FBO 的采样数
-    **无关** ⇒ `msaa>0` **不影响它**（实测：挂在 `msaa=4` 下跑，50 条断言全过、
+    **无关** ⇒ `msaa` 非 0 **不影响它**（实测：挂在 `msaa=4` 下跑，50 条断言全过、
     与 `msaa=0` 逐行相同）。它也挂同一道守卫，但那是**纪律**（七个一律 `msaa=0`
     这条口径比"每个各自判断自己受不受影响"更不容易出错），**不是实测的必要性**。
     **这条守卫的前提由 `MsaaVerifier` 钉着**：它断言 `canReadPixels == (glGetError == 0)`，
@@ -700,6 +706,14 @@ gc.endFrame()
   没有这个场景）。与 Task 3 记的是同一条。
 - **`ChartRenderer` 的 3 参构造无任何调用点** ⇒ "不注入 `antialias` 时恒按 AA 关画"
   这条**没有断言盖着**。
+- **回读守卫的"接线"没有闸门**：七处 `FXGLTransfer(msaa = readRequestedMsaa())` 里
+  任何一处退回 `FXGLTransfer()`，**那处的守卫就又变成死代码，而没有任何断言会响**
+  （`MsaaVerifier` 只验"属性 → `msaa` 值"这条链与守卫的前提，它验不到"七个入口都读了它"）。
+- **`MSAA_READING` 的字段与进程内被断言的变量没有对过**：它由**手写字符串**拼出
+  （`fringe=$fringe core=$coreWhite …`），若把两个字段**写成一致的偏移**（例如
+  `fringe=$coreWhite core=$coreWhite`），脚本的跨进程比较照样成立、**两边都看不见**；
+  字段互换只因两次运行的读数不同才被偶然抓住。要真钉住得让脚本之外的**一条进程内断言**
+  比对"读数行里的值与被断言的变量"，或把读数行改成由同一份数据生成。
 - **DSL 的 `jfgl { antialias { msaa = N } }` 没有端到端证据**：接线读码正确
   （`JFGL.antialiasConfig.msaa` → `JFGLApplication.start` 里那次 `FXGLTransfer(...)`，
   它是**唯一**经 DSL 构造桥接对象的入口），但**没有任何校验器或 demo 走这条路径**
@@ -899,15 +913,17 @@ gc.endFrame()
    ```
 
    `MsaaVerifier` 守的是**另外三件事**：① 快照路径与 `glReadPixels` 路径的交叉印证
-   （`msaa>0` 时后者非法，前者照常）；② **回读守卫的前提**
+   （`msaa` 非 0 时后者非法，前者照常）；② **回读守卫的前提**
    （`canReadPixels == (glGetError == 0)`）；③ 跨进程的两条读数
    （`msaa=4` 的过渡像素 **1782 > `msaa=0` 的 0**、线心纯色数 **2673 == 2673**）。
    ⚠️ **它的快照必须按设备缩放取**（`SnapshotParameters` 给 `Scale(deviceScale)`）：
    不这么做的话快照是**逻辑尺寸**（892×692），对设备分辨率的纹理做**重采样**，
-   而**重采样自己会产生中间值**——实测那一版的整幅图有 **36 种 RGB 值**，
-   而正确版是 **`msaa=0` 3 种**（纯色三样）、**`msaa=4` 6 种**（多出 0.25/0.5/0.75 三个
-   四分档的中间值）⇒ 判据分不清"过渡像素"是 MSAA 的还是重采样的
-   （⚠️ "3 种"**只在 `msaa=0` 那次成立**，写成无条件就是把两次读数混成了一句）。
+   而**重采样自己会产生中间值**——实测那一版的整幅图有 **`msaa=0` 36 种**、
+   **`msaa=4` 173 种** RGB 值，而正确版是 **`msaa=0` 3 种**（纯色三样）、
+   **`msaa=4` 6 种**（多出 0.25/0.5/0.75 三个四分档的中间值）
+   ⇒ 判据分不清"过渡像素"是 MSAA 的还是重采样的。
+   ⚠️ **四个数都得带条件**：写成"正确版是 3 种"而不写 `msaa=0`，就是把两次读数混成了一句
+   （本条的上一版正是这么写的：限定词只加在了后一半上）。
 
    ★ 七个校验器的采样数都从**同一个系统属性** `-Djfgl.probe.msaa` 读（解析与
    `MsaaVerifier` **共用一份**，见 `example/MsaaVerifier.kt` 的 `readRequestedMsaa`）
@@ -1006,20 +1022,21 @@ DSL 的 `jfgl { antialias { msaa = 4 } }`——见「抗锯齿」一节
   **★ 一条从未验证过的推断，现在被实测取代了**——记在这里因为它是这条待办的立项理由：
   `docs/superpowers/specs/2026-09-11-jfgl-render-pipeline-design.md` §9 写着
   "抗锯齿：MSAA。`GLCanvas` 构造函数已提供 `msaa` 参数，**零额外实现成本**"。
-  **那是推断，不是实测**：`GLCanvas.Defaults.MSAA` 是 0，当时仓库 15 处调用点
-  **没有一处传过 `msaa`**，这条路**一次都没跑起来过**（本仓库有前科：`GPUFFT.java`
+  **那是推断，不是实测**：`GLCanvas.Defaults.MSAA` 是 0，分支起点（`18bcf33`）全仓
+  **11 处构造点**（10 个示例/校验器各一处 + `JFGL.kt` 一处）**没有一处传过 `msaa`**，
+  这条路**一次都没跑起来过**（本仓库有前科：`GPUFFT.java`
   当年也是"能编译"被当成"现成可用"）。实测结论（`example/MsaaVerifier.kt` 钉着）：
   - ✅ **"开启"那一侧成立**：`msaa=4` 真的建出多采样 FBO（`GL_SAMPLE_BUFFERS=1` /
     `GL_SAMPLES=4`，本机 `GL_MAX_SAMPLES=32`）、画面正确（4px 探针线的两个过渡行是
     `#CCCCCC` 与 `#666666`——正好是 4 个子样本的四分档 0.75 / 0.25）、
     **拾取逐项不受影响**。
-  - ⚠️ **但有一笔没人记过的连带成本**：**`msaa > 0` 时画布 FBO 上 `glReadPixels` 非法**
+  - ⚠️ **但有一笔没人记过的连带成本**：**`msaa` 非 0 时画布 FBO 上 `glReadPixels` 非法**
     （`GL_INVALID_OPERATION`，读回全 0）⇒ **靠画布 FBO 回读的那六个像素校验器立刻
     全部失去读数能力**（`Pipeline` / `Path` / `Pick` / `Click` / `Text` / `Chart`；
     **第七个 `FftVerifier` 不在此列**，理由见下一条）。所以 `msaa` 默认必须是 0，
     且七个校验器入口都有 `requirePixelReadback` 守卫——**统一挂是刻意的**：
     那个例外将来若改成画像素，守卫已经在了。
-  - ⚠️ **"零额外实现成本"假在哪里**：成本不在实现，在**测量**——`msaa>0` 之后本仓库
+  - ⚠️ **"零额外实现成本"假在哪里**：成本不在实现，在**测量**——`msaa` 非 0 之后本仓库
     最重要的那套验收手段（那六个像素校验器的读数能力）整个失效。
     **"零成本"是只算了实现那一半。**
   - ⚠️ **"全部七个"是一句过度概括**（设计文档 §6.2 原来就是这么写的，

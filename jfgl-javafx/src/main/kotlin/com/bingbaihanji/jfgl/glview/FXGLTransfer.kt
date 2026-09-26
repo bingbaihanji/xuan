@@ -38,7 +38,8 @@ import org.lwjgl.opengl.GL11.*
  * @param flipY Y 轴翻转
  * @param msaa 多重采样抗锯齿的采样数。**默认 0**（关）；**只能在构造时给**
  *   ——采样数是帧缓冲的属性，`GLCanvas` 没有 setter（实测）。
- *   `msaa > 0` 会让像素回读失效，见 [canReadPixels]。
+ *   **非 0 的 `msaa`（含负数）都会让像素回读失效**，见 [canReadPixels]——
+ *   负数按 openglfx 的约定是"用最大采样数"，**不是"关"**。
  *   它是**公开只读**的：七个校验器的回读守卫要把这个值打进失败信息
  *   （"画布是 msaa=4 的多采样 FBO"），而 `example/MsaaVerifier.kt` 还要拿它
  *   核对"请求值有没有真的生效"。
@@ -204,7 +205,22 @@ class FXGLTransfer(
     val scaledHeight: Int get() = canvas.scaledHeight
 
     /**
-     * 当前画布能否用 `glReadPixels` 回读像素。**`msaa > 0` 时不能。**
+     * 当前画布能否用 `glReadPixels` 回读像素。**只有 `msaa == 0` 时能。**
+     *
+     * <p>判据是"**画布 FBO 是不是单采样**"，与 `msaa` 的**符号无关**——
+     * 两处都不看符号：
+     * <ul>
+     *   <li>**负数不是"关"**：openglfx 的 `GLCanvas` KDoc 写明 `-1 – maximum available samples`，
+     *       实现是 `msaa < 0 -> Framebuffer.MultiSampled(width, height, GL_MAX_SAMPLES)`
+     *       ⇒ **负数是多采样画布**。实测 `-Djfgl.probe.msaa=-1`：
+     *       `GL_SAMPLE_BUFFERS=1`、`GL_SAMPLES=32`（本机上限），
+     *       而 `glReadPixels` 报 `GL_INVALID_OPERATION`、读回全 0。
+     *       ⚠️ 写 `msaa <= 0` 会把它当成"可以回读"⇒ 症状正是这条守卫要消灭的那种
+     *       （六个校验器照常开跑、读回全 0、报一整片"画面全黑"式假失败）。</li>
+     *   <li>**`msaa = 1` 也不是单采样**：实数会被驱动抬到它能支持的档位，
+     *       实测 `msaa=1` ⇒ `GL_SAMPLE_BUFFERS=1`、`GL_SAMPLES=2`。
+     *       ⇒ **只有 0 是单采样**，于是判据只能是 `== 0`。</li>
+     * </ul>
      *
      * <p>理由已实测（`example/MsaaVerifier.kt` 把它逐次钉着）：多采样帧缓冲上
      * `glReadPixels` 直接返回 `GL_INVALID_OPERATION`，读出来是全 0
@@ -216,19 +232,19 @@ class FXGLTransfer(
      * 假失败会让人去查渲染，而真因在配置。
      *
      * <p>⚠️ **第七个 `FftVerifier` 是例外**：它**不画像素**，读的是 SSBO
-     * （`glGetBufferSubData`），那条路与画布帧缓冲的采样数无关 ⇒ `msaa>0` **不影响它**
+     * （`glGetBufferSubData`），那条路与画布帧缓冲的采样数无关 ⇒ `msaa != 0` **不影响它**
      * （实测：`msaa=4` 下 50 条断言全过、与 `msaa=0` 逐行相同）。它也挂同一道守卫，
      * 但那是**纪律**（七个一律 `msaa=0` 这条口径比"每个各自判断自己受不受影响"更不容易
      * 出错），**不是实测的必要性**——别把"六个"读成"七个"。
      *
      * <p>⚠️ **不受影响的是拾取**：拾取 FBO 是**独立创建的单采样** FBO
      * （`gl/Framebuffer` 明文写着"恒为单采样"），实测 `msaa=4` 下
-     * `pick` / `pickRect` 与 `msaa=0` **逐项相同**。所以"`msaa>0`"与
+     * `pick` / `pickRect` 与 `msaa=0` **逐项相同**。所以"`msaa` 非 0"与
      * "拾取坏了"是两回事，别把这一条读成后者。
      *
-     * @return `msaa <= 0` 时为 true；`msaa > 0` 时为 false
+     * @return `msaa == 0` 时为 true；其余（含**负数**与 1）为 false
      */
-    val canReadPixels: Boolean get() = msaa <= 0
+    val canReadPixels: Boolean get() = msaa == 0
 
     // 可选：修改帧率（动态）
     var fps: Double

@@ -121,11 +121,12 @@ class JFGL {
      * 这一点无法在 API 上拦住，所以写在这里。
      *
      * <h2>默认 0，而且这是承重的</h2>
-     * <p>`msaa > 0` 时**像素回读会失效**：多采样帧缓冲上 `glReadPixels` 是**非法操作**
+     * <p>**`msaa` 非 0 时像素回读会失效**（含**负数**——按 openglfx 的约定，
+     * 负数 = 用最大采样数，那不是"关"）：多采样帧缓冲上 `glReadPixels` 是**非法操作**
      * （实测 `GL_INVALID_OPERATION`，读出来全是 0），而本仓库**靠画布 FBO 回读的那六个
      * 像素校验器**（`Pipeline` / `Path` / `Pick` / `Click` / `Text` / `Chart`）
      * 全部靠它回读 ⇒ 它们会报一大堆"画面全黑"式的**假失败**。
-     * 第七个 `FftVerifier` **不在此列**（它不画像素、读的是 SSBO，`msaa>0` 不影响它），
+     * 第七个 `FftVerifier` **不在此列**（它不画像素、读的是 SSBO，`msaa != 0` 不影响它），
      * 但它也挂同一道守卫——那是**纪律**（口径统一），不是必要性。
      * 见 [com.bingbaihanji.jfgl.glview.FXGLTransfer.canReadPixels]——那条守卫是这件事的
      * 唯一判据，而它由 `example/MsaaVerifier.kt` 用 `canReadPixels == (glGetError == 0)`
@@ -292,6 +293,11 @@ class AntialiasConfig {
      *
      * <p>**只在构造 `GLCanvas` 时生效**——运行期改它不会有任何效果。
      * 典型取值 2 / 4 / 8（本机 `GL_MAX_SAMPLES` = 32）。
+     *
+     * <p>⚠️ **负数不是"关"，是"用最大采样数"**——那是 openglfx 的约定
+     * （`GLCanvas` KDoc：`-1 – maximum available samples`；实现
+     * `msaa < 0 -> MultiSampled(width, height, GL_MAX_SAMPLES)`），实测 `msaa = -1`
+     * 给出 `GL_SAMPLES=32` 的多采样画布。**"关"只能是 0。**
      *
      * <p>`> 0` 时像素回读失效（见 [FXGLTransfer.canReadPixels]），
      * 所以默认是 0：本仓库**靠画布 FBO 回读的那六个像素校验器**全部靠回读
