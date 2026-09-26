@@ -104,4 +104,65 @@ class SeriesUploadPlanTest {
         assertThrows(IllegalArgumentException.class,
                 () -> SeriesUploadPlan.between(0L, 1L, 12));
     }
+
+    // —— 以下钉住**平滑布局**（SeriesLayout.SMOOTH）：前面多留一个 float、多两个镜像 ——
+    //
+    // 为什么必须逐字节钉住：布局决定了四个实例属性的偏移。偏移与 uSmooth 各说各话时
+    // 曲线会**弯向别的样本**，而画面"只是一条形状略有出入的曲线"——只有字节层面的
+    // 期望值能把这种错拦在单元测试里（像素校验器那条路要跑真 GL 上下文）。
+
+    @Test
+    void 平滑布局的区间偏移多一个前置余量() {
+        // 容量 8、从 0 增加到 3：槽位 0,1,2 → 偏移 4..15（普通布局是 0..11）
+        SeriesUploadPlan plan = SeriesUploadPlan.between(0L, 3L, CAP, SeriesLayout.SMOOTH);
+        assertEquals(1, plan.ranges().size());
+        assertEquals(new SeriesUploadPlan.Range(4, 12), plan.ranges().get(0),
+                "平滑布局把整块数据向后挪了一个 float：槽位 0 在字节 4");
+    }
+
+    @Test
+    void 平滑布局跨环绕时第二段从前置余量之后开始() {
+        // 容量 8、从 6 增加到 10：槽位 6,7 → 偏移 28..35；槽位 0,1 → 偏移 4..11
+        SeriesUploadPlan plan = SeriesUploadPlan.between(6L, 10L, CAP, SeriesLayout.SMOOTH);
+        assertEquals(2, plan.ranges().size());
+        assertEquals(new SeriesUploadPlan.Range(28, 8), plan.ranges().get(0));
+        assertEquals(new SeriesUploadPlan.Range(4, 8), plan.ranges().get(1));
+    }
+
+    @Test
+    void 平滑布局写三个镜像且各自指向正确的样本() {
+        // 容量 8、写满 10 个（环已经绕过）：槽位 7 / 0 / 1 里分别是样本 7 / 8 / 9
+        SeriesUploadPlan plan = SeriesUploadPlan.between(0L, 10L, CAP, SeriesLayout.SMOOTH);
+        assertEquals(List.of(
+                        new SeriesUploadPlan.Mirror(0, 7L),      // 扩展槽位 -1 ← 槽位 7
+                        new SeriesUploadPlan.Mirror(36, 8L),     // 扩展槽位 8  ← 槽位 0
+                        new SeriesUploadPlan.Mirror(40, 9L)),    // 扩展槽位 9  ← 槽位 1
+                plan.mirrors(),
+                "前置余量给槽位 0 的实例当 aYm1，后两个给最后一个槽位的实例当 aY1/aY2");
+        assertEquals(44, plan.totalUploadBytes(), "8 个样本 32 字节 + 三个镜像 12 字节");
+    }
+
+    @Test
+    void 平滑布局对取不到的样本不写镜像() {
+        // 环还没绕满：槽位 7 上还没有样本，所以前置余量不写；槽位 0/1 上的镜像照写。
+        // 判据不是"环满没满"这条特判，而是"算出来的样本号是不是负数"——见 smoothMirrors。
+        SeriesUploadPlan plan = SeriesUploadPlan.between(0L, 3L, CAP, SeriesLayout.SMOOTH);
+        assertEquals(List.of(
+                        new SeriesUploadPlan.Mirror(36, 0L),
+                        new SeriesUploadPlan.Mirror(40, 1L)),
+                plan.mirrors());
+        assertEquals(20, plan.totalUploadBytes(), "3 个样本 12 字节 + 两个镜像 8 字节");
+    }
+
+    @Test
+    void 普通布局与不传布局的那条重载逐字节相同() {
+        // "默认路径逐字节不变"是硬要求（流式系列那条"每帧恰好 K×4 字节"的断言）。
+        for (long written = 0; written <= 24; written++) {
+            SeriesUploadPlan a = SeriesUploadPlan.between(0L, written, CAP);
+            SeriesUploadPlan b = SeriesUploadPlan.between(0L, written, CAP, SeriesLayout.PLAIN);
+            assertEquals(a.ranges(), b.ranges(), "written=" + written);
+            assertEquals(a.mirrors(), b.mirrors(), "written=" + written);
+            assertEquals(a.totalUploadBytes(), b.totalUploadBytes(), "written=" + written);
+        }
+    }
 }

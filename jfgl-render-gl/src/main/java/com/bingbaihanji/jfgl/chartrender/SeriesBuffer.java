@@ -14,14 +14,20 @@ import java.nio.ByteOrder;
  * <p>每个样本 4 字节。线段的两端靠"同一个缓冲、偏移差 4 字节"的两个实例属性拿到
  * （见 {@code LineSeriesRenderer}），所以同一个 y 只存一次。
  *
- * <p><strong>缓冲比环容量多留一个 float，而且它不是垃圾</strong>：物理槽位 {@code capacity}
+ * <p><strong>缓冲比环容量多留几个 float，而且它们不是垃圾</strong>：物理槽位 {@code capacity}
  * 就是槽位 0（环的本质），所以"最后一个槽位上的那个实例"的第二端必须读到<b>槽位 0 的值</b>。
- * 它会被真的画出来（窗口跨过环绕点时），因此这里每写一次槽位 0 就同步一次那个余量
- * （见 {@link SeriesUploadPlan#mirrorSourceIndex()}）。
+ * 它会被真的画出来（窗口跨过环绕点时），因此某个槽位一被改写，环外那份<b>拷贝</b>
+ * 就要跟着同步（见 {@link SeriesUploadPlan#mirrors()}）。
  *
  * <p>曾经这里写着"那个实例永远不画"——<b>那是错的</b>，而且错得安静：余量从来没被写过，
  * 于是一条跨过环绕点的曲线会多出一段<b>从正常值掉到 0 的斜线</b>。它不报错、也不是乱码，
  * 看着还挺像一条信号。
+ *
+ * <h2>两个布局</h2>
+ * <p>普通布局（{@link SeriesLayout#PLAIN}）是"容量 + 1 个余量"，即上面那一段；
+ * 平滑布局（{@link SeriesLayout#SMOOTH}）是"前置 1 + 容量 + 后置 2"，多出来的三个余量
+ * 供 Catmull-Rom 的四个控制点用（见 {@link SeriesLayout} 的类文档）。
+ * <b>非平滑系列走普通布局</b>——"默认路径逐字节不变"是硬要求，不是优化。
  *
  * <h2>容量在创建时定死，运行期永不扩容</h2>
  * <p>这是硬约束，不是优化。{@code VertexBuffer.grow()} 是"删旧建新"，
@@ -74,6 +80,8 @@ public final class SeriesBuffer implements Disposable {
 
     private final int capacity;
 
+    private final SeriesLayout layout;
+
     private final int vbo;
 
     /** 上一次已经上传到哪（已写样本总数的绝对号）。 */
@@ -84,18 +92,42 @@ public final class SeriesBuffer implements Disposable {
 
     private boolean disposed = false;
 
-    /** 为给定的数据创建缓冲，容量与数据的环容量一致。 */
+    /** 为给定的数据创建缓冲，容量与数据的环容量一致（{@link SeriesLayout#PLAIN}）。 */
     public SeriesBuffer(GLAbstraction gl, ChartData data) {
-        this(gl, SeriesSource.of(data));
+        this(gl, SeriesSource.of(data), SeriesLayout.PLAIN);
     }
 
     /**
-     * 为给定的数据创建缓冲，显式指定容量。
+     * 为给定的数据创建缓冲，显式选定布局。
+     *
+     * <p>{@code smooth = true} 时用 {@link SeriesLayout#SMOOTH}（槽位 0 前面多留一个 float，
+     * 供 {@code y[k-1]} 那个实例属性用），否则保持改动前的 {@link SeriesLayout#PLAIN}。
+     *
+     * <p><b>布局决定之后不能再改</b>：四个实例属性的字节偏移是由它算出来的，
+     * 中途换布局会让属性读到别的样本，而画面"看起来只是一条曲线"。所以
+     * {@code ChartRenderer} 在发现系列的 {@code smooth()} 与布局不一致时会
+     * <b>重建缓冲</b>（见那边的说明）。
+     */
+    public SeriesBuffer(GLAbstraction gl, ChartData data, boolean smooth) {
+        this(gl, SeriesSource.of(data), smooth ? SeriesLayout.SMOOTH : SeriesLayout.PLAIN);
+    }
+
+    /**
+     * 为给定的数据创建缓冲，显式指定容量（{@link SeriesLayout#PLAIN}）。
      *
      * @throws IllegalArgumentException 容量不是 2 的幂，或与数据的环容量不一致
      */
     public SeriesBuffer(GLAbstraction gl, ChartData data, int capacity) {
-        this(gl, SeriesSource.of(data), capacity);
+        this(gl, SeriesSource.of(data), capacity, SeriesLayout.PLAIN);
+    }
+
+    /**
+     * 为给定的数据创建缓冲，显式指定布局。
+     *
+     * @throws IllegalArgumentException 容量不是 2 的幂，或与数据的环容量不一致
+     */
+    public SeriesBuffer(GLAbstraction gl, ChartData data, int capacity, SeriesLayout layout) {
+        this(gl, SeriesSource.of(data), capacity, layout);
     }
 
     /**
@@ -105,13 +137,23 @@ public final class SeriesBuffer implements Disposable {
      * 行为可控（会倒退、会记录）的数据源去驱动本类的真实路径。
      */
     SeriesBuffer(GLAbstraction gl, SeriesSource source) {
-        this(gl, source, source.capacity());
+        this(gl, source, source.capacity(), SeriesLayout.PLAIN);
+    }
+
+    /** 包内可见：自定义数据源 + 显式布局（测试用）。 */
+    SeriesBuffer(GLAbstraction gl, SeriesSource source, SeriesLayout layout) {
+        this(gl, source, source.capacity(), layout);
+    }
+
+    /** @throws IllegalArgumentException 容量不是 2 的幂，或与数据源的环容量不一致 */
+    SeriesBuffer(GLAbstraction gl, SeriesSource source, int capacity) {
+        this(gl, source, capacity, SeriesLayout.PLAIN);
     }
 
     /**
      * @throws IllegalArgumentException 容量不是 2 的幂，或与数据源的环容量不一致
      */
-    SeriesBuffer(GLAbstraction gl, SeriesSource source, int capacity) {
+    SeriesBuffer(GLAbstraction gl, SeriesSource source, int capacity, SeriesLayout layout) {
         if (capacity <= 0 || (capacity & (capacity - 1)) != 0) {
             throw new IllegalArgumentException("缓冲容量必须是 2 的幂，实际 " + capacity);
         }
@@ -126,16 +168,30 @@ public final class SeriesBuffer implements Disposable {
         this.gl = gl;
         this.source = source;
         this.capacity = capacity;
+        this.layout = layout;
         // 校验全部做完再建 GL 资源：抛异常时不该留下一个没人认领的 VBO。
+        //
+        // 初始化为全 0 而不是随机值（glBufferData 的语义就是"清零"）：平滑布局的前置余量
+        // 在环绕满之前从来不会被写，而它会被**属性抓取**（值被丢弃，但读到的必须是个确定的数）。
         this.vbo = gl.createVbo();
         gl.bindVbo(vbo);
-        gl.uploadVboData(new float[capacity + 1]);
+        gl.uploadVboData(new float[layout.floatCount(capacity)]);
         gl.bindVbo(0);
     }
 
-    /** 缓冲字节数：容量个 float，外加一个 float 的余量。 */
+    /**
+     * 普通布局下 {@code capacity} 个样本外加一个镜像共占多少字节。
+     *
+     * <p>它是普通布局的口径（既有断言的期望值就是这个数）；平滑布局请用
+     * {@link #bufferBytesFor(int, boolean)}。
+     */
     public static int bufferBytesFor(int capacity) {
-        return (capacity + 1) * Float.BYTES;
+        return bufferBytesFor(capacity, false);
+    }
+
+    /** 指定布局下缓冲一共占多少字节。 */
+    public static int bufferBytesFor(int capacity, boolean smooth) {
+        return (smooth ? SeriesLayout.SMOOTH : SeriesLayout.PLAIN).byteCount(capacity);
     }
 
     /** 底层 VBO 的名字，供 VAO 配置用。 */
@@ -146,6 +202,62 @@ public final class SeriesBuffer implements Disposable {
     /** 环容量。 */
     public int capacity() {
         return capacity;
+    }
+
+    /**
+     * 本缓冲的物理布局。
+     *
+     * <p>渲染器据此配置四个实例属性的字节偏移（{@link SeriesLayout#byteOffsetOfSlot}）
+     * 与 {@code uSmooth}——<b>两者必须来自同一处</b>，否则属性会读到别的样本，
+     * 而画面"看起来只是一条曲线"。
+     */
+    public SeriesLayout layout() {
+        return layout;
+    }
+
+    /** 本缓冲是不是平滑布局（= 渲染器要不要走曲线路径）。 */
+    public boolean smoothLayout() {
+        return layout.smooth();
+    }
+
+    /**
+     * 平滑曲线可以画的那一段实例的<b>起始数据下标</b>（含）。
+     *
+     * <h2>它回答的是"哪几段的四个控制点都是真数据"</h2>
+     * <p>一段曲线（实例）需要 {@code y[k-1], y[k], y[k+1], y[k+2]} 四个控制点，
+     * 于是两头的边界必须排除：
+     * <ul>
+     *   <li>{@code k-1} 不能小于环里最老的那个还没被覆盖的样本
+     *       （{@code max(0, 已上传数 - 容量)}）⇒ {@code k ≥ 它 + 1}；</li>
+     *   <li>{@code k+2} 不能超过已上传的最后一个样本（{@code 已上传数 - 1}）
+     *       ⇒ {@code k ≤ 已上传数 - 3}。</li>
+     * </ul>
+     *
+     * <p><strong>★ 为什么必须显式算出来，而不是"读到 NaN 自然会露出来"。</strong>
+     * 环里落在有效区间之外的那些槽位不是 NaN，是<b>陈旧数据</b>（上一圈留下的值，
+     * 或者从未写过的 0）。拿它当控制点，曲线会<b>弯向一个垃圾值</b>——
+     * 而画面上那只是一条形状略有出入的曲线，正是本项目最警惕的那种缺陷。
+     * 越界的实例必须<b>退回直线</b>（见 {@code SeriesShaders} 的 {@code uSmoothFrom/To}）。
+     *
+     * <p>另一个容易漏掉的地方：{@code k+2 ≤ 已上传数 - 1} 比"最后一个可画实例"
+     * （{@code 已上传数 - 2}）还紧一格——<b>最右边那一段永远是直的</b>。
+     * 这不是可以绕过的：{@code y[k+2]} 那个样本还没采到，它不存在。
+     *
+     * @return 第一个可以画成曲线的实例的数据下标（绝对号），半开区间的左端
+     */
+    public long smoothableFirst() {
+        return Math.max(0L, uploadedCount - capacity) + 1;
+    }
+
+    /**
+     * 平滑曲线可以画的那一段实例的<b>结束数据下标</b>（<b>不含</b>）。
+     *
+     * <p>见 {@link #smoothableFirst()} 的推导：最后一个可以画成曲线的实例是
+     * {@code 已上传数 - 3}，所以这里是它 + 1。区间为空时返回值可能小于
+     * {@link #smoothableFirst()}（数据太少的暂态），调用方按"空区间"处理即可。
+     */
+    public long smoothableEnd() {
+        return uploadedCount - 2;
     }
 
     /**
@@ -194,7 +306,7 @@ public final class SeriesBuffer implements Disposable {
         if (written == uploadedCount) {
             return;
         }
-        SeriesUploadPlan plan = SeriesUploadPlan.between(uploadedCount, written, capacity);
+        SeriesUploadPlan plan = SeriesUploadPlan.between(uploadedCount, written, capacity, layout);
         if (plan.totalBytes() == 0) {
             uploadedCount = written;
             return;
@@ -229,18 +341,19 @@ public final class SeriesBuffer implements Disposable {
             gl.bindVbo(0);
         }
 
-        // 槽位 0 的镜像：偏移 capacity*4 那个 float 不是垃圾，它是**槽位 0 的值**
-        // （环的槽位 capacity 就是槽位 0，见 SeriesUploadPlan.mirrorSourceIndex）。
+        // 镜像：末尾那一个（普通布局）或三个（平滑布局）——它们都不是垃圾，
+        // 各自是"某个槽位里最新的那个样本"的一份拷贝（环的槽位 capacity 就是槽位 0，
+        // 见 SeriesLayout 的类文档与 SeriesUploadPlan.mirrors）。
         //
-        // 不写它的后果：环写满之后，跨环绕点的那一个实例会画一条从正常值掉到 0 的斜线
-        // ——不报错、不是乱码，看着还挺像一条信号。
-        long mirror = plan.mirrorSourceIndex();
-        if (mirror != SeriesUploadPlan.NO_MIRROR) {
+        // 不写普通布局那一个的后果：环写满之后，跨环绕点的那一个实例会画一条
+        // 从正常值掉到 0 的斜线——不报错、不是乱码，看着还挺像一条信号。
+        // 不写平滑布局那两个额外镜像的后果更隐蔽：曲线在环绕点附近会**弯向 0**。
+        for (SeriesUploadPlan.Mirror mirror : plan.mirrors()) {
             ByteBuffer one = ByteBuffer.allocateDirect(Float.BYTES).order(ByteOrder.nativeOrder());
-            one.putFloat((float) source.valueAt(VALUE_DIM, mirror));
+            one.putFloat((float) source.valueAt(VALUE_DIM, mirror.sourceIndex()));
             one.flip();
             gl.bindVbo(vbo);
-            gl.uploadVboSubData(capacity * Float.BYTES, one);
+            gl.uploadVboSubData(mirror.byteOffset(), one);
             gl.bindVbo(0);
         }
 

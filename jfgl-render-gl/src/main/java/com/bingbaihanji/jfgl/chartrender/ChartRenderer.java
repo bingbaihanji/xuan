@@ -361,8 +361,7 @@ public final class ChartRenderer implements Disposable {
                 // 先设当前系列、再给它缓冲：bufferFor 会拿这个断言拦住
                 // "渲染器自己缓存了跨系列缓冲引用"那类越界（见 GLRenderContextImpl）。
                 ctx.setCurrentSeries(series);
-                ctx.setCurrentBuffer(buffers.computeIfAbsent(series,
-                        s -> new SeriesBuffer(gl, s.data())));
+                ctx.setCurrentBuffer(bufferFor(series));
                 // 拾取号在**渲染层**分配，不在图表框架里——所以 Series 上没有 pickId()。
                 // 注册的是 Series 对象本身：命中之后 PickHit.payload() 直接就是那个 Series。
                 //
@@ -430,6 +429,61 @@ public final class ChartRenderer implements Disposable {
             }
         }
         return count;
+    }
+
+    /**
+     * 取（必要时创建、必要时<b>重建</b>）某个系列的 GPU 常驻缓冲。
+     *
+     * <h2>为什么平滑开关变了要重建，而不是下一帧换个 uniform</h2>
+     * <p>缓冲的<b>物理布局</b>（{@link SeriesLayout}：前面有没有留一个 float）
+     * 决定了四个实例属性的字节偏移。布局与 {@code uSmooth} 不匹配时，
+     * {@code aYm1} / {@code aY2} 会读到<b>别的样本</b>——曲线弯向一个垃圾值，
+     * 而画面"只是一条形状略有出入的曲线"，正是本项目最警惕的那种缺陷。
+     *
+     * <p><b>为什么不抛异常。</b>GL 线程上的异常在本项目是<b>静默吞掉</b>的
+     * （openglfx 的原生回调里没人接），画布会就此冻结、一行报告都没有——
+     * 那比画错还难查。
+     *
+     * <p><b>所以：重建。</b>代价是这一帧把环里的样本重传一次
+     * （最多 {@code 容量 × 4} 字节，一次性），收益是"开关随时可以改，而且立刻正确"。
+     * 只在开关<b>真的变了</b>的那一帧发生。
+     */
+    private SeriesBuffer bufferFor(Series series) {
+        SeriesBuffer buffer = buffers.get(series);
+        boolean wantSmooth = wantsSmoothLayout(series);
+        if (buffer != null && buffer.smoothLayout() != wantSmooth) {
+            buffer.dispose();
+            buffers.remove(series);
+            buffer = null;
+        }
+        if (buffer == null) {
+            buffer = new SeriesBuffer(gl, series.data(), wantSmooth);
+            buffers.put(series, buffer);
+        }
+        return buffer;
+    }
+
+    /**
+     * 这个系列要不要<b>平滑布局</b>的缓冲（= 它的折线会不会被画成曲线）。
+     *
+     * <p>判据是"系列开了平滑"<b>且</b>图型真的会画线：{@link ChartType#LINE}、
+     * {@link ChartType#LINE_AND_MARKERS}、{@link ChartType#AREA}。
+     * 其余图型（阶梯 / 散点 / 柱状 / 频谱）忽略这个开关——理由见
+     * {@code Series.smooth()} 的文档；在这里判一次，是为了让它们的缓冲
+     * <b>连布局都不变</b>（白多两个镜像的写入没有任何意义）。
+     *
+     * <p>它与渲染器侧的判据是同一件事的两半：渲染器读的是<b>缓冲的布局</b>
+     * （{@code SeriesBuffer.smoothLayout()}），而本方法保证布局与
+     * {@code series.smooth()} 一致。两者必须成对——只改一处的话，
+     * 属性偏移与 {@code uSmooth} 会各说各话。
+     */
+    private static boolean wantsSmoothLayout(Series series) {
+        if (!series.smooth()) {
+            return false;
+        }
+        ChartType type = series.type();
+        return type == ChartType.LINE || type == ChartType.LINE_AND_MARKERS
+                || type == ChartType.AREA;
     }
 
     /**

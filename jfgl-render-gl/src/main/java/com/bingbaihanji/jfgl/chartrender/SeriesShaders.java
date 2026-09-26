@@ -58,6 +58,52 @@ package com.bingbaihanji.jfgl.chartrender;
 final class SeriesShaders {
 
     /**
+     * 平滑曲线用的一段 GLSL：<b>逐字相同的两份必须是同一份源码</b>。
+     *
+     * <p>折线族（{@link #LINE_VERTEX}）与面积图的顶边（{@link #AREA_VERTEX}）画的是
+     * 同一条曲线——面积图的轮廓线由折线路径画（见 {@code AreaSeriesRenderer}），
+     * 填充的顶边却在这边算。两处各写一份的话，任何一次改动都可能只改一处，
+     * 而分叉的表现是<b>填充的顶边与轮廓线错开半个像素</b>：沿曲线露出一条背景色的细缝，
+     * 或者轮廓线浮在填充上方。那看起来只是"边有点毛"，是最难归因的一类。
+     *
+     * <p>所以曲线与站位这两个函数在这里定义一次、拼进两个着色器。
+     *
+     * <h2>均匀 Catmull-Rom，写成 Hermite 形式</h2>
+     * <p>控制点等距（横轴是数据下标，等距是数据本身的性质），张力取 1/2，于是切线是
+     * {@code m1 = (y[k+1] - y[k-1]) / 2}、{@code m2 = (y[k+2] - y[k]) / 2}。
+     * Hermite 形式下 <b>t = 0 / 1 处逐位等于端点值</b>（h00 = 1、h10 = h01 = h11 = 0），
+     * 于是相邻两段在样本处严格相接、切线也相接（{@code m2} 与下一段的 {@code m1} 同值）
+     * ——曲线在整条折线上是 C1 的，接头处不会出现宽度上的折角。
+     */
+    private static final String STATION_GLSL = """
+            // —— 站位：数值与 dy/dt（折线族与面积图共用同一份源码）——
+            //
+            // t = 0 是这一段左端的样本、t = 1 是右端。
+            // curve = false 时退化成直线——**这一路必须与"没有平滑功能"时逐位相同**，
+            // 所以两端直接返回端点值（不做 y0 + (y1-y0)*t 那种等价但不逐位的写法）。
+            vec2 seriesStation(float t, float ym1, float y0, float y1, float y2, bool curve) {
+                if (!curve) {
+                    if (t <= 0.0) return vec2(y0, y1 - y0);
+                    if (t >= 1.0) return vec2(y1, y1 - y0);
+                    return vec2(y0 + (y1 - y0) * t, y1 - y0);
+                }
+                float m1 = 0.5 * (y1 - ym1);
+                float m2 = 0.5 * (y2 - y0);
+                float t2 = t * t;
+                float t3 = t2 * t;
+                float h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+                float h10 = t3 - 2.0 * t2 + t;
+                float h01 = -2.0 * t3 + 3.0 * t2;
+                float h11 = t3 - t2;
+                float v = h00 * y0 + h10 * m1 + h01 * y1 + h11 * m2;
+                float dh00 = 6.0 * (t2 - t);
+                float dv = dh00 * y0 + (3.0 * t2 - 4.0 * t + 1.0) * m1
+                         - dh00 * y1 + (3.0 * t2 - 2.0 * t) * m2;
+                return vec2(v, dv);
+            }
+            """;
+
+    /**
      * 折线族的顶点着色器。
      *
      * <p>每个实例是一个线段。两端 y 值由两个实例属性供给——它们是<b>同一个缓冲、
@@ -70,17 +116,44 @@ final class SeriesShaders {
      * <b>开着 AA 会把它变得稍微可见一点</b>（切口两侧各多一圈半透明），
      * 但它是**亚像素级**的，且**本期不改**——真要做得给折线也上斜接，
      * 那是几何改动，得重新量一批既有期望值。
+     *
+     * <h2>★ 平滑（{@code Series.smooth()}）：一个实例被拆成若干"站位"</h2>
+     * <p>开平滑时每个实例不再是"一个四边形"，而是"沿线段排开的 K 个小四边形"
+     * （K = 2/4/8/16，见 {@code SmoothCurve}）；顶点数由 CPU 按档位传给 draw
+     * （{@code count = 2 × (K + 1)}），{@code aCorner.x} 就是<b>站位参数 t</b>。
+     * 非平滑时顶点数 4、{@code aCorner.x} 只取 0 与 1——两条路在 t = 0 / 1 处重合，
+     * 所以非平滑的几何<b>逐位不变</b>。
+     *
+     * <h2>★★ 两条"不许靠数据自己露出来"的边界：越界与缺口</h2>
+     * <ol>
+     *   <li><b>读不到邻居的实例必须退回直线，判据由 CPU 显式传进来</b>
+     *       （{@code uSmoothFrom} / {@code uSmoothTo}，单位是本次 draw 的实例下标）。
+     *       环里那些"名义上存在、内容却是陈旧数据"的槽位<b>不是 NaN</b>——
+     *       曲线会弯向一个垃圾值，而画面只是一条形状略有出入的曲线。
+     *       <b>绝不能用"读到 NaN 自然会露出来"代替它。</b></li>
+     *   <li><b>四个控制点里任何一个是 NaN 就退回直线</b>：缺口不能连过去
+     *       （这是本仓库的硬规则：那条直线显示了一个不存在的信号）。</li>
+     * </ol>
+     * <p>两条都只是"退回直线"，不是不画：样本两端本身有值，直线是它们之间唯一诚实的形状。
      */
     static final String LINE_VERTEX = """
                                       #version 330 core
-                                      
-                                      // —— 每顶点（divisor = 0）：单位四边形的四个角 ——
-                                      layout(location = 0) in vec2 aCorner;   // (0/1, 0/1)
-                                      
-                                      // —— 每实例（divisor = 1）：线段两端的数值 ——
+
+                                      // —— 每顶点（divisor = 0）——
+                                      // 非平滑：x = 线段的哪一端（0 = 左、1 = 右），y = 带的哪一侧（0/1）
+                                      // 平滑：x = 站位参数 t（0..1，沿线段），y 仍然是带的哪一侧
+                                      layout(location = 0) in vec2 aCorner;
+
+                                      // —— 每实例（divisor = 1）：四个控制点的数值 ——
+                                      // 普通布局下 aYm1 与 aY0 是同一个值、aY2 与 aY1 是同一个值
+                                      // （见 SmoothCurve.configureDataAttributes：负偏移不存在，
+                                      // 所以那两处指向同一个样本；uSmooth = 0 时没人读它们，
+                                      // 但属性抓取照样发生，偏移必须落在缓冲里）。
                                       layout(location = 1) in float aY0;
                                       layout(location = 2) in float aY1;
-                                      
+                                      layout(location = 3) in float aYm1;
+                                      layout(location = 4) in float aY2;
+
                                       // 绘图区（设备像素，原点左上）
                                       uniform vec4  uPlotRect;      // x, y, w, h
                                       uniform vec2  uViewport;      // 帧缓冲宽高
@@ -103,7 +176,14 @@ final class SeriesShaders {
                                       // 而 0 正是"什么都没命中"，于是图表拾取会静默地永远返回没点到。
                                       // （实测：glUniform1i → 0x502、回读 0；glUniform1ui → 0x0、回读正确。）
                                       uniform int  uPickId;
-                                      
+                                      // 平滑：0 = 折线，1 = 曲线（见 Series.smooth）
+                                      uniform float uSmooth;
+                                      // 本次 draw 里**可以画成曲线**的实例下标区间 [from, to)：
+                                      // 两侧各有一小段读不到完整的四个控制点（首末样本、环的两端），
+                                      // 它们必须退回直线。由 CPU 按"已上传数 / 环容量"算出来。
+                                      uniform float uSmoothFrom;
+                                      uniform float uSmoothTo;
+
                                       out vec4 vColor;
                                       // "我在描边带的哪一侧"——与 Gc 路径的 aEdge.x 同一个意思。
                                       // 规范化到 [-1,1]：±1 就是带的两条外缘。
@@ -115,12 +195,14 @@ final class SeriesShaders {
                                       out vec2 vEdge;
                                       flat out uint vId;
 
+                                      """ + STATION_GLSL + """
+
                                       void main() {
                                           vId = uint(uPickId);   // 发号从 1 开始、恒为正，转换无损
                                           vColor = uColor;
                                           // 取 aCorner.y 而不是 aCorner.x：后者挑的是线段的哪一端
-                                          // （下面那句 `base = aCorner.x < 0.5 ? p0 : p1`），
-                                          // 与"我在带的哪一侧"（下面那句 `offset` 的符号）是两件事。
+                                          // （下面那个 `base` 的选择），与"我在带的哪一侧"
+                                          // （下面那句 `offset` 的符号）是两件事。
                                           vEdge = vec2(aCorner.y * 2.0 - 1.0, 0.0);
 
                                           // 任一端是 NaN 就把整个四边形退化到裁剪空间之外。
@@ -131,37 +213,62 @@ final class SeriesShaders {
                                               gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
                                               return;
                                           }
-                                      
+
+                                          float t = aCorner.x;
                                           float uMin = uValueRange.x;
                                           float uMax = uValueRange.y;
                                           float span = uMax - uMin;
-                                      
-                                          // 数值 -> 屏幕 y。值越大越靠上，所以要翻。
-                                          float fy0 = (aY0 - uMin) / span;
-                                          float fy1 = (aY1 - uMin) / span;
-                                          float sy0 = uPlotRect.y + (1.0 - fy0) * uPlotRect.w;
-                                          float sy1 = uPlotRect.y + (1.0 - fy1) * uPlotRect.w;
-                                      
+
                                           // 实例序号 -> 数据下标 -> 屏幕 x。
                                           // 全程用"相对窗口左端"的小数，避免绝对下标溢出 int。
                                           float rel = uFirstRelIndex + float(gl_InstanceID);
                                           float sx0 = uPlotRect.x + rel * uPxPerSample;
                                           float sx1 = sx0 + uPxPerSample;
-                                      
-                                          vec2 p0 = vec2(sx0, sy0);
-                                          vec2 p1 = vec2(sx1, sy1);
-                                      
-                                          // 沿屏幕空间法线把四边形撑成有粗细的线段。
-                                          vec2 delta = p1 - p0;
-                                          float len = length(delta);
-                                          vec2 dir = len > 0.0 ? delta / len : vec2(1.0, 0.0);
-                                          vec2 nrm = vec2(-dir.y, dir.x);
-                                      
+
                                           float halfWidth = max(uHalfWidth, uPickTolerance);
-                                          vec2 base = aCorner.x < 0.5 ? p0 : p1;
-                                          vec2 offset = nrm * halfWidth * (aCorner.y < 0.5 ? -1.0 : 1.0);
+                                          vec2 base;
+                                          vec2 useNrm;
+                                          float idx = float(gl_InstanceID);
+                                          // 能画成曲线的三个条件：开关开着、四个控制点齐全
+                                          // （uSmoothFrom/To，由 CPU 按数据边界算好）、
+                                          // 且控制点里没有缺口。少任何一条都退回直线。
+                                          if (uSmooth > 0.5 && idx >= uSmoothFrom && idx < uSmoothTo
+                                                  && !isnan(aYm1) && !isnan(aY2)) {
+                                              vec2 vs = seriesStation(t, aYm1, aY0, aY1, aY2, true);
+                                              float sy = uPlotRect.y
+                                                       + (1.0 - (vs.x - uMin) / span) * uPlotRect.w;
+                                              float sx = sx0 + t * uPxPerSample;
+                                              base = vec2(sx, sy);
+                                              // 曲线的法向取**切线**的法向（不是弦的法向）：
+                                              // 弦的法向在一段弯得厉害的曲线上会让带宽忽宽忽窄。
+                                              vec2 d = vec2(uPxPerSample, -(uPlotRect.w / span) * vs.y);
+                                              float dl = length(d);
+                                              vec2 dd = dl > 0.0 ? d / dl : vec2(1.0, 0.0);
+                                              useNrm = vec2(-dd.y, dd.x);
+                                          } else {
+                                              // 直线：**与改动前逐字相同的那条路**。
+                                              // 两端直接取端点值（t 只取 0 与 1 时位置与原来逐位一致），
+                                              // 法向取弦的法向——不是切线的法向。
+                                              float v = seriesStation(t, aYm1, aY0, aY1, aY2, false).x;
+                                              float fy0 = (aY0 - uMin) / span;
+                                              float fy1 = (aY1 - uMin) / span;
+                                              float sy0 = uPlotRect.y + (1.0 - fy0) * uPlotRect.w;
+                                              float sy1 = uPlotRect.y + (1.0 - fy1) * uPlotRect.w;
+                                              float syv = uPlotRect.y + (1.0 - (v - uMin) / span) * uPlotRect.w;
+                                              float sxv = t <= 0.0 ? sx0 : (t >= 1.0 ? sx1
+                                                       : sx0 + t * uPxPerSample);
+                                              base = vec2(sxv, syv);
+
+                                              // 沿屏幕空间法线把四边形撑成有粗细的线段。
+                                              vec2 delta = vec2(sx1 - sx0, sy1 - sy0);
+                                              float len = length(delta);
+                                              vec2 dir = len > 0.0 ? delta / len : vec2(1.0, 0.0);
+                                              useNrm = vec2(-dir.y, dir.x);
+                                          }
+                                          vec2 offset = useNrm * halfWidth
+                                                  * (aCorner.y < 0.5 ? -1.0 : 1.0);
                                           vec2 p = base + offset;
-                                      
+
                                           // 屏幕像素 -> NDC。y 要翻：屏幕原点在左上、y 向下。
                                           vec2 ndc = vec2(p.x / uViewport.x * 2.0 - 1.0,
                                                           1.0 - p.y / uViewport.y * 2.0);
@@ -444,13 +551,17 @@ final class SeriesShaders {
     static final String AREA_VERTEX = """
                                      #version 330 core
 
-                                     // —— 每顶点（divisor = 0）：四个角 ——
-                                     // aCorner.x = 线段的哪一端（0=左 1=右），aCorner.y = 0 取数据值 / 1 取基线
+                                     // —— 每顶点（divisor = 0）——
+                                     // 非平滑：x = 线段的哪一端（0=左 1=右），y = 0 取数据值 / 1 取基线
+                                     // 平滑：x = 站位参数 t（0..1），y 的含义不变
                                      layout(location = 0) in vec2  aCorner;
 
-                                     // —— 每实例（divisor = 1）：线段两端的数值 ——
+                                     // —— 每实例（divisor = 1）：四个控制点的数值 ——
+                                     // 普通布局下 aYm1 / aY2 分别与 aY0 / aY1 是同一个值，见 LINE_VERTEX。
                                      layout(location = 1) in float aY0;
                                      layout(location = 2) in float aY1;
+                                     layout(location = 3) in float aYm1;
+                                     layout(location = 4) in float aY2;
 
                                      // 绘图区（设备像素，原点左上）
                                      uniform vec4  uPlotRect;      // x, y, w, h
@@ -466,6 +577,11 @@ final class SeriesShaders {
                                      uniform vec4  uColor;
                                      // 拾取 ID（必须是 int，理由见 LINE_VERTEX）
                                      uniform int   uPickId;
+                                     // 平滑：0 = 折线，1 = 曲线（见 Series.smooth）
+                                     uniform float uSmooth;
+                                     // 可以画成曲线的实例下标区间 [from, to)，理由见 LINE_VERTEX
+                                     uniform float uSmoothFrom;
+                                     uniform float uSmoothTo;
 
                                      out vec4 vColor;
                                      // "我在填充带的哪一侧"。
@@ -496,6 +612,8 @@ final class SeriesShaders {
                                      out vec2 vEdge;
                                      flat out uint vId;
 
+                                     """ + STATION_GLSL + """
+
                                      void main() {
                                          vId = uint(uPickId);
                                          vColor = uColor;
@@ -508,19 +626,36 @@ final class SeriesShaders {
                                              return;
                                          }
 
+                                         float t = aCorner.x;
                                          float uMin = uValueRange.x;
                                          float span = uValueRange.y - uMin;
+                                         float idx = float(gl_InstanceID);
 
                                          // 本角取数据值还是基线：由 aCorner.y 决定；
-                                         // 取数据值时再按 aCorner.x 选是哪一端的值。
-                                         float v = (aCorner.y < 0.5)
-                                                 ? (aCorner.x < 0.5 ? aY0 : aY1)
-                                                 : uBaseline;
+                                         // 取数据值时再走曲线的站位（或退化成直线）。
+                                         //
+                                         // ★ **基线那一条永远是直的**：它是填充的下边界，
+                                         // 与曲线无关。把基线也拿去插值会让填充的下沿跟着数据起伏
+                                         // ——那看起来"只是填充薄了一点"。
+                                         float v;
+                                         if (aCorner.y >= 0.5) {
+                                             v = uBaseline;
+                                         } else {
+                                             bool curve = uSmooth > 0.5 && idx >= uSmoothFrom
+                                                     && idx < uSmoothTo
+                                                     && !isnan(aYm1) && !isnan(aY2);
+                                             v = seriesStation(t, aYm1, aY0, aY1, aY2, curve).x;
+                                         }
                                          float sy = uPlotRect.y + (1.0 - (v - uMin) / span) * uPlotRect.w;
 
-                                         float rel = uFirstRelIndex + float(gl_InstanceID)
-                                                 + (aCorner.x < 0.5 ? 0.0 : 1.0);
-                                         float sx = uPlotRect.x + rel * uPxPerSample;
+                                         float rel = uFirstRelIndex + idx;
+                                         // 站位沿 x 展开；两端**逐位复用改动前的那个写法**
+                                         // （t=0/1 时与 `rel + (aCorner.x < 0.5 ? 0 : 1)` 完全一致）。
+                                         float sx = aCorner.x <= 0.0
+                                                 ? uPlotRect.x + rel * uPxPerSample
+                                                 : (aCorner.x >= 1.0
+                                                    ? uPlotRect.x + (rel + 1.0) * uPxPerSample
+                                                    : uPlotRect.x + (rel + t) * uPxPerSample);
 
                                          // 屏幕像素 -> NDC。y 要翻：屏幕原点在左上、y 向下。
                                          vec2 ndc = vec2(sx / uViewport.x * 2.0 - 1.0,

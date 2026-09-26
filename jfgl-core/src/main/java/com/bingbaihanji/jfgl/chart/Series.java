@@ -44,6 +44,38 @@ public final class Series {
     private float markerSize = 3f;
 
     /**
+     * 是否把这个系列的折线画成<strong>平滑曲线</strong>（Catmull-Rom 插值）。默认 <b>false</b>。
+     *
+     * <h2>它是<b>按系列</b>的，不是按图的</h2>
+     * <p>同一张图里"一条平滑 + 一条折线"是正当用法（例如"拟合曲线"与"原始采样"叠在一起），
+     * 所以开关在这里而不是在 {@link Chart} 上。
+     *
+     * <h2>它不改变数据，只改变"两个样本之间怎么连"</h2>
+     * <p>样本点本身一个都不动（曲线在每个样本处经过它自己的值），被插值出来的只有两个
+     * 样本<strong>之间</strong>的形状。所以拾取、刻度、量程全都不受影响。
+     *
+     * <h2>哪些图型认它</h2>
+     * <ul>
+     *   <li><b>认</b>：{@link ChartType#LINE}、{@link ChartType#LINE_AND_MARKERS}
+     *       （标记点仍然落在样本点上）、{@link ChartType#AREA}（只有<b>顶边</b>平滑，
+     *       基线那一条照旧是直的）。</li>
+     *   <li><b>忽略</b>：{@link ChartType#STEP}（把阶梯的直角抹圆没有意义，
+     *       而且"先横后竖"是它的定义）、{@link ChartType#SPECTRUM}（它的顶点是 FFT
+     *       算出来的 bin，不在数据下标的那条轴上；它的输出缓冲也没有邻居余量）、
+     *       以及 {@link ChartType#SCATTER} / {@link ChartType#BAR}（它们压根不连线）。</li>
+     * </ul>
+     * <p><strong>被忽略的图型不会报错</strong>，这与"不支持的图型必须响亮报错"
+     * 不冲突：那里报的是"这条曲线画不出来"，这里说的是"这个图型没有'连线'这件事可平滑"。
+     * 想让"设了没生效"变成响亮的失败，得先回答"阶梯的平滑应该长什么样"。
+     *
+     * <h2>边界与缺口都会退回直线</h2>
+     * <p>曲线段需要前后各一个邻居样本，所以<b>首末两段</b>（没有外侧邻居）照旧画直线；
+     * 缺口（{@code NaN}）旁边那几段同样退回直线——<strong>绝不把缺口连过去</strong>。
+     * 这两条都不是"降级"，是"那条曲线会显示一个不存在的东西"。
+     */
+    private boolean smooth = false;
+
+    /**
      * 面积图与柱状图的下沿所在的<strong>数值</strong>（不是像素、不是窗口下界）。
      *
      * <p>JavaFX 里对应 {@code ValueAxis.setForceZeroInRange(true)}：AreaChart 与 BarChart
@@ -180,6 +212,23 @@ public final class Series {
     public Series markerSize(float size) {
         requireFinite(size, "标记点半径");
         this.markerSize = size;
+        return this;
+    }
+
+    /** 是否把折线画成平滑曲线（Catmull-Rom）。默认 false。 */
+    public boolean smooth() {
+        return smooth;
+    }
+
+    /**
+     * 设置这个系列是否画成平滑曲线（见字段说明：它只改"两个样本之间怎么连"，
+     * 不改数据；{@code STEP} / {@code SPECTRUM} / {@code SCATTER} / {@code BAR} 忽略它）。
+     *
+     * @param value true = 平滑
+     * @return 自身，便于链式调用
+     */
+    public Series smooth(boolean value) {
+        this.smooth = value;
         return this;
     }
 

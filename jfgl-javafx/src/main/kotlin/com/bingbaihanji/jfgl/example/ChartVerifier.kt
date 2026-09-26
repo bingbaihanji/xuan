@@ -7,6 +7,7 @@ import com.bingbaihanji.jfgl.chart.AxisType
 import com.bingbaihanji.jfgl.chart.Chart
 import com.bingbaihanji.jfgl.chart.ChartInsets
 import com.bingbaihanji.jfgl.chart.ChartLayout
+import com.bingbaihanji.jfgl.chart.ChartData
 import com.bingbaihanji.jfgl.chart.ChartSide
 import com.bingbaihanji.jfgl.chart.ChartType
 import com.bingbaihanji.jfgl.chart.RingChartData
@@ -105,6 +106,13 @@ import kotlin.system.exitProcess
  * <b>那一种图型没有 AA、其余都有</b>，混在图里几乎注意不到；折线那一对另外按
  * 四条判据判（关时无过渡 / 开时每列一个过渡 / 线心纯色数两模式相等 / 墨量对解析值）。
  * **AA 默认关**，所以这一节之外的全部像素期望一字未改——它同时是那条默认值的闸门。
+ *
+ * <p><b>平滑曲线</b>（{@code Series.smooth()}）补了第 23 节，九幕按帧轮换、两块新绘图区。
+ * 它的三条判据各自守着一件"像素看不出来"的事：**开关生效**（漏接的表现只是"曲线
+ * 有点像折线"）、**边界回退**（环里读不到邻居的那个位置是<b>陈旧数据</b>、不是 NaN，
+ * 曲线会弯向垃圾值）、**缺口回退**（NaN 被插值过去 = 那条线显示了一个不存在的信号）。
+ * 另有一幕专门验"改开关会让缓冲重建"，以及一对**环形缓冲跨环绕**的——后者靠
+ * "共线数据上平滑就是直线"这条性质，把三个镜像的读取放进了像素口径。
  *
  * <h2>观察期与校验期</h2>
  *
@@ -1138,6 +1146,193 @@ private const val AA_FRINGE_ROW_B = 15
 private val AA_CORE_ROWS_A = 10..11
 private val AA_CORE_ROWS_B = 16..17
 
+// ---------------------------------------------------------------------------
+// 平滑曲线（Series.smooth()）：开关真的生效、边界回退、缺口回退
+//
+// 五幕 + 两幕都画在**两块新的空地**上，理由与其它实验图一样（"画面恰好只有这 7 种颜色"
+// 那条既有断言不许改弱，所以这些图只在观察期画）：
+//   · [SMOOTH_PLOT_*]      主绘图区右下方：主图到 x = 700 / y = 500 为止，
+//                          标记尺寸图（x 710..970）到 y = 480 为止。
+//   · [SMOOTH_GAP_PLOT_*]  画面最右下角：折返/跨环绕图到 y = 710 为止，
+//                          AA 探针只在 x < 320 那一条上。
+//
+// ★ **判别式的设计**：同一块矩形、同一份数据、同一个颜色、同一个线宽，
+// 唯一变的是 Series.smooth()。于是"两张快照的差异"只可能来自那个开关——
+// 不存在"因为颜色不同所以当然不同"这种自证。
+//
+// ★ **每一个期望值都可以手算**（绘图区 280×22、x 窗口 [-0.5, 6.5] ⇒ 每样本 40px；
+//   y 窗口**显式声明为 [0, 1]**）：
+//   局部 x = (下标 + 0.5) × 40           → 下标 0..6 落在列 20/60/100/140/180/220/260
+//   局部 y = (1 − 值) × 22               → 值 0.1 → 19.8、值 0.9 → 2.2
+//                                          （再按线宽 4 上下各撑 2px）
+//   Catmull-Rom 在两条平台之间（0.9 ↔ 0.1）的 t = 0.25 处偏离弦 **0.075**（手算：
+//   两端切线都是 0 ⇒ v(t) = y0 + (y1 − y0)·h01(t)、而弦是 y0 + (y1 − y0)·t，
+//   差 = (y1 − y0)·(h01(0.25) − 0.25) = 0.8 × (0.15625 − 0.25) = −0.075）
+//   ⇒ 换算到像素是 0.075 × 22 = **1.65 px**。1.65px 足以让一条 4px 宽的带子整行地
+//   换位置，所以"两张快照必然不同"不是"应该会不同"，而是"不可能相同"。
+//
+// ⚠️ **y 窗口不能声明得更窄**：`AxisRange.withMinimumSpan()` 会把跨度不足 1 的范围
+//   以中心为心扩到跨度为 1（`MIN_SPAN`），声明 [0.125, 0.875] 实际拿到的是 [0, 1]——
+//   于是"手算的映射"与"跑出来的画面"整整差一截，而那一截看起来完全像渲染错了。
+//   （这条实测踩过：第一版的推导就是按 [0.125, 0.875] 写的，量出来的墨迹行比预期低两行。）
+// ---------------------------------------------------------------------------
+
+/** 曲线实验（折线/面积）的绘图区。 */
+private const val SMOOTH_PLOT_X = 700f
+private const val SMOOTH_PLOT_Y = 480f
+private const val SMOOTH_PLOT_W = 280f
+private const val SMOOTH_PLOT_H = 22f
+
+/** 缺口实验（曲线不跨缺口）的绘图区。 */
+private const val SMOOTH_GAP_PLOT_X = 330f
+private const val SMOOTH_GAP_PLOT_Y = 712f
+private const val SMOOTH_GAP_PLOT_W = 300f
+private const val SMOOTH_GAP_PLOT_H = 22f
+
+/**
+ * 曲线实验的数据：**7 个点、相邻两点在 0.1 与 0.9 之间交替**。
+ *
+ * <p>交替是刻意的：每一段的两个切线都恰好是 0（{@code (y[k+1] - y[k-1]) / 2} 里
+ * 两端相等），于是曲线是"零切线的 S 形"，与弦的偏差在段中是 0.075（见上面的手算）。
+ * 换成斜坡那种缓数据的话两者只差零点几像素，判据就退化成橡皮图章。
+ *
+ * <p>振幅取满 0.1..0.9 而不是 0.2..0.8 也是同一个理由：偏差正比于**跳变幅度**，
+ * 而 0.9 − 0.1 = 0.8 是"上下各留 0.1 余量"下能给的最大幅度
+ * （再靠近 0 / 1 的话，线宽 2 的带子会顶到绘图区上下边缘被裁掉）。
+ *
+ * <p>首末两段**必须与不平滑那版逐像素相同**（它们没有外侧邻居，只能画直线）——
+ * 那是第三条判据，见 [SMOOTH_HEAD_FROM]。
+ */
+private val SMOOTH_VALUES = doubleArrayOf(0.1, 0.9, 0.1, 0.9, 0.1, 0.9, 0.1)
+
+/**
+ * 曲线实验的 y 窗口：值与绘图区高度 1:1（值 0.1 → 行 19.8、0.9 → 行 2.2）。
+ *
+ * <p><b>为什么写得这么宽。</b>`AxisRange.withMinimumSpan()` 保证跨度 ≥ 1，
+ * 写窄了会被它悄悄扩回来（见上面那条 ⚠️），所以这里直接写 [0, 1]——
+ * 声明值就是实际值，手算才有意义。
+ */
+private const val SMOOTH_Y_WINDOW_MIN = 0.0
+private const val SMOOTH_Y_WINDOW_MAX = 1.0
+
+/** 曲线实验的 x 窗口：左右各留半格，7 个样本都落在绘图区内部。 */
+private const val SMOOTH_X_WINDOW_MIN = -0.5
+private const val SMOOTH_X_WINDOW_MAX = 6.5
+
+/** 曲线与面积实验的线宽：半宽 2 ⇒ 带子 4px 高，1.65px 的偏差必然整行地改变覆盖。 */
+private const val SMOOTH_LINE_WIDTH = 4f
+
+/**
+ * 缺口实验的数据：**10 个真实样本 + 中间一个 NaN**。
+ *
+ * <p>缺口两侧各是一整段平台（0.2 / 0.8）。平台是刻意的：**平滑与不平滑在平台上
+ * 画出来的必须逐像素相同**（四个控制点全等时 Catmull-Rom 就是那条直线），
+ * 于是整块矩形都可以拿来逐像素比对——而只要缺口那一段被"连过去"或者被
+ * 插值坏了，比对立刻不等。
+ *
+ * <p>NaN 放在下标 4（而不是边上）：那样下标 2 与下标 5 那两段的四个控制点里
+ * <b>含</b>着这个 NaN，它们只在"看到 NaN 就退回直线"这条规则下才画得对——
+ * 把那条规则删掉，这两段就整段消失（{@code gl_Position} 是 NaN）。
+ */
+private val SMOOTH_GAP_VALUES = doubleArrayOf(
+    0.2, 0.2, 0.2, 0.2, Double.NaN, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8
+)
+
+/** 缺口实验里 NaN 所在的下标。 */
+private const val SMOOTH_GAP_NAN_INDEX = 4
+
+private const val SMOOTH_GAP_X_WINDOW_MIN = 0.0
+private const val SMOOTH_GAP_X_WINDOW_MAX = 10.0
+
+/** 缺口实验的线宽：半宽 1.5 ⇒ 带子 3px 高。 */
+private const val SMOOTH_GAP_LINE_WIDTH = 3f
+
+/**
+ * 九幕的分组边界（帧号）。每一幕都在<b>自己最后那一帧</b>抓快照
+ * （`frame` 是"已完成帧数"，所以 `frame == 11` 抓到的正是绘制帧 10 的画面）。
+ *
+ * <p>每幕十几帧：第一帧要建缓冲并整环上传，后面那些帧才是"稳态"。
+ * 第 5 幕是**同一个 Series 对象**把开关从 false 改成 true（见 [drawSmoothCharts]），
+ * 它要验的是"改开关会让缓冲重建、而且重建之后画得对"；
+ * 第 6、7 幕是**环形缓冲跨环绕**的一对（见 [SMOOTH_WRAP_SMOOTH_END] 的说明）。
+ */
+private const val SMOOTH_CURVE_PLAIN_END = 11
+private const val SMOOTH_CURVE_SMOOTH_END = 22
+private const val SMOOTH_GAP_PLAIN_END = 33
+private const val SMOOTH_GAP_SMOOTH_END = 44
+private const val SMOOTH_TOGGLED_END = 55
+private const val SMOOTH_WRAP_PLAIN_END = 66
+private const val SMOOTH_WRAP_SMOOTH_END = 77
+private const val SMOOTH_AREA_PLAIN_END = 88
+private const val SMOOTH_AREA_SMOOTH_END = 100
+
+/**
+ * 第三条判据的两段列范围（局部坐标）：**首段**与**末段**，各向里缩 4 列。
+ *
+ * <p>缩 4 列是必须的：带子沿法向撑开，斜段两端的角点会**横向**探出
+ * {@code 半宽 × sin θ}（本几何 0.8px），而相邻那一段的墨迹也会探进交界处
+ * ——不缩的话比的就不止那一段了，而"相邻段是曲线"正是本判据要区别开的东西。
+ */
+private const val SMOOTH_HEAD_FROM = 24
+private const val SMOOTH_HEAD_TO = 56
+private const val SMOOTH_TAIL_FROM = 224
+private const val SMOOTH_TAIL_TO = 256
+
+/**
+ * 面积实验的探针列：段 1 的 t = 0.25 处（段 1 从局部列 60 到 100）。
+ *
+ * <p>取 t = 0.25 是因为那是**偏差最大**的位置（0.075 值 ⇒ 1.65px），
+ * 判据"这一列最上面那个墨迹像素的行号：平滑版必须比不平滑版**高**"才有确定的符号。
+ * 方向也是手算的：段 1 的值从 0.9 降到 0.1，而曲线在 t < 0.5 时**高于**弦
+ * （h00(0.25)×0.9 + h01(0.25)×0.1 = 0.775 > 0.7）⇒ 屏幕上更靠上 ⇒ 行号更小。
+ * 手算的绝对行：不平滑 5、平滑 3（弦心 6.6 / 曲线心 4.95，各再减 1.83 的法向分量）
+ * ——断言只钉**符号**，不钉这两个数（它们依赖线宽与斜率的取整）。
+ *
+ * <p>最上面那个墨迹像素必须是**纯主色**（轮廓线），而不是填充的混合色——
+ * 所以这里用 `topInkRow(col, 主色)` 而不是"最上面那个非背景像素"：
+ * 填充是半透明的（默认 fillAlpha = 0.5），它的颜色与主色不同，
+ * 于是"轮廓线画没画"与"填充画没画"在这里天然分得开。
+ */
+private const val SMOOTH_AREA_PROBE_COL = 70
+
+/** 缺口实验里"一定是背景"的那一段列（局部）：缺口在列 90..150，取中间一段。 */
+private const val SMOOTH_GAP_BLANK_FROM = 100
+private const val SMOOTH_GAP_BLANK_TO = 140
+
+/**
+ * 跨环绕那一对用的数据：**环形缓冲、容量 8、写 20 个样本、值是绝对下标本身**。
+ *
+ * <p><b>为什么值取"下标本身"。</b>这样相邻两点的差恒为 1（一条直线），
+ * 而**共线的样本上 Catmull-Rom 就是那条直线**（切线 {@code (y[k+1]-y[k-1])/2}
+ * 恰好等于弦的斜率）——于是"平滑"与"不平滑"必须**逐像素相同**，
+ * 包括跨环绕的那一段。
+ *
+ * <p>这正好把本特性最危险的一块摆在像素口径下：段的四个控制点里，
+ * 环的**物理两端**（前置余量、以及末尾两个镜像）不是靠"读到 NaN"暴露的，
+ * 而是靠 {@code SeriesBuffer} 在上传时同步的那三份拷贝。
+ * 少同步任何一份，被影响的那一段就会**朝 0 弯过去**（那个位置在缓冲里是 0），
+ * 而这条断言立刻不等——它比对的是整块矩形。
+ *
+ * <p>数据与 {@code Series} 沿用既有的跨环绕实验（{@code wrapData}）：
+ * 那份数据由既有的那一幕写好（容量 8、窗口 [12, 20]，**跨过环绕点 16**），
+ * 这里只是换一块矩形、换一个渲染开关再画一遍——两份的坐标映射完全相同。
+ */
+private const val SMOOTH_WRAP_WINDOW_START = 12.0
+private const val SMOOTH_WRAP_WINDOW_END = 20.0
+
+/** 曲线实验的系列色（只在观察期出现，所以不进校验帧的颜色集合）。 */
+private val smoothCurveRgb = 0xE0A020
+
+/** 缺口实验的系列色。 */
+private val smoothGapRgb = 0x2FD0A0
+
+/** 面积实验的系列色。 */
+private val smoothAreaRgb = 0x8060E0
+
+private val smoothCurveArgb = smoothCurveRgb or (0xFF shl 24)
+private val smoothGapArgb = smoothGapRgb or (0xFF shl 24)
+private val smoothAreaArgb = smoothAreaRgb or (0xFF shl 24)
+
 /**
  * 校验器的启动入口。
  *
@@ -1705,6 +1900,144 @@ class ChartVerifierApp : Application() {
     private val stepChart: Chart = buildStepChart()
 
     // -----------------------------------------------------------------------
+    // 平滑曲线实验（Series.smooth()）：两块绘图区、七幕
+    //
+    // 每一幕都是"同一块矩形 + 同一份数据 + 同一个颜色 + 同一个线宽"，
+    // **只有 Series.smooth() 不同**（第 5 幕连 Series 对象都是同一个，只改那个开关）。
+    // 于是"两张快照不同"只可能来自那个开关——不存在"因为颜色不同所以当然不同"这种自证。
+    //
+    // Series **必须逐个建**（哪怕同名同数据）：ChartRenderer 的缓冲与拾取号都按
+    // Series 的**对象身份**缓存，共用对象就等于共用缓冲，而缓冲的物理布局正是这里
+    // 要比较的东西之一（见下面第 5 幕）。
+    // -----------------------------------------------------------------------
+
+    private val smoothCurveRect = Rect(SMOOTH_PLOT_X, SMOOTH_PLOT_Y,
+        SMOOTH_PLOT_W, SMOOTH_PLOT_H)
+
+    private val smoothGapRect = Rect(SMOOTH_GAP_PLOT_X, SMOOTH_GAP_PLOT_Y,
+        SMOOTH_GAP_PLOT_W, SMOOTH_GAP_PLOT_H)
+
+    /**
+     * 造一张"一个系列、一块矩形"的图（x 窗口显式给，y 窗口就是数据的范围）。
+     *
+     * <p>数据取 {@code ChartData}（不是 {@code ArrayChartData}）：跨环绕那一对用的是
+     * {@code RingChartData}，而两者的坐标映射完全一样（都是"轴窗口 → 绘图区"）。
+     */
+    private fun buildSmoothChart(series: Series, data: ChartData,
+                                 xMin: Double, xMax: Double,
+                                 plotW: Float, plotH: Float): Chart {
+        val xAxis = Axis(AxisType.LINEAR, data.axisRange(0))
+            .setDisplayLength(plotW.toDouble())
+            .setWindow(xMin, xMax)
+        val yAxis = Axis(AxisType.LINEAR, data.axisRange(1))
+            .setDisplayLength(plotH.toDouble())
+        val chart = Chart(xAxis, yAxis)
+        chart.addLayer("平滑").add(series)
+        return chart
+    }
+
+    /** 曲线实验的数据：7 个点、0.2 与 0.8 交替（见 [SMOOTH_VALUES]）。 */
+    private val smoothCurveData = ArrayChartData(
+        arrayOf(
+            AxisRange(0.0, (SMOOTH_VALUES.size - 1).toDouble(), "样本", ""),
+            AxisRange(SMOOTH_Y_WINDOW_MIN, SMOOTH_Y_WINDOW_MAX, "值", "")
+        ),
+        arrayOf(DoubleArray(SMOOTH_VALUES.size) { it.toDouble() }, SMOOTH_VALUES.copyOf())
+    )
+
+    /**
+     * 第 1 幕与第 5 幕共用的那个系列：**同一个对象**。
+     *
+     * <p>第 5 幕会把它改成 {@code smooth(true)}——那时缓冲的物理布局必须重建
+     * （见 {@code ChartRenderer.bufferFor}），而"这一改真的生效了"由那一幕的
+     * 像素与第 2 幕逐像素相同来钉住。
+     */
+    private val smoothCurvePlainSeries = Series("曲线直线", smoothCurveData, ChartType.LINE)
+        .color(smoothCurveArgb).lineWidth(SMOOTH_LINE_WIDTH)
+
+    private val smoothCurveSmoothSeries = Series("曲线平滑", smoothCurveData, ChartType.LINE)
+        .color(smoothCurveArgb).lineWidth(SMOOTH_LINE_WIDTH).smooth(true)
+
+    private val smoothCurvePlainChart = buildSmoothChart(smoothCurvePlainSeries, smoothCurveData,
+        SMOOTH_X_WINDOW_MIN, SMOOTH_X_WINDOW_MAX, SMOOTH_PLOT_W, SMOOTH_PLOT_H)
+
+    private val smoothCurveSmoothChart = buildSmoothChart(smoothCurveSmoothSeries, smoothCurveData,
+        SMOOTH_X_WINDOW_MIN, SMOOTH_X_WINDOW_MAX, SMOOTH_PLOT_W, SMOOTH_PLOT_H)
+
+    /** 缺口实验的数据：中间一个 NaN（见 [SMOOTH_GAP_VALUES]）。 */
+    private val smoothGapData = ArrayChartData(
+        arrayOf(
+            AxisRange(0.0, (SMOOTH_GAP_VALUES.size - 1).toDouble(), "样本", ""),
+            AxisRange(0.0, 1.0, "值", "")
+        ),
+        arrayOf(DoubleArray(SMOOTH_GAP_VALUES.size) { it.toDouble() },
+            SMOOTH_GAP_VALUES.copyOf())
+    )
+
+    private val smoothGapPlainSeries = Series("缺口直线", smoothGapData, ChartType.LINE)
+        .color(smoothGapArgb).lineWidth(SMOOTH_GAP_LINE_WIDTH)
+
+    private val smoothGapSmoothSeries = Series("缺口平滑", smoothGapData, ChartType.LINE)
+        .color(smoothGapArgb).lineWidth(SMOOTH_GAP_LINE_WIDTH).smooth(true)
+
+    private val smoothGapPlainChart = buildSmoothChart(smoothGapPlainSeries, smoothGapData,
+        SMOOTH_GAP_X_WINDOW_MIN, SMOOTH_GAP_X_WINDOW_MAX, SMOOTH_GAP_PLOT_W, SMOOTH_GAP_PLOT_H)
+
+    private val smoothGapSmoothChart = buildSmoothChart(smoothGapSmoothSeries, smoothGapData,
+        SMOOTH_GAP_X_WINDOW_MIN, SMOOTH_GAP_X_WINDOW_MAX, SMOOTH_GAP_PLOT_W, SMOOTH_GAP_PLOT_H)
+
+    /**
+     * 面积实验：与曲线实验**同一份数据、同一块矩形、同一个 y 窗口**，
+     * 于是"顶边该在哪一行"可以照抄上面那份手算。
+     *
+     * <p>面积图比折线多一层：轮廓线（折线路径画的）与填充的顶边必须是<b>同一条曲线</b>。
+     * 填充的顶点在 {@code AREA_VERTEX} 里算、轮廓线在 {@code LINE_VERTEX} 里算，
+     * 两处共用同一份 GLSL 函数（见 {@code SeriesShaders.STATION_GLSL}）——
+     * 分叉的表现是沿曲线露出一条背景色的细缝，那看起来只是"边有点毛"。
+     */
+    private val smoothAreaPlainSeries = Series("面积直线", smoothCurveData, ChartType.AREA)
+        .color(smoothAreaArgb).lineWidth(SMOOTH_LINE_WIDTH)
+
+    private val smoothAreaSmoothSeries = Series("面积平滑", smoothCurveData, ChartType.AREA)
+        .color(smoothAreaArgb).lineWidth(SMOOTH_LINE_WIDTH).smooth(true)
+
+    private val smoothAreaPlainChart = buildSmoothChart(smoothAreaPlainSeries, smoothCurveData,
+        SMOOTH_X_WINDOW_MIN, SMOOTH_X_WINDOW_MAX, SMOOTH_PLOT_W, SMOOTH_PLOT_H)
+
+    private val smoothAreaSmoothChart = buildSmoothChart(smoothAreaSmoothSeries, smoothCurveData,
+        SMOOTH_X_WINDOW_MIN, SMOOTH_X_WINDOW_MAX, SMOOTH_PLOT_W, SMOOTH_PLOT_H)
+
+    // ---- 跨环绕的一对（第 6、7 幕）：与既有的跨环绕实验共用数据与窗口 ----
+
+    /**
+     * 直线那一版：**就是既有跨环绕实验的那个系列**（{@code wrapSeries}）。
+     *
+     * <p>复用对象是有意的：两张图共用同一个 `Series` 就是共用同一块缓冲，
+     * 于是"两张快照必须逐像素相同"这条判据里不会掺进"两块缓冲各自上传到哪"这种差别。
+     */
+    private val smoothWrapPlainChart = buildSmoothChart(wrapSeries, wrapData,
+        SMOOTH_WRAP_WINDOW_START, SMOOTH_WRAP_WINDOW_END, SMOOTH_GAP_PLOT_W, SMOOTH_GAP_PLOT_H)
+
+    /** 平滑那一版：同数据、同窗口、同颜色、同线宽，只多一个开关。 */
+    private val smoothWrapSmoothSeries = Series("跨环绕平滑", wrapData, ChartType.LINE)
+        .color(wrapArgb).lineWidth(3f).smooth(true)
+
+    private val smoothWrapSmoothChart = buildSmoothChart(smoothWrapSmoothSeries, wrapData,
+        SMOOTH_WRAP_WINDOW_START, SMOOTH_WRAP_WINDOW_END, SMOOTH_GAP_PLOT_W, SMOOTH_GAP_PLOT_H)
+
+    // ---- 九幕各自的快照（观察期抓下来，校验期才断言）----
+
+    private var smoothCurvePlainShot: Shot? = null
+    private var smoothCurveSmoothShot: Shot? = null
+    private var smoothGapPlainShot: Shot? = null
+    private var smoothGapSmoothShot: Shot? = null
+    private var smoothToggledShot: Shot? = null
+    private var smoothWrapPlainShot: Shot? = null
+    private var smoothWrapSmoothShot: Shot? = null
+    private var smoothAreaPlainShot: Shot? = null
+    private var smoothAreaSmoothShot: Shot? = null
+
+    // -----------------------------------------------------------------------
     // 装配实验：标题 / 图例 / 外边距
     // -----------------------------------------------------------------------
 
@@ -2200,9 +2533,46 @@ class ChartVerifierApp : Application() {
             return n
         }
 
+        /**
+         * 某个局部列区间里不是给定颜色的像素数（整列都算）。
+         *
+         * <p>它是"缺口的这一段必须是背景"那类判据的口径：写成"该颜色 0 个"会被
+         * <b>任何</b>别的颜色骗过去（曲线被插值过去时画出来的可能是混合色、
+         * 也可能是另一段落的更暗的值），而"不是背景"把那些一起拦下。
+         */
+        fun countNonBackgroundInCols(x0: Int, x1: Int, rgb: Int): Int {
+            var n = 0
+            for (x in x0.coerceAtLeast(0)..x1.coerceAtMost(w - 1)) {
+                for (y in 0 until h) {
+                    if (at(x, y) != rgb) n++
+                }
+            }
+            return n
+        }
+
         /** 两张快照是不是同一张图。 */
         fun sameAs(other: Shot): Boolean =
             w == other.w && h == other.h && px.contentEquals(other.px)
+
+        /**
+         * 两张**同尺寸**快照在给定列区间（含两端）里不同的像素数；行是整列都算。
+         *
+         * <p>它是"平滑与不平滑必须不同"（以及"这两处必须**完全**相同"）那几条断言的判别式：
+         * 报出**变化了多少像素**，才能把"只差一个抗锯齿边缘像素"与"整条曲线的形状变了"分开。
+         * 只报"变了 / 没变"的话，前者会让"开关没生效"那条假通过（反过来也一样）。
+         */
+        fun diffIn(x0: Int, x1: Int, other: Shot): Int {
+            require(w == other.w && h == other.h) {
+                "两张快照的尺寸必须相同才能逐像素比：${w}x$h vs ${other.w}x${other.h}"
+            }
+            var n = 0
+            for (y in 0 until h) {
+                for (x in x0.coerceAtLeast(0)..x1.coerceAtMost(w - 1)) {
+                    if (at(x, y) != other.at(x, y)) n++
+                }
+            }
+            return n
+        }
 
         /** 某一列里最上面那个该颜色像素的**行号**；整列都没有这个颜色时返回 null。 */
         fun topInkRow(x: Int, rgb: Int): Int? {
@@ -2759,6 +3129,8 @@ class ChartVerifierApp : Application() {
             drawKindCharts(gc)
             // 装配实验图（标题 / 图例 / 外边距），同样只在观察期画。
             drawDecorChart(gc)
+            // 平滑曲线实验的七幕，同样只在观察期画（理由同上）。
+            drawSmoothCharts(gc)
             // 左/右图例、底部标题、带子边界、轴标题：四个变体按帧轮换，同样只在观察期画。
             drawOverflowChart(gc, n)
             // Task 5 的 AA 探针：六个图型各两帧（关 / 开），同样只在观察期画。
@@ -2914,6 +3286,60 @@ class ChartVerifierApp : Application() {
     }
 
     /**
+     * 平滑曲线实验的七幕。
+     *
+     * <p><b>为什么按帧轮换。</b>每一幕都要"同一块矩形"才比得出来（差异只能来自开关），
+     * 而一块矩形一次只装得下一幕——与左/右图例那五个变体是同一种排布。
+     *
+     * <p><b>七幕是怎么排的。</b>前四幕是两对"不平滑 / 平滑"：曲线一对、缺口一对；
+     * 第 5 幕换回第 1 幕<b>那个 Series 对象</b>、把它的开关改成 true（于是缓冲必须重建）；
+     * 最后两幕是面积图的一对（顶边那条曲线）。
+     *
+     * <p>每一幕的快照都在它**最后那一帧**抓（见 [captureObservations]）——
+     * 快照必须是"那一帧刚画完"时取的，事后补不回来。
+     */
+    private fun drawSmoothCharts(gc: Gc) {
+        when {
+            frame < SMOOTH_CURVE_PLAIN_END ->
+                gc.charts.draw(smoothCurvePlainChart, smoothCurveRect, gc.width, gc.height)
+
+            frame < SMOOTH_CURVE_SMOOTH_END ->
+                gc.charts.draw(smoothCurveSmoothChart, smoothCurveRect, gc.width, gc.height)
+
+            frame < SMOOTH_GAP_PLAIN_END ->
+                gc.charts.draw(smoothGapPlainChart, smoothGapRect, gc.width, gc.height)
+
+            frame < SMOOTH_GAP_SMOOTH_END ->
+                gc.charts.draw(smoothGapSmoothChart, smoothGapRect, gc.width, gc.height)
+
+            frame < SMOOTH_TOGGLED_END -> {
+                // 第 5 幕的第一帧改开关。**改的是已经画过十几帧的那个 Series 对象**，
+                // 所以缓冲的物理布局（前面有没有留一个 float）与现状不符——
+                // ChartRenderer 会因此重建它（见那边的 bufferFor）。
+                // 这一改若被静默忽略，属性偏移与 uSmooth 就会各说各话：
+                // 曲线弯向别的样本，而画面"只是一条形状略有出入的曲线"。
+                if (frame == SMOOTH_GAP_SMOOTH_END) {
+                    smoothCurvePlainSeries.smooth(true)
+                }
+                gc.charts.draw(smoothCurvePlainChart, smoothCurveRect, gc.width, gc.height)
+            }
+
+            // 第 6、7 幕：跨环绕的一对（**换一块矩形**画既有跨环绕实验的数据）。
+            frame < SMOOTH_WRAP_PLAIN_END ->
+                gc.charts.draw(smoothWrapPlainChart, smoothGapRect, gc.width, gc.height)
+
+            frame < SMOOTH_WRAP_SMOOTH_END ->
+                gc.charts.draw(smoothWrapSmoothChart, smoothGapRect, gc.width, gc.height)
+
+            frame < SMOOTH_AREA_PLAIN_END ->
+                gc.charts.draw(smoothAreaPlainChart, smoothCurveRect, gc.width, gc.height)
+
+            frame < SMOOTH_AREA_SMOOTH_END ->
+                gc.charts.draw(smoothAreaSmoothChart, smoothCurveRect, gc.width, gc.height)
+        }
+    }
+
+    /**
      * 装配实验图：**只有它是走 `drawChart` 的常客**（其余都走低层的 `draw`）。
      *
      * <p>它每帧都画，参数一字不改——这里要验的是布局算出来的带子与画面是否一致，
@@ -3014,6 +3440,18 @@ class ChartVerifierApp : Application() {
         if (frame == AA_SCATTER_ON + 1) aaScatterOn = grab(h, aaGrabRect)
         if (frame == AA_SPECTRUM_OFF + 1) aaSpectrumOff = grab(h, aaGrabRect)
         if (frame == AA_SPECTRUM_ON + 1) aaSpectrumOn = grab(h, aaGrabRect)
+        // 平滑曲线实验的七幕：各自在**自己那一幕的最后一帧**抓一张
+        // （`frame` 是"已完成帧数"，所以 `frame == 14` 抓到的正是绘制帧 13 的画面）。
+        // 它们也只在观察期画（理由同上："画面只有这 7 种颜色"那条断言不许改弱）。
+        if (frame == SMOOTH_CURVE_PLAIN_END) smoothCurvePlainShot = grab(h, smoothCurveRect)
+        if (frame == SMOOTH_CURVE_SMOOTH_END) smoothCurveSmoothShot = grab(h, smoothCurveRect)
+        if (frame == SMOOTH_GAP_PLAIN_END) smoothGapPlainShot = grab(h, smoothGapRect)
+        if (frame == SMOOTH_GAP_SMOOTH_END) smoothGapSmoothShot = grab(h, smoothGapRect)
+        if (frame == SMOOTH_TOGGLED_END) smoothToggledShot = grab(h, smoothCurveRect)
+        if (frame == SMOOTH_WRAP_PLAIN_END) smoothWrapPlainShot = grab(h, smoothGapRect)
+        if (frame == SMOOTH_WRAP_SMOOTH_END) smoothWrapSmoothShot = grab(h, smoothGapRect)
+        if (frame == SMOOTH_AREA_PLAIN_END) smoothAreaPlainShot = grab(h, smoothCurveRect)
+        if (frame == SMOOTH_AREA_SMOOTH_END) smoothAreaSmoothShot = grab(h, smoothCurveRect)
     }
 
     /**
@@ -4885,6 +5323,175 @@ class ChartVerifierApp : Application() {
                         "${overE.countIn(0, 0, OVER_W - 1, OVER_PADDING.toInt() - 1, overSeriesRgb) + overE.countIn(0, OVER_H - OVER_PADDING.toInt(), OVER_W - 1, OVER_H - 1, overSeriesRgb)} px")
 
         }
+        // ---- 23. ★ 平滑曲线：开关真的生效、边界回退、缺口回退 ----
+        //
+        // 每一条都守着一件"像素看不出来"的事：
+        //   · **开关生效**：漏接的话画面只是"这条曲线有点像折线"，肉眼下完全判不准；
+        //   · **边界回退**：数据/环的两端读不到邻居，而环里那个位置是**陈旧数据**
+        //     （不是 NaN），拿它当控制点曲线会**弯向垃圾值**——那一段看起来仍是一条
+        //     平滑的曲线；
+        //   · **缺口回退**：NaN 被插值过去 = 那条线显示了一个不存在的信号（本项目最忌）。
+        // 三条都必须成对：只断言"两张不同"对"两幕都没画"同样成立，
+        // 只断言"两张相同"对"两幕都空"同样成立。
+        //
+        // ★ 判别式为什么站得住：同一块矩形、同一份数据、同一个颜色、同一个线宽，
+        //   唯一变的是 Series.smooth()——两张快照的差异只可能来自那个开关。
+        println("\n-- ★ 平滑曲线：Series.smooth() 的开关、边界回退、缺口回退 --")
+        val curvePlainShot = smoothCurvePlainShot
+        val curveSmoothShot = smoothCurveSmoothShot
+        val gapPlainShot = smoothGapPlainShot
+        val gapSmoothShot = smoothGapSmoothShot
+        val toggledShot = smoothToggledShot
+        if (curvePlainShot == null || curveSmoothShot == null || gapPlainShot == null
+            || gapSmoothShot == null || toggledShot == null
+        ) {
+
+            report("前提：平滑曲线实验的五张快照都抓到了（否则这一节全是橡皮图章）", false,
+                "曲线不平滑=$curvePlainShot、曲线平滑=$curveSmoothShot、" +
+                        "缺口不平滑=$gapPlainShot、缺口平滑=$gapSmoothShot、开关重建=$toggledShot")
+        } else {
+            fun inkOf(s: Shot) = s.countNonBackgroundInRows(0, s.h - 1, background)
+
+            // ---- 23a. 前提：两幕都真的画了 ----
+            val curvePlainInk = inkOf(curvePlainShot)
+            val curveSmoothInk = inkOf(curveSmoothShot)
+            report("前提：不平滑那一幕真的画了（否则下面两条恒真）", curvePlainInk > 0,
+                "非背景像素 $curvePlainInk px（局部 ${curvePlainShot.w}×${curvePlainShot.h}）")
+            report("前提：平滑那一幕也真的画了", curveSmoothInk > 0,
+                "非背景像素 $curveSmoothInk px")
+
+            // ---- 23b. 判据一：开关真的生效 ----
+            val curveDiff = curvePlainShot.diffIn(0, curvePlainShot.w - 1, curveSmoothShot)
+            report("★ ① 平滑与不平滑画出来必须不同（开关真的接到了渲染路径上）",
+                curveDiff >= 20,
+                "两张快照有 $curveDiff px 不同（期望 ≥ 20；墨迹 $curvePlainInk / " +
+                        "$curveSmoothInk px）。**0 说明开关根本没生效**——逐像素相同就等于" +
+                        "\"这条曲线还是折线\"，而「看起来有点像折线」在肉眼下判不准。" +
+                        "下界的出处：段中偏差手算 0.075 值 × 绘图区高 " +
+                        "${SMOOTH_PLOT_H.toInt()} = 1.65 px（y 窗口跨度是 1，见上面的手算），" +
+                        "而带子只有 ${SMOOTH_LINE_WIDTH.toInt()}px 高——" +
+                        "四段曲线各有几十列会整行地换位置")
+
+            // ---- 23c. 判据二：首末两段不与邻居相连 ----
+            // 判据是"那一段与不平滑那版**逐像素相同**"：没有外侧邻居时只能画直线，
+            // 而"弯一下"与"直着"的差别只有一两像素——肉眼看不出来，逐像素比才拦得住。
+            val headDiff = curvePlainShot.diffIn(SMOOTH_HEAD_FROM, SMOOTH_HEAD_TO, curveSmoothShot)
+            report("★ ② 首段（局部列 $SMOOTH_HEAD_FROM..$SMOOTH_HEAD_TO）不与邻居相连：" +
+                    "与不平滑那版逐像素相同", headDiff == 0,
+                "不同像素 $headDiff 个（期望 0）——非 0 说明这一段用了不存在的控制点：" +
+                        "左端那个邻居在缓冲里是**陈旧数据**（不是 NaN，NaN 反而会露出来）")
+            val tailDiff = curvePlainShot.diffIn(SMOOTH_TAIL_FROM, SMOOTH_TAIL_TO, curveSmoothShot)
+            report("★ ② 末段（局部列 $SMOOTH_TAIL_FROM..$SMOOTH_TAIL_TO）同样逐像素相同",
+                tailDiff == 0,
+                "不同像素 $tailDiff 个（期望 0）——末段的右邻居是**还没采到的样本**：" +
+                        "拿那个槽位当控制点（静态数据里它是 0）会让曲线朝 0 弯过去")
+            val headInkCol = (SMOOTH_HEAD_FROM + SMOOTH_HEAD_TO) / 2
+            val tailInkCol = (SMOOTH_TAIL_FROM + SMOOTH_TAIL_TO) / 2
+            report("前提：首段与末段里真的各有一条线（否则上面两条对「两版都没画」同样成立）",
+                curvePlainShot.topInkRow(headInkCol, smoothCurveRgb) != null &&
+                        curvePlainShot.topInkRow(tailInkCol, smoothCurveRgb) != null,
+                "列 $headInkCol 的最高墨迹行 ${curvePlainShot.topInkRow(headInkCol, smoothCurveRgb)}、" +
+                        "列 $tailInkCol 的最高墨迹行 " +
+                        "${curvePlainShot.topInkRow(tailInkCol, smoothCurveRgb)}（期望都不是 null）")
+
+            // ---- 23d. 判据三：缺口不被插值过去 ----
+            val gapPlainInk = inkOf(gapPlainShot)
+            val gapSmoothInk = inkOf(gapSmoothShot)
+            val gapDiff = gapPlainShot.diffIn(0, gapPlainShot.w - 1, gapSmoothShot)
+            report("★ ③ 缺口两侧：平滑与不平滑**逐像素相同**（缺口没有被插值）",
+                gapDiff == 0 && gapSmoothInk > 0,
+                "不同像素 $gapDiff 个（期望 0）、平滑那一幕的墨迹 $gapSmoothInk px（期望 > 0）" +
+                        "——非 0 说明缺口旁那几段用了含 NaN 的控制点（整段消失或画出垃圾），" +
+                        "而「缺口被连过去」那条线显示的是一个不存在的信号")
+            report("前提：不平滑那一幕也真的画了（否则「逐像素相同」对「两幕都空」同样成立）",
+                gapPlainInk > 0, "非背景像素 $gapPlainInk px")
+            val gapBlank = gapSmoothShot.countNonBackgroundInCols(
+                SMOOTH_GAP_BLANK_FROM, SMOOTH_GAP_BLANK_TO, background)
+            val gapLeftInk = gapSmoothShot.countNonBackgroundInCols(70, 80, background)
+            val gapRightInk = gapSmoothShot.countNonBackgroundInCols(160, 170, background)
+            report("★ ③ 缺口那一段（局部列 $SMOOTH_GAP_BLANK_FROM..$SMOOTH_GAP_BLANK_TO）" +
+                    "一个像素都没有：平滑没有把缺口连过去", gapBlank == 0,
+                "那几列里不是背景的像素 $gapBlank 个（期望 0）——非 0 说明曲线跨过了" +
+                        "下标 $SMOOTH_GAP_NAN_INDEX 那个缺口（两侧平台的高度差 0.6 × " +
+                        "${SMOOTH_GAP_PLOT_H.toInt()} = 13 px，连过去一眼可辨）")
+            report("★ ③ 缺口两侧都有墨迹（上一条的成对反证：整条曲线没画也会让它是 0）",
+                gapLeftInk > 0 && gapRightInk > 0,
+                "左侧（列 70..80）$gapLeftInk px、右侧（列 160..170）$gapRightInk px")
+
+            // ---- 23e. 判据四：改开关要重建缓冲 ----
+            // 前四幕用的是**不同的 Series 对象**，所以缓冲从头就是对的；这一幕把
+            // 已经画过十几帧的那个对象改成 smooth(true)——缓冲的物理布局（前面有没有
+            // 留一个 float）与现状不符，只能重建。不重建的话四个属性的偏移与 uSmooth
+            // 各说各话：曲线弯向别的样本，而画面"只是一条形状略有出入的曲线"。
+            val toggledInk = inkOf(toggledShot)
+            val toggleDiff = toggledShot.diffIn(0, toggledShot.w - 1, curveSmoothShot)
+            report("★ ④ 同一个 Series 把开关改成 true 之后，画面与「一开始就是 true」逐像素相同",
+                toggleDiff == 0 && toggledInk > 0,
+                "与第 2 幕（一开始就 true）不同像素 $toggleDiff 个（期望 0）、本幕墨迹 " +
+                        "$toggledInk px（期望 > 0）——非 0 说明改开关没有重建缓冲：" +
+                        "属性偏移与 uSmooth 不一致，而那种错在画面上是一条「形状略有出入的曲线」")
+        }
+
+        // ---- 23f. 跨环绕：环的物理两端（三个镜像）必须真的对上 ----
+        //
+        // 这一节的判据是"平滑与不平滑**逐像素相同**"，而它成立的**前提是数据共线**：
+        // 值是绝对下标本身（差恒为 1）⇒ Catmull-Rom 的切线恰好等于弦的斜率
+        // ⇒ 曲线**就是**那条直线。于是任何一处"控制点取错了"，画出来的就不再是直线——
+        // 而环的物理两端（槽位 0 前面那一个前置余量、末尾两个镜像）在缓冲里
+        // **不是 NaN、是 0**（从未写过）或上一圈的值，少同步任何一份，那一段就朝 0 弯过去。
+        //
+        // 这一条把本特性最重的一块放在像素口径下：{@code SeriesBufferTest} 只钉住
+        // "往哪个字节写哪个样本"，钉不住"GPU 真的从那儿取到了值"。
+        val wrapPlainShot = smoothWrapPlainShot
+        val wrapSmoothShot = smoothWrapSmoothShot
+        if (wrapPlainShot == null || wrapSmoothShot == null) {
+            report("前提：跨环绕那一对的两张快照都抓到了", false,
+                "不平滑=$wrapPlainShot、平滑=$wrapSmoothShot")
+        } else {
+            val wrapDiff = wrapPlainShot.diffIn(0, wrapPlainShot.w - 1, wrapSmoothShot)
+            val wrapSmoothInk = wrapSmoothShot.countNonBackgroundInRows(0, wrapSmoothShot.h - 1,
+                background)
+            report("★ ⑤ 跨环绕的一对：共线数据上平滑与不平滑**逐像素相同**" +
+                    "（三个镜像真的被 GPU 读到了）", wrapDiff == 0 && wrapSmoothInk > 0,
+                "不同像素 $wrapDiff 个（期望 0）、平滑那版墨迹 $wrapSmoothInk px（期望 > 0）；" +
+                        "窗口 [12, 20] 跨过环绕点 16（环容量 8、写 20 个样本）——" +
+                        "被测的那几个实例分别读前置余量、镜像 cap、镜像 cap+1，" +
+                        "少同步一份它们就读到 0 并朝 0 弯过去")
+            report("前提：这一对确实画在环绕点上（否则上一条恒真）",
+                wrapData.writeIndex() == WRAP_TOTAL.toLong() && wrapData.itemCount() == WRAP_CAPACITY,
+                "写入总数 ${wrapData.writeIndex()}（期望 $WRAP_TOTAL）、" +
+                        "环里 ${wrapData.itemCount()} 个样本（期望容量 $WRAP_CAPACITY，" +
+                        "即 20 > 8：槽位与数据下标已经彻底错开）")
+        }
+
+        // ---- 23g. 面积图的顶边（填充与轮廓线必须是同一条曲线）----
+
+        val areaPlainShot = smoothAreaPlainShot
+        val areaSmoothShot = smoothAreaSmoothShot
+        if (areaPlainShot == null || areaSmoothShot == null) {
+            report("前提：面积实验的两张快照都抓到了", false,
+                "不平滑=$areaPlainShot、平滑=$areaSmoothShot")
+        } else {
+            val areaPlainInk = areaPlainShot.countNonBackgroundInRows(0, areaPlainShot.h - 1,
+                background)
+            val areaDiff = areaPlainShot.diffIn(0, areaPlainShot.w - 1, areaSmoothShot)
+            report("★ ⑥ 面积图的**顶边**也平滑（填充那一半真的接上了 uSmooth）",
+                areaDiff > 0 && areaPlainInk > 0,
+                "两版不同像素 $areaDiff 个（期望 > 0）、不平滑那版墨迹 $areaPlainInk px。" +
+                        "0 说明面积填充那条路径漏接了 uSmooth——而「填充的顶边还是折线」在画面上" +
+                        "只会被看成「这条曲线不够顺」")
+            val plainTop = areaPlainShot.topInkRow(SMOOTH_AREA_PROBE_COL, smoothAreaRgb)
+            val smoothTop = areaSmoothShot.topInkRow(SMOOTH_AREA_PROBE_COL, smoothAreaRgb)
+            report("★ ⑥ 段 1 的 t=0.25 那一列（局部列 $SMOOTH_AREA_PROBE_COL）：" +
+                    "平滑版的最高墨迹行**更靠上**（行号更小）",
+                plainTop != null && smoothTop != null && smoothTop < plainTop,
+                "不平滑 $plainTop 行、平滑 $smoothTop 行（期望平滑的更小）。" +
+                        "手算：这一段的值从 0.9 降到 0.1，曲线在 t<0.5 时比弦**高** 0.075 ⇒ " +
+                        "屏幕上高 0.075 × ${SMOOTH_PLOT_H.toInt()} = 1.65 px ⇒ " +
+                        "最高墨迹行必然跨过至少一行（手算的绝对行是 5 与 3）；" +
+                        "两者取不到墨迹说明那一列压根没有曲线")
+        }
+
         // ---- Task 5：图表系列的解析式抗锯齿（六个图型 + 折线的四条判据）----
         reportSeriesAntialias(w, h) { label, ok, detail -> report(label, ok, detail) }
 

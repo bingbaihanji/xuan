@@ -269,6 +269,20 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
                 (argb & 0xFF) / 255f,
                 ((argb >>> 24) & 0xFF) / 255f);
         shader.setUniform("uPickId", 0);
+        // ★ 频谱**不支持平滑**，这里必须显式关掉它。
+        //
+        // 折线的顶点程序里多了 uSmooth 与两个区间 uniform，而频谱与折线**共用同一个程序**，
+        // 于是 uniform 的值会从上一个系列带过来——不设的话，"画完一条平滑的折线再画频谱"
+        // 会让频谱走进曲线分支。那不是画面变差一点：频谱的实例属性只有两个
+        // （`aY0`/`aY1`，指向 FFT 的输出缓冲），第三、四个属性在这个 VAO 里是**禁用的**、
+        // 取到的通用值是 0，曲线于是被拉向 0——一条形状完全合理的假谱。
+        //
+        // 为什么频谱不该平滑：它的数据是 FFT 的输出（bin），不在"每个样本一个点"的
+        // 那条轴上；而且那个输出缓冲只有 binCount 个 float、没有邻居余量，
+        // 越界读在 GL 里既非法又不报错（见 {@code SpectrumSeriesRenderer} 的类文档）。
+        shader.setUniform("uSmooth", 0f);
+        shader.setUniform("uSmoothFrom", 0f);
+        shader.setUniform("uSmoothTo", 0f);
 
         // 横轴的锚点：本段第一个实例相对可见窗口左端的小数偏移（绝对下标在着色器里用不了）。
         // 窗口左端不是整数时（亚像素滚动）那个小数的整数部分不能丢，故先减 floor 再减小数部分。
@@ -302,6 +316,10 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
             // 必须是 int 的那个 setUniform（glUniform1i）：对 uint uniform 用它报
             // GL_INVALID_OPERATION 且**值保持 0**，而 0 正是"什么都没命中"。
             pick.setUniform("uPickId", pickId);
+            // 与绘制那一趟对齐（理由见上面那三行）：热区必须和画面是同一个形状。
+            pick.setUniform("uSmooth", 0f);
+            pick.setUniform("uSmoothFrom", 0f);
+            pick.setUniform("uSmoothTo", 0f);
 
             // 裁剪盒在进入本方法时就设好了，到这里还没还原，所以 withPickPass 那条
             // "调用方必须确保 GL_SCISSOR_TEST 已启用"的契约天然满足，被裁掉的部分不可拾取。

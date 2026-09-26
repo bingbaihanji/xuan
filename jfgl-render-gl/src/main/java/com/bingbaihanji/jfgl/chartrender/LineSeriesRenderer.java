@@ -10,8 +10,6 @@ import com.bingbaihanji.jfgl.gl.GLAbstraction;
 import com.bingbaihanji.jfgl.gl.ShaderProgram;
 import com.bingbaihanji.jfgl.util.Rect;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.List;
 
 import static org.lwjgl.opengl.GL11.GL_FLOAT;
@@ -29,10 +27,22 @@ import static org.lwjgl.opengl.GL20.glVertexAttribPointer;
  * 把新增的点传上去、算一下可见窗口对应的实例区间。
  *
  * <h2>每个点只存一次，却让每个实例拿到两端</h2>
- * <p>数据侧的两个实例属性是<b>同一个 VBO、偏移差 4 个字节</b>（见
+ * <p>数据侧的实例属性是<b>同一个 VBO、偏移差 4 个字节</b>（见
  * {@link #configureDataAttributes}）：偏移 0 拿 {@code y[k]}、偏移 4 拿 {@code y[k+1]}。
  * 于是每个样本只占 4 字节，而"线段的两端"这件事完全由属性的偏移表达，
  * 不需要在缓冲里把每个点写两遍。
+ *
+ * <h2>★ 平滑曲线（{@code Series.smooth()}）：多两个属性、多两个 uniform</h2>
+ * <p>Catmull-Rom 的一段需要 <b>四个</b>控制点 {@code y[k-1], y[k], y[k+1], y[k+2]}，
+ * 于是属性多两个：{@code aYm1}（比 {@code aY0} 少 4 字节）与 {@code aY2}
+ * （比 {@code aY1} 多 4 字节）。<b>每个样本仍然只存一次</b>——四个属性是同一块 VBO 上
+ * 四个相差 4 字节的字节偏移，{@code baseInstance} 照样把它们滑到环里正确的那一段。
+ * 真正需要动的是缓冲本身：{@code y[k-1]} 要求"槽位 0 前面还有一个 float"，
+ * 而负偏移在 OpenGL 里不存在（见 {@link SeriesLayout}）。
+ *
+ * <p>顶点数也从 4 变成 {@code 2 × (K+1)}（K = 2/4/8/16，见 {@link SmoothCurve}），
+ * {@code aCorner.x} 从"哪一端"变成"站位参数"。非平滑时仍然是 4 个顶点、
+ * 参数只取 0 与 1——<b>几何逐位不变</b>。
  *
  * <h2>它画两个 pass：颜色的，和 ID 的</h2>
  * <p>颜色画完之后就着同一份 VAO 与同一批实例再画一遍 ID pass，只换程序
@@ -75,13 +85,22 @@ import static org.lwjgl.opengl.GL20.glVertexAttribPointer;
  */
 final class LineSeriesRenderer implements SeriesRenderer {
 
-    /** 单位四边形的四个角，按 triangle strip 顺序。divisor = 0，所有实例共享。 */
+    /**
+     * 非平滑的四角，按 triangle strip 顺序：{@code (哪一端, 哪一侧)}。
+     * divisor = 0，所有实例共享。
+     *
+     * <p>它的后面还接着四档"平滑站位"（见 {@link SmoothCurve#cornerData}）：
+     * 开平滑时 {@code aCorner.x} 不再是 0/1，而是<b>站位参数 t</b>。
+     */
     private static final float[] CORNERS = {
             0f, 0f,
             1f, 0f,
             0f, 1f,
             1f, 1f,
     };
+
+    /** 非平滑时的顶点数：那一个四边形。 */
+    private static final int PLAIN_VERTICES = CORNERS.length / 2;
 
     /**
      * 拾取容差（半宽，设备像素）。
@@ -114,19 +133,12 @@ final class LineSeriesRenderer implements SeriesRenderer {
         this.gl = gl;
         this.markerRenderer = markerRenderer;
         this.vao = gl.createVao();
-        this.cornerVbo = gl.createVbo();
+        this.cornerVbo = SmoothCurve.createCornerVbo(gl, CORNERS);
 
         gl.bindVao(vao);
         gl.bindVbo(cornerVbo);
-        ByteBuffer corners = ByteBuffer.allocateDirect(CORNERS.length * Float.BYTES)
-                .order(ByteOrder.nativeOrder());
-        for (float c : CORNERS) {
-            corners.putFloat(c);
-        }
-        corners.flip();
-        gl.uploadVboBytes(corners);
-
-        // location 0：单位四边形，每顶点取一次
+        // location 0：角点，每顶点取一次。它的前半段是那一个四边形，
+        // 后半段是四档平滑站位（见 SmoothCurve）——每帧用 (first, count) 选用哪一段。
         glVertexAttribPointer(0, 2, GL_FLOAT, false, 2 * Float.BYTES, 0L);
         glEnableVertexAttribArray(0);
         gl.setVertexAttribDivisor(0, 0);
@@ -136,29 +148,17 @@ final class LineSeriesRenderer implements SeriesRenderer {
     }
 
     /**
-     * 配置数据侧的属性指针。
+     * 配置数据侧的属性指针（四个控制点：{@code aY0 / aY1 / aYm1 / aY2}）。
      *
-     * <p><strong>同一个 VBO 绑两次、只差 4 个字节的偏移</strong>——这是"每点只存一次
-     * 却能让每个实例拿到两端"的关键。偏移 0 拿 {@code y[k]}，偏移 4 拿 {@code y[k+1]}。
-     *
-     * <p>步长是 {@code 4} 而不是 {@code 8}：两个属性各自是"每实例一个 float"，
-     * 由 {@code baseInstance}（见 {@link GLAbstraction#drawArraysInstancedBaseInstance}）
-     * 把它们挪到环里正确的那一段上。写成 {@code 8} 会让相邻实例间隔一个样本，
-     * 画出来的波形<b>正好少一半的点</b>，而线条看起来仍然连贯——最难查的那种。
+     * <p><strong>同一个 VBO 绑四次、两两相差 4 个字节</strong>——这是"每点只存一次
+     * 却能让每个实例拿到四个控制点"的关键。偏移怎么由布局算出来、普通布局为什么
+     * 有两处指向同一个样本，都在 {@link SmoothCurve#configureDataAttributes} 里
+     * （折线族与面积图共用同一份，免得两处迟早分叉）。
      *
      * <p>调用方必须已经绑定本类的 VAO 与系列的 VBO。
      */
-    private void configureDataAttributes(int seriesVbo) {
-        gl.bindVbo(seriesVbo);
-        glVertexAttribPointer(1, 1, GL_FLOAT, false, Float.BYTES, 0L);
-        glEnableVertexAttribArray(1);
-        gl.setVertexAttribDivisor(1, 1);
-
-        glVertexAttribPointer(2, 1, GL_FLOAT, false, Float.BYTES, Float.BYTES);
-        glEnableVertexAttribArray(2);
-        gl.setVertexAttribDivisor(2, 1);
-
-        gl.bindVbo(0);
+    private void configureDataAttributes(int seriesVbo, int biasBytes) {
+        SmoothCurve.configureDataAttributes(gl, seriesVbo, biasBytes);
     }
 
     @Override
@@ -215,6 +215,16 @@ final class LineSeriesRenderer implements SeriesRenderer {
 
         ChartRenderLayout layout = c.layout();
         Rect plot = layout.plotRect();
+        float pxPerSample = (float) (plot.width / (windowEnd - windowStart));
+        // 走不走曲线由**缓冲的布局**决定，而不是再去问一遍 series.smooth()：
+        // 布局决定了四个实例属性的字节偏移，两者必须是同一处决定（见 SeriesLayout）。
+        // ChartRenderer 保证布局与 Series.smooth() 一致（不一致就重建缓冲）。
+        boolean smooth = buffer.smoothLayout();
+        int subdivision = smooth ? SmoothCurve.subdivisionFor(pxPerSample) : 0;
+        // 开平滑时画的是"四档站位"里被选中的那一档；否则画那一个四边形（顶点数与偏移都
+        // 与改动前逐字相同）。
+        int firstVertex = smooth ? SmoothCurve.firstVertex(subdivision) : 0;
+        int vertexCount = smooth ? SmoothCurve.vertexCount(subdivision) : PLAIN_VERTICES;
 
         boolean scissorWasOn = gl.isScissorEnabled();
         gl.setScissorEnabled(true);
@@ -227,15 +237,14 @@ final class LineSeriesRenderer implements SeriesRenderer {
         gl.setBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
         gl.bindVao(vao);
-        configureDataAttributes(buffer.vboId());
+        configureDataAttributes(buffer.vboId(), buffer.layout().byteOffsetOfSlot(0));
 
         ShaderProgram shader = c.lineShader();
         shader.use();
         shader.setUniform("uPlotRect", plot.x, plot.y, plot.width, plot.height);
         shader.setUniform("uViewport", (float) c.viewportWidth(), (float) c.viewportHeight());
         shader.setUniform("uValueRange", layout.yMin(), layout.yMax());
-        shader.setUniform("uPxPerSample",
-                (float) (plot.width / (windowEnd - windowStart)));
+        shader.setUniform("uPxPerSample", pxPerSample);
         shader.setUniform("uHalfWidth", series.lineWidth() * 0.5f);
         // 绘制时容差为 0，所以 max() 取到的就是真实线宽
         shader.setUniform("uPickTolerance", 0f);
@@ -251,16 +260,19 @@ final class LineSeriesRenderer implements SeriesRenderer {
                 (argb & 0xFF) / 255f,
                 ((argb >>> 24) & 0xFF) / 255f);
         shader.setUniform("uPickId", 0);
+        shader.setUniform("uSmooth", smooth ? 1f : 0f);
 
         // 横轴的锚点。绝对下标是 long、着色器里用不了，所以传"本段第一个实例相对
         // 可见窗口左端的小数偏移"；窗口左端不是整数时（亚像素滚动）这个小数的整数部分
         // 不能丢，故减去 floor 再减窗口左端的小数部分。
         double windowFloor = Math.floor(windowStart);
         for (WindowRange.Segment seg : segments) {
+            setSmoothRange(shader, buffer, seg, smooth);
             shader.setUniform("uFirstRelIndex",
                     (float) (seg.firstDataIndex() - windowFloor - (windowStart - windowFloor)));
             gl.drawArraysInstancedBaseInstance(
-                    GL_TRIANGLE_STRIP, 0, 4, seg.instanceCount(), seg.firstInstance());
+                    GL_TRIANGLE_STRIP, firstVertex, vertexCount,
+                    seg.instanceCount(), seg.firstInstance());
         }
 
         shader.unuse();
@@ -269,9 +281,13 @@ final class LineSeriesRenderer implements SeriesRenderer {
         // 拾取 ID 走 uniform 而不是顶点属性——图表的数据布局里没有 id 字段，
         // 而且按系列发号意味着发号成本与点数无关（一条百万点的曲线只注册一个 ID）。
         //
-        // 插在 shader.unuse() 与 bindVao(0) 之间是有意的：此刻 VAO 与两个实例属性指针
+        // 插在 shader.unuse() 与 bindVao(0) 之间是有意的：此刻 VAO 与四个实例属性指针
         // 都还是绘制时那套，只换程序就够；搬到 bindVao(0) 之后就得把 configureDataAttributes
         // 再走一遍，那两份配置迟早会分叉，而分叉的表现是"拾取的位置和画面不一致"。
+        //
+        // ★ **热区跟着曲线走**：ID pass 用的是同一个顶点程序、同一批 uSmooth 与
+        // uSmoothFrom/To，所以开了平滑之后可拾取的位置就是那条曲线——
+        // 这正是想要的（"点到的地方"和"看到的地方"必须是同一处）。
         int pickId = c.pickId();
         if (pickId != 0) {
             ShaderProgram pick = c.pickShader();
@@ -283,13 +299,14 @@ final class LineSeriesRenderer implements SeriesRenderer {
             pick.setUniform("uPlotRect", plot.x, plot.y, plot.width, plot.height);
             pick.setUniform("uViewport", (float) c.viewportWidth(), (float) c.viewportHeight());
             pick.setUniform("uValueRange", layout.yMin(), layout.yMax());
-            pick.setUniform("uPxPerSample", (float) (plot.width / (windowEnd - windowStart)));
+            pick.setUniform("uPxPerSample", pxPerSample);
             pick.setUniform("uHalfWidth", series.lineWidth() * 0.5f);
             // 容差：绘制时是 0，拾取时放宽（理由见 PICK_TOLERANCE_PX）。
             pick.setUniform("uPickTolerance", PICK_TOLERANCE_PX);
             // 必须是 int 的那个 setUniform（glUniform1i）：对 uint uniform 用它报
             // GL_INVALID_OPERATION 且**值保持 0**，而 0 正是"什么都没命中"。
             pick.setUniform("uPickId", pickId);
+            pick.setUniform("uSmooth", smooth ? 1f : 0f);
 
             // 裁剪盒在进入本方法时就设好了（见上面那三行），到这里还没还原，
             // 所以 withPickPass 那条"调用方必须确保 GL_SCISSOR_TEST 已启用"的契约天然满足，
@@ -301,10 +318,12 @@ final class LineSeriesRenderer implements SeriesRenderer {
             setScissorTo(plot, c.viewportHeight());
             c.withPickPass(() -> {
                 for (WindowRange.Segment seg : segments) {
+                    setSmoothRange(pick, buffer, seg, smooth);
                     pick.setUniform("uFirstRelIndex",
                             (float) (seg.firstDataIndex() - windowFloor - (windowStart - windowFloor)));
                     gl.drawArraysInstancedBaseInstance(
-                            GL_TRIANGLE_STRIP, 0, 4, seg.instanceCount(), seg.firstInstance());
+                            GL_TRIANGLE_STRIP, firstVertex, vertexCount,
+                            seg.instanceCount(), seg.firstInstance());
                 }
             });
             pick.unuse();
@@ -313,6 +332,29 @@ final class LineSeriesRenderer implements SeriesRenderer {
         gl.bindVao(0);
         gl.disableBlend();
         gl.setScissorEnabled(scissorWasOn);
+    }
+
+    /**
+     * 给一段实例设置"哪几段可以画成曲线"（{@code uSmoothFrom} / {@code uSmoothTo}）。
+     *
+     * <p>区间是<b>本段内的实例下标</b>，不是数据下标——理由见
+     * {@link SmoothCurve#smoothFromInSegment}（绝对下标进着色器只能走 float，
+     * 而 1e6 上的 float 精度足以让边界附近的一条实例读到一个陈旧的控制点）。
+     *
+     * <p>不开平滑时两个都传 0（"一段都不许平滑"）——那是个真话，
+     * 也免得让人以为这两个值在那种情况下还参与判定。
+     */
+    private static void setSmoothRange(ShaderProgram shader, SeriesBuffer buffer,
+                                       WindowRange.Segment seg, boolean smooth) {
+        if (!smooth) {
+            shader.setUniform("uSmoothFrom", 0f);
+            shader.setUniform("uSmoothTo", 0f);
+            return;
+        }
+        shader.setUniform("uSmoothFrom", SmoothCurve.smoothFromInSegment(
+                seg.firstDataIndex(), seg.instanceCount(), buffer.smoothableFirst()));
+        shader.setUniform("uSmoothTo", SmoothCurve.smoothToInSegment(
+                seg.firstDataIndex(), seg.instanceCount(), buffer.smoothableEnd()));
     }
 
     /**

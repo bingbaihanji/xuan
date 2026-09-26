@@ -210,6 +210,59 @@ class SeriesBufferTest {
         assertEquals(0, buf.uploadedBytesThisFrame(), "静态数据一次上传后必须永不重传");
     }
 
+    // —— 以下钉住**平滑布局**（SeriesLayout.SMOOTH）的缓冲本身 ——
+
+    @Test
+    void 平滑布局的缓冲多三个float() {
+        new SeriesBuffer(gl, data, true);
+        assertEquals(1, gl.createdVbos.size(), "应当建恰好一个 VBO");
+        assertEquals((8 + 3) * Float.BYTES, SeriesBuffer.bufferBytesFor(8, true),
+                "平滑布局是 容量 + 3 个 float（前置 1 + 后置 2）");
+        assertEquals((8 + 1) * Float.BYTES, SeriesBuffer.bufferBytesFor(8, false),
+                "普通布局一字未改");
+    }
+
+    @Test
+    void 平滑布局的跨环绕上传写三个镜像() {
+        // 容量 8、已写 10 个：环里是绝对号 2..9（槽位 2..7 与 0,1），三个镜像的位置是
+        // 字节 0（前置，← 槽位 7）、36（← 槽位 0）、40（← 槽位 1）。
+        RecordingSource source = new RecordingSource(8);
+        source.written = 10L;
+        SeriesBuffer buf = new SeriesBuffer(gl, source, SeriesLayout.SMOOTH);
+        buf.uploadNewSamples();
+
+        assertEquals(44, buf.uploadedBytesThisFrame(), "8 个样本 * 4 + 三个镜像 * 4");
+        assertEquals(List.of(2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 7L, 8L, 9L), source.requested,
+                "末尾三个 7/8/9 是三个镜像；少了它们，曲线在环绕点附近会弯向 0");
+        assertEquals(5, gl.vboSubDataCalls.size(), "两段样本 + 三个镜像");
+    }
+
+    @Test
+    void 平滑布局的可平滑区间排除首末两段() {
+        // 静态数据 7 个点（容量 8）：四个控制点齐全的实例是 1..4，
+        // 也就是首段（0）与末段（5）必须退回直线——它们是像素校验器里
+        // "边界不与邻居相连"那两条断言的算术来源。
+        ArrayChartData staticData = ChartDataFixtures.arrayOf(0, 1, 2, 3, 4, 5, 6);
+        SeriesBuffer buf = new SeriesBuffer(gl, staticData, true);
+        buf.uploadNewSamples();
+
+        assertEquals(7L, buf.writeCount());
+        assertEquals(1L, buf.smoothableFirst(), "首段的左邻居不存在");
+        assertEquals(5L, buf.smoothableEnd(), "半开区间的右端：末段的右邻居还没采到");
+    }
+
+    @Test
+    void 平滑布局环滑动后的可平滑区间() {
+        // 环容量 8、已上传 10 个：环里还留着绝对号 2..9，于是可平滑的实例是 3..7。
+        RecordingSource source = new RecordingSource(8);
+        source.written = 10L;
+        SeriesBuffer buf = new SeriesBuffer(gl, source, SeriesLayout.SMOOTH);
+        buf.uploadNewSamples();
+
+        assertEquals(3L, buf.smoothableFirst(), "绝对号 2 是最老的那个：实例 3 才能往前看一格");
+        assertEquals(8L, buf.smoothableEnd(), "最后一个可平滑的实例是 7");
+    }
+
     @Test
     void NaN端点被标记为退化() {
         RingChartData d = newData(8);

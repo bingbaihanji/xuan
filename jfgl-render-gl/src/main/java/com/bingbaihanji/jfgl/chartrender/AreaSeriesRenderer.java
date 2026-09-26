@@ -10,8 +10,6 @@ import com.bingbaihanji.jfgl.gl.GLAbstraction;
 import com.bingbaihanji.jfgl.gl.ShaderProgram;
 import com.bingbaihanji.jfgl.util.Rect;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.List;
 
 import static org.lwjgl.opengl.GL11.GL_FLOAT;
@@ -70,6 +68,10 @@ final class AreaSeriesRenderer implements SeriesRenderer {
      * <p>与折线的四边形<b>角点值相同、含义不同</b>：折线的 {@code aCorner.y} 是
      * "法向的哪一侧"，这里的是"取数据值还是取基线"。两个含义互换会让填充
      * 变成"沿法向撑开的一条带"——一条跟着曲线起伏的粗线，看起来像加粗的折线。
+     *
+     * <p>它的后面还接着四档"平滑站位"（见 {@link SmoothCurve#cornerData}），
+     * 与折线用的是同一份：{@code aCorner.y} 的含义不变（0 = 曲线、1 = 基线），
+     * {@code aCorner.x} 变成站位参数 t。
      */
     private static final float[] CORNERS = {
             0f, 0f,
@@ -77,6 +79,9 @@ final class AreaSeriesRenderer implements SeriesRenderer {
             0f, 1f,
             1f, 1f,
     };
+
+    /** 非平滑时的顶点数：那一个梯形。 */
+    private static final int PLAIN_VERTICES = CORNERS.length / 2;
 
     private final GLAbstraction gl;
 
@@ -93,18 +98,10 @@ final class AreaSeriesRenderer implements SeriesRenderer {
         this.gl = gl;
         this.lineRenderer = lineRenderer;
         this.vao = gl.createVao();
-        this.cornerVbo = gl.createVbo();
+        this.cornerVbo = SmoothCurve.createCornerVbo(gl, CORNERS);
 
         gl.bindVao(vao);
         gl.bindVbo(cornerVbo);
-        ByteBuffer corners = ByteBuffer.allocateDirect(CORNERS.length * Float.BYTES)
-                .order(ByteOrder.nativeOrder());
-        for (float c : CORNERS) {
-            corners.putFloat(c);
-        }
-        corners.flip();
-        gl.uploadVboBytes(corners);
-
         glVertexAttribPointer(0, 2, GL_FLOAT, false, 2 * Float.BYTES, 0L);
         glEnableVertexAttribArray(0);
         gl.setVertexAttribDivisor(0, 0);
@@ -132,20 +129,15 @@ final class AreaSeriesRenderer implements SeriesRenderer {
     }
 
     /**
-     * 配置数据侧的属性指针：与折线逐字相同（同一个 VBO 绑两次、偏移差 4 字节），
+     * 配置数据侧的属性指针：与折线逐字相同（四个控制点、同一个 VBO、偏移差 4 字节），
      * 因为面积图的实例同样是"一个线段"——两端各向基线垂下来。
+     *
+     * <p>共用的是 {@link SmoothCurve#configureDataAttributes} 那一份：
+     * 填充的顶边与轮廓线必须是<b>同一条曲线</b>，两处各写一份的话迟早分叉，
+     * 而分叉的表现是沿曲线露出一条背景色的细缝。
      */
-    private void configureDataAttributes(int seriesVbo) {
-        gl.bindVbo(seriesVbo);
-        glVertexAttribPointer(1, 1, GL_FLOAT, false, Float.BYTES, 0L);
-        glEnableVertexAttribArray(1);
-        gl.setVertexAttribDivisor(1, 1);
-
-        glVertexAttribPointer(2, 1, GL_FLOAT, false, Float.BYTES, Float.BYTES);
-        glEnableVertexAttribArray(2);
-        gl.setVertexAttribDivisor(2, 1);
-
-        gl.bindVbo(0);
+    private void configureDataAttributes(int seriesVbo, int biasBytes) {
+        SmoothCurve.configureDataAttributes(gl, seriesVbo, biasBytes);
     }
 
     @Override
@@ -164,6 +156,13 @@ final class AreaSeriesRenderer implements SeriesRenderer {
         List<WindowRange.Segment> segments = WindowRange.compute(
                 windowStart, windowEnd, buffer.writeCount(), buffer.capacity());
 
+        // 走不走曲线由缓冲的布局决定（理由见 LineSeriesRenderer 里的同一段说明）。
+        boolean smooth = buffer.smoothLayout();
+        float pxPerSample = (float) (plotWidth(c) / (windowEnd - windowStart));
+        int subdivision = smooth ? SmoothCurve.subdivisionFor(pxPerSample) : 0;
+        int firstVertex = smooth ? SmoothCurve.firstVertex(subdivision) : 0;
+        int vertexCount = smooth ? SmoothCurve.vertexCount(subdivision) : PLAIN_VERTICES;
+
         if (!segments.isEmpty()) {
             ChartRenderLayout layout = c.layout();
             Rect plot = layout.plotRect();
@@ -177,7 +176,7 @@ final class AreaSeriesRenderer implements SeriesRenderer {
             gl.setBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
             gl.bindVao(vao);
-            configureDataAttributes(buffer.vboId());
+            configureDataAttributes(buffer.vboId(), buffer.layout().byteOffsetOfSlot(0));
 
             ShaderProgram shader = c.areaShader();
             shader.use();
@@ -190,31 +189,40 @@ final class AreaSeriesRenderer implements SeriesRenderer {
             // 所以一条面积图的两半不会一个开一个关）。这一行漏掉的表现是
             // "填充的上下边缘是硬的、轮廓线是羽化的"——而那看起来像线比填充清楚一点。
             shader.setUniform("uAntialias", c.antialias() ? 1f : 0f);
+            shader.setUniform("uSmooth", smooth ? 1f : 0f);
 
             double windowFloor = Math.floor(windowStart);
             for (WindowRange.Segment seg : segments) {
+                setSmoothRange(shader, buffer, seg, smooth);
                 shader.setUniform("uFirstRelIndex",
                         (float) (seg.firstDataIndex() - windowFloor - (windowStart - windowFloor)));
                 gl.drawArraysInstancedBaseInstance(
-                        GL_TRIANGLE_STRIP, 0, 4, seg.instanceCount(), seg.firstInstance());
+                        GL_TRIANGLE_STRIP, firstVertex, vertexCount,
+                        seg.instanceCount(), seg.firstInstance());
             }
             shader.unuse();
 
             // ID pass：填充自己也是一块可点中的区域（面积图"点在填充里"与"点在线上"
             // 都该命中同一个系列）。容差对填充没有意义（它本来就有一片面积），传 0。
+            //
+            // uSmooth 与 uSmoothFrom/To 在这里与绘制那一趟一致，所以填充的热区也跟着
+            // 曲线的顶边走——"点到的地方"和"看到的地方"必须是同一处。
             int pickId = c.pickId();
             if (pickId != 0) {
                 ShaderProgram pick = c.areaPickShader();
                 pick.use();
                 setCommonUniforms(pick, c, layout, plot, series, windowStart, windowEnd, pickId);
+                pick.setUniform("uSmooth", smooth ? 1f : 0f);
                 setScissorTo(plot, c.viewportHeight());
                 c.withPickPass(() -> {
                     for (WindowRange.Segment seg : segments) {
+                        setSmoothRange(pick, buffer, seg, smooth);
                         pick.setUniform("uFirstRelIndex",
                                 (float) (seg.firstDataIndex() - windowFloor
                                         - (windowStart - windowFloor)));
                         gl.drawArraysInstancedBaseInstance(
-                                GL_TRIANGLE_STRIP, 0, 4, seg.instanceCount(), seg.firstInstance());
+                                GL_TRIANGLE_STRIP, firstVertex, vertexCount,
+                                seg.instanceCount(), seg.firstInstance());
                     }
                 });
                 pick.unuse();
@@ -227,7 +235,34 @@ final class AreaSeriesRenderer implements SeriesRenderer {
 
         // 轮廓线：一条普通折线，走折线路径自己的状态管理与两个 pass。
         // 它必须排在填充之后——压在上面的那条线才是实心的（见类文档）。
+        // ★ 它也会**跟着同一个开关**平滑：填充的顶边与这条轮廓线必须是同一条曲线，
+        //   否则沿曲线会露出一条背景色的细缝（两边各自用 SmoothCurve 的同一份算术与
+        //   同一个细分档位，所以它们逐像素重合）。
         lineRenderer.renderPolyline(ctx, data, series, axes);
+    }
+
+    /** 绘图区宽度：{@code uPxPerSample} 的分子（与折线路径同一个口径）。 */
+    private static float plotWidth(GLRenderContext c) {
+        return c.layout().plotRect().width;
+    }
+
+    /**
+     * 给一段实例设置"哪几段可以画成曲线"（与折线路径逐字相同的两个 uniform）。
+     *
+     * <p>不开平滑时两个都传 0（一段都不许平滑），理由见
+     * {@code LineSeriesRenderer.setSmoothRange}。
+     */
+    private static void setSmoothRange(ShaderProgram shader, SeriesBuffer buffer,
+                                       WindowRange.Segment seg, boolean smooth) {
+        if (!smooth) {
+            shader.setUniform("uSmoothFrom", 0f);
+            shader.setUniform("uSmoothTo", 0f);
+            return;
+        }
+        shader.setUniform("uSmoothFrom", SmoothCurve.smoothFromInSegment(
+                seg.firstDataIndex(), seg.instanceCount(), buffer.smoothableFirst()));
+        shader.setUniform("uSmoothTo", SmoothCurve.smoothToInSegment(
+                seg.firstDataIndex(), seg.instanceCount(), buffer.smoothableEnd()));
     }
 
     /**
