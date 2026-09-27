@@ -951,7 +951,10 @@ class FftVerifierApp : Application() {
 
         try {
             val active = probe?.activeUniforms ?: emptyList()
-            val unresolved = if (compiled) UNIFORM_NAMES.filter { probe!!.location(it) < 0 } else emptyList()
+            val unresolved = if (compiled) {
+                val uniformProbe = requireNotNull(probe)
+                UNIFORM_NAMES.filter { uniformProbe.location(it) < 0 }
+            } else emptyList()
             report(
                 "★ execute() 用到的 ${UNIFORM_NAMES.size} 个 uniform 名字在着色器里都能解析出 location",
                 compiled && unresolved.isEmpty(),

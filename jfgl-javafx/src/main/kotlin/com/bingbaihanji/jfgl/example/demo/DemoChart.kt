@@ -118,6 +118,22 @@ internal object DemoChart {
     @Volatile
     var smoothOn: Boolean = false
 
+    /** JavaFX 线程写入、GL 线程在 [chart] 取用的设备像素 hover 坐标。 */
+    @Volatile private var hoverX: Float = Float.NaN
+    @Volatile private var hoverY: Float = Float.NaN
+
+    /** 更新图表 hover 指针；坐标单位是设备像素。 */
+    fun updateHoverPointer(x: Float, y: Float) {
+        hoverX = x
+        hoverY = y
+    }
+
+    /** 清除图表 hover。 */
+    fun clearHoverPointer() {
+        hoverX = Float.NaN
+        hoverY = Float.NaN
+    }
+
     /**
      * 平滑开关对某个图型**是否适用**。
      *
@@ -249,7 +265,15 @@ internal object DemoChart {
         //
         // `getOrPut` 把**同一个** Chart 一直发给同一对 (图型, 平滑)——这正是 ChartRenderer 要的：
         // 它按 Series 的**对象身份**缓存，只要对象不变，那两张 map 就不增长。
-        return cachedCharts.getOrPut(k * 2 + if (smooth) 1 else 0) { build(k, smooth) }
+        val chart = cachedCharts.getOrPut(k * 2 + if (smooth) 1 else 0) { build(k, smooth) }
+        val x = hoverX
+        val y = hoverY
+        if (x.isFinite() && y.isFinite()) {
+            chart.interaction().updatePointer(x, y)
+        } else {
+            chart.interaction().clearPointer()
+        }
+        return chart
     }
 
     /**
@@ -295,6 +319,19 @@ internal object DemoChart {
             .apply {
                 addLayer("数据").add(styleFor(Series("销售额", data, type).color(COLOR_SALES), smooth))
                     .add(styleFor(Series("成本", data2, type).color(COLOR_COST), smooth))
+                interaction().setConfig(
+                    ChartInteractionConfig.defaults()
+                        .snapRadius(24f)
+                        .crosshairColor(0xB8D7E3F4.toInt())
+                        .tooltipColors(
+                            0xF0222933.toInt(),
+                            0xFF6B7C93.toInt(),
+                            0xFFF4F7FB.toInt()
+                        )
+                        .formatter { value, _ ->
+                            if (value == value) "%.2f".format(value) else "NaN"
+                        }
+                )
             }
     }
 

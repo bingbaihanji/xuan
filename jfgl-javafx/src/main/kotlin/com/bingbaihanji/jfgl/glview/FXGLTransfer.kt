@@ -1,6 +1,7 @@
 package com.bingbaihanji.jfgl.glview
 
 import com.bingbaihanji.jfgl.gl.LwjglGLAbstraction
+import com.bingbaihanji.jfgl.chart.Chart
 import com.bingbaihanji.jfgl.renderer.Gc
 import com.bingbaihanji.jfgl.renderer.PickHit
 import com.bingbaihanji.jfgl.renderer.RenderBatch
@@ -78,6 +79,27 @@ class FXGLTransfer(
     private var onRenderCallback: (() -> Unit)? = null
     private var onDisposeCallback: (() -> Unit)? = null
 
+    /**
+     * 渲染异常处理器。
+     *
+     * <p>**`@Volatile` 不是装饰**：本字段由 JavaFX 应用线程写（`onError { }`）、
+     * 由 **GL 线程**读（`reportRenderFailure`），不加的话 JVM 允许 GL 线程
+     * 一直读到 `null` ⇒ 处理器注册了却永远不生效，异常继续走 `printStackTrace`
+     * ——表现是"我明明设了 onError，它却还在刷栈"。
+     * （同文件其余几个回调字段是同样的形状。它们都在首帧之前设好，实际也安全；
+     * 这里加 `@Volatile` 是因为**这个字段的读点发生在每一帧的异常路径上**，
+     * 而"注册不生效"恰好是最难查的那类。）
+     */
+    @Volatile
+    private var onErrorCallback: ((Throwable) -> Unit)? = null
+
+    /**
+     * 渲染异常处理器。**建议在 `onInit` / `start` 里设一次**（见 [onErrorCallback] 的说明）。
+     */
+    fun onError(callback: (Throwable) -> Unit) {
+        onErrorCallback = callback
+    }
+
     /** 逐帧绘制回调，参数是当前帧的 [Gc]。 */
     private var onFrameCallback: ((Gc) -> Unit)? = null
 
@@ -154,13 +176,22 @@ class FXGLTransfer(
             // 这里跳过而不是抛异常，否则渲染线程会每帧刷一次栈。
             if (context != null && scaledWidth > 0 && scaledHeight > 0) {
                 context.beginFrame(scaledWidth, scaledHeight)
-                onFrameCallback?.invoke(context)
-                context.endFrame()
-                // 必须在 endFrame 之后：ID pass 是在提交时渲染的，
-                // 提前读会拿到本帧尚未写入的缓冲。
-                resolvePendingPick(context)
+                try {
+                    onFrameCallback?.invoke(context)
+                    context.endFrame()
+                    // 必须在 endFrame 之后：ID pass 是在提交时渲染的，
+                    // 提前读会拿到本帧尚未写入的缓冲。
+                    resolvePendingPick(context)
+                } catch (failure: Throwable) {
+                    context.abortFrame()
+                    reportRenderFailure(failure)
+                }
             }
-            onRenderCallback?.invoke()
+            try {
+                onRenderCallback?.invoke()
+            } catch (failure: Throwable) {
+                reportRenderFailure(failure)
+            }
         }
 
         // 视口调整：Gc 的像素→NDC 基础矩阵每帧都按 scaledWidth/scaledHeight 重建，
@@ -172,16 +203,20 @@ class FXGLTransfer(
 
         // 释放：销毁批处理提交器持有的全部 GL 资源
         addOnDisposeEvent {
-            onDisposeCallback?.invoke()
-            // 图表后端在上层，先放它再放批处理：所有权链条是
-            // FXGLTransfer → RenderBatch，而 Gc.charts 挂在这条链的下游。
-            // 顺序反了不会立刻炸（两边的 GL 资源互不引用），但"下游先释放"是这条链
-            // 唯一说得通的次序，也就没有理由写成反的。
-            // 从未创建过图表时 disposeCharts() 是空操作（它不会顺手把懒值建出来）。
-            gc?.disposeCharts()
-            renderBatch?.dispose()
-            renderBatch = null
-            gc = null
+            var callbackFailure: Throwable? = null
+            try {
+                onDisposeCallback?.invoke()
+            } catch (failure: Throwable) {
+                callbackFailure = failure
+            } finally {
+                // 图表后端在上层，先放它再放批处理：所有权链条是
+                // FXGLTransfer → RenderBatch，而 Gc.charts 挂在这条链的下游。
+                gc?.disposeCharts()
+                renderBatch?.dispose()
+                renderBatch = null
+                gc = null
+            }
+            callbackFailure?.let { reportRenderFailure(it) }
         }
     }
 
@@ -307,6 +342,52 @@ class FXGLTransfer(
         onDisposeCallback = callback
     }
 
+    /** 累计的渲染失败次数。**GL 线程写、任意线程读**，所以是 `@Volatile`。 */
+    @Volatile
+    private var renderFailureCount = 0
+
+    /**
+     * 累计的渲染失败次数。
+     *
+     * <p>存在的理由是**节流**：帧回调里的失败会**每帧重演**（漏了一个 `restore()`
+     * 就每帧都抛），而帧率是 60 ⇒ 不节流的话控制台每秒刷 60 段同样的栈，
+     * 真正有用的第一段立刻被冲走。这与本文件里那条既有的口径是同一条
+     * （"这里跳过而不是抛异常，**否则渲染线程会每帧刷一次栈**"）。
+     *
+     * <p>计数本身也是给间歇性问题用的：现象是"偶尔崩一帧"，而"偶尔"到底多偶尔，
+     * 只有计数说得出来。
+     */
+    fun renderFailureCount(): Int = renderFailureCount
+
+    private fun reportRenderFailure(failure: Throwable) {
+        val attempt = ++renderFailureCount
+        // ★ 只有**第一次**打完整的栈，之后每 60 次打一行摘要（约每秒一行）。
+        //   不节流的话：一帧一次、每秒 60 次，把有意义的第一段冲掉；
+        //   而完全不打又会让"一直在失败"变成静默。
+        val firstOrPeriodic = attempt == 1 || attempt % 60 == 0
+        val handler = onErrorCallback
+        if (handler != null) {
+            // 处理器总是被调用（它可能有自己的计数/上报/熔断），
+            // 但**它的异常只报第一次**，否则处理器自己坏掉时会变成新的刷屏源。
+            try {
+                handler(failure)
+            } catch (handlerFailure: Throwable) {
+                handlerFailure.addSuppressed(failure)
+                if (attempt == 1) {
+                    handlerFailure.printStackTrace()
+                }
+            }
+            if (firstOrPeriodic) {
+                System.err.println("[jfgl] 渲染失败第 $attempt 次：${failure}")
+            }
+            return
+        }
+        if (firstOrPeriodic) {
+            System.err.println("[jfgl] 渲染失败第 $attempt 次（同一失败会每帧重演，只报首次与每 60 次）")
+            failure.printStackTrace()
+        }
+    }
+
     /**
      * 异步查询某个点上最上层的可拾取图元。
      *
@@ -388,6 +469,24 @@ class FXGLTransfer(
     fun onClick(node: Node, callback: (PickHit?) -> Unit) {
         node.addEventHandler(MouseEvent.MOUSE_CLICKED) { event ->
             clickAsyncAtNode(node, event.x, event.y, callback)
+        }
+    }
+
+    /**
+     * 把节点鼠标移动直接绑定到图表 hover 状态。
+     *
+     * <p>事件坐标会自动换算为设备像素；离开节点时清除 hover。图表绘制调用
+     * `gc.charts.drawChart(chart, ...)` 后会自动绘制十字线、命中点和提示框。
+     */
+    fun trackChartHover(node: Node, chart: Chart) {
+        node.addEventHandler(MouseEvent.MOUSE_MOVED) { event ->
+            val scale = deviceScale(node)
+            chart.interaction().updatePointer((event.x * scale).toFloat(), (event.y * scale).toFloat())
+            repaint()
+        }
+        node.addEventHandler(MouseEvent.MOUSE_EXITED) {
+            chart.interaction().clearPointer()
+            repaint()
         }
     }
 

@@ -318,6 +318,67 @@ class Gc constructor(private val batch: RenderBatch) {
             this@Gc.fillRect(x, y, width, height)
             this@Gc.fill = saved
         }
+
+        override fun strokeLine(x1: Float, y1: Float, x2: Float, y2: Float,
+                                width: Float, argb: Int) {
+            val savedColor = this@Gc.stroke
+            val savedWidth = this@Gc.lineWidth
+            this@Gc.stroke = argb
+            this@Gc.lineWidth = width
+            this@Gc.drawLine(x1, y1, x2, y2)
+            this@Gc.lineWidth = savedWidth
+            this@Gc.stroke = savedColor
+        }
+
+        override fun strokeDashedLine(x1: Float, y1: Float, x2: Float, y2: Float,
+                                      width: Float, dashLength: Float, argb: Int) {
+            val dx = x2 - x1
+            val dy = y2 - y1
+            val length = kotlin.math.sqrt(dx * dx + dy * dy)
+            if (length <= 0f) return
+            // ★ 这个守卫是**防死循环**的，不是防"画得难看"：
+            // `dashLength <= 0f` 时下面 `distance + dashLength` 恒等于 `distance`，
+            // `while (distance < length)` **永不退出** ⇒ GL 线程整个卡死、帧不再提交、
+            // 画布永久冻结，而且没有任何报错（GL 线程上的异常在本项目本来就是没人接的）。
+            // `NaN` 同样挡得住：`NaN <= 0f` 为 false，所以判据写成 `!(dashLength > 0f)`
+            // 而不是 `dashLength <= 0f`——后者漏掉 NaN，而 NaN 会让循环同样退不出去。
+            //
+            // 今天走不到这里：唯一的调用方 `ChartRenderer.drawInteraction` 传的是
+            // `ChartInteractionConfig.dashLength()`，而它的紧凑构造器强制了"有限且 > 0"。
+            // 但本方法是**公开接口** `ChartPainter` 上的一个成员，`Gc` 这一侧没有任何守卫
+            // ——下一个实现/调用方踩到就是整个画布挂死，代价与预防成本差得太远。
+            if (!(dashLength > 0f)) return
+            val ux = dx / length
+            val uy = dy / length
+            var distance = 0f
+            var draw = true
+            val savedColor = this@Gc.stroke
+            val savedWidth = this@Gc.lineWidth
+            this@Gc.stroke = argb
+            this@Gc.lineWidth = width
+            while (distance < length) {
+                val next = minOf(distance + dashLength, length)
+                if (draw) {
+                    this@Gc.drawLine(x1 + ux * distance, y1 + uy * distance,
+                        x1 + ux * next, y1 + uy * next)
+                }
+                distance = next
+                draw = !draw
+            }
+            this@Gc.lineWidth = savedWidth
+            this@Gc.stroke = savedColor
+        }
+
+        override fun strokeRect(x: Float, y: Float, width: Float, height: Float,
+                                lineWidth: Float, argb: Int) {
+            val savedColor = this@Gc.stroke
+            val savedWidth = this@Gc.lineWidth
+            this@Gc.stroke = argb
+            this@Gc.lineWidth = lineWidth
+            this@Gc.strokeRect(x, y, width, height)
+            this@Gc.lineWidth = savedWidth
+            this@Gc.stroke = savedColor
+        }
     }
 
     /**
@@ -402,11 +463,29 @@ class Gc constructor(private val batch: RenderBatch) {
      */
     fun endFrame() {
         check(frameActive) { "endFrame 在 beginFrame 之前调用：beginFrame 与 endFrame 必须配对" }
-        batch.submit(writer)
-        frameActive = false
-        val unbalanced = state.clearStack()
-        styleDepth = 0
+        var submitFailure: Throwable? = null
+        var unbalanced = 0
+        try {
+            batch.submit(writer)
+        } catch (failure: Throwable) {
+            submitFailure = failure
+        } finally {
+            frameActive = false
+            writer.reset()
+            unbalanced = state.clearStack()
+            styleDepth = 0
+        }
+        submitFailure?.let { throw it }
         check(unbalanced == 0) { "save() 与 restore() 不配对：本帧结束时仍残留 $unbalanced 层 save()" }
+    }
+
+    /** 放弃当前帧并恢复到可继续渲染的状态，供 JavaFX 桥接层处理回调异常。 */
+    fun abortFrame() {
+        if (!frameActive) return
+        frameActive = false
+        writer.reset()
+        state.clearStack()
+        styleDepth = 0
     }
 
     /**

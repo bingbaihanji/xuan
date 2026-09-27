@@ -117,7 +117,7 @@ private val SELFTEST_ON: Boolean = run {
     if (raw != null && !on) {
         System.err.println(
             "[自检-合成] 属性 $SELFTEST_PROPERTY=$raw 不是能识别的真值（用 1 或 true）；" +
-                "**自检不会运行**，窗口会进入正常交互模式（不会自己退出）"
+                    "**自检不会运行**，窗口会进入正常交互模式（不会自己退出）"
         )
     }
     on
@@ -239,8 +239,10 @@ class JfglDemoApp : Application() {
      * [drawScene] / [drawDragPreview] 读、也被 JavaFX 线程的 [onDrag] / [onRelease] 读，
      * `kind` 被 [drawDragPreview] 读，而它们由菜单在 JavaFX 线程写——所以需要 `@Volatile`。
      */
-    @Volatile private var mode = Mode.DRAW
-    @Volatile private var kind = ShapeKind.RECT
+    @Volatile
+    private var mode = Mode.DRAW
+    @Volatile
+    private var kind = ShapeKind.RECT
 
     // ---- 以下是**只在 JavaFX 线程**读写的状态，因此**不需要** `@Volatile`。 ----
     //
@@ -266,7 +268,8 @@ class JfglDemoApp : Application() {
      * <p>**默认关**，与库的默认值一致：开了之后描边边缘会多出半透明像素，
      * 而本仓库的像素校验器有一批精确到 ±0 的期望值。见 `CLAUDE.md` 的「抗锯齿」一节。
      */
-    @Volatile private var antialias = false
+    @Volatile
+    private var antialias = false
 
     /** 文本模式的字号。**只在 JavaFX 线程读写。** */
     private var fontSize = FONT_SIZES[1]
@@ -332,7 +335,8 @@ class JfglDemoApp : Application() {
     private val kindMenuItems = HashMap<ShapeKind, RadioMenuItem>()
 
     /** 已在 [drawScene] 里执行过的帧数。**只在自检模式下自增**（见 [SELFTEST]）。 */
-    @Volatile private var frameCount = 0
+    @Volatile
+    private var frameCount = 0
 
     /**
      * 自检专用的**末尾探针**：[drawDragPreview] 的两点式**虚线分支真的画完了**的帧数。
@@ -350,7 +354,8 @@ class JfglDemoApp : Application() {
      * <p>与 `DemoChart.selfTestDrawnFrames` 同一形态：只在 [SELFTEST] 打开时自增，
      * **没有任何绘制逻辑读它**。
      */
-    @Volatile private var previewDashedFrames = 0
+    @Volatile
+    private var previewDashedFrames = 0
 
     /** 拾取回调交付的命中 / 未命中次数。用来核对"回调真的被交付了"，而不只是"状态栏碰巧对"。 */
     private var pickHitCount = 0
@@ -360,10 +365,12 @@ class JfglDemoApp : Application() {
      * 自检第 ⑩ 条的一次性钩子：让 [consumeMarquee] **在拾取读回之后、活快照之前**
      * 执行一次"删除"。完整的时序理由见那个钩子所在的注释。
      */
-    @Volatile private var selfTestDeleteAfterReadback = false
+    @Volatile
+    private var selfTestDeleteAfterReadback = false
 
     /** 上面那个钩子真的执行了几次（GL 线程写、JavaFX 线程读）。**必须 >0 才说明第 ⑩ 条测的是那条路径**。 */
-    @Volatile private var selfTestDeleteHookRuns = 0
+    @Volatile
+    private var selfTestDeleteHookRuns = 0
 
     /**
      * 第 ⑩ 条：**那一次读回到底命中了哪些号**（钩子在 GL 线程上顺手记下的）。
@@ -373,7 +380,8 @@ class JfglDemoApp : Application() {
      * 而钩子执行过、号复用过、点中过 D 全都成立 ⇒ **⑦ 空转通过**。所以 `ok` 里必须有
      * "读回里含 `selfTestDId`"这一项——它把"过滤把号滤掉了"与"这次压根没读到号"分开。
      */
-    @Volatile private var selfTestHookHitIds: List<Int> = emptyList()
+    @Volatile
+    private var selfTestHookHitIds: List<Int> = emptyList()
 
     /** 第 ⑨ 条的两个前提：删之前有几个图形、删除那一刻状态栏说了什么。 */
     private var selfTestDeleteBefore = -1
@@ -418,8 +426,10 @@ class JfglDemoApp : Application() {
     }
 
     /** 拖拽预览：起点（设备像素）。NaN 表示没有正在进行的拖拽。 */
-    @Volatile private var dragStartX = Float.NaN
-    @Volatile private var dragStartY = Float.NaN
+    @Volatile
+    private var dragStartX = Float.NaN
+    @Volatile
+    private var dragStartY = Float.NaN
 
     /**
      * 拖拽轨迹点：**每次追加都新建数组**（`@Volatile` 只保证引用可见，不保证数组内容，
@@ -438,7 +448,8 @@ class JfglDemoApp : Application() {
      *
      * <p>真要做实时长轨迹，那时该做的是**降采样而不是换发布协议**。
      */
-    @Volatile private var trajectory = FloatArray(0)
+    @Volatile
+    private var trajectory = FloatArray(0)
 
     /**
      * **已定第一点**的锚点（两点式图形专用）。`NaN` 表示没有。
@@ -454,8 +465,10 @@ class JfglDemoApp : Application() {
      * 右键释放、两点式上的拖拽释放、文本释放调用，于是那三个手势会**顺带把
      * 用户手里的第一点丢掉**。拆开之后"四条"才是字面成立的。）
      */
-    @Volatile private var anchorX = Float.NaN
-    @Volatile private var anchorY = Float.NaN
+    @Volatile
+    private var anchorX = Float.NaN
+    @Volatile
+    private var anchorY = Float.NaN
 
     /**
      * 当前鼠标位置（设备像素）。**只为虚线预览存在。**
@@ -465,8 +478,10 @@ class JfglDemoApp : Application() {
      * 但**一次 volatile float 写是零成本的**，不构成热路径问题。
      * 只在"已定第一点"时被读；其余时候写了没人看。
      */
-    @Volatile private var previewX = Float.NaN
-    @Volatile private var previewY = Float.NaN
+    @Volatile
+    private var previewX = Float.NaN
+    @Volatile
+    private var previewY = Float.NaN
 
     /**
      * 待框选的矩形（左, 上, 宽, 高，设备像素）。`marqueeW` 为 NaN 表示没有框选在进行。
@@ -476,10 +491,14 @@ class JfglDemoApp : Application() {
      * 真正跨线程交付给 GL 线程的那个矩形走的是下面 [marqueePending]（一个不可变对象），
      * **没有**这个问题——这个对照正是"为什么交付用一个对象、而预览用四个标量"的理由。
      */
-    @Volatile private var marqueeX = Float.NaN
-    @Volatile private var marqueeY = 0f
-    @Volatile private var marqueeW = Float.NaN
-    @Volatile private var marqueeH = 0f
+    @Volatile
+    private var marqueeX = Float.NaN
+    @Volatile
+    private var marqueeY = 0f
+    @Volatile
+    private var marqueeW = Float.NaN
+    @Volatile
+    private var marqueeH = 0f
 
     /** 待处理的框选请求（GL 线程消费）。**用对象快照，不用上面那四个标量。** */
     private val marqueePending = AtomicReference<Rect?>(null)
@@ -508,9 +527,9 @@ class JfglDemoApp : Application() {
         if (mine == charts) return true
         System.err.println(
             "[自检] ★ 两份自检开关的值不一致：JfglDemo=$mine，DemoChart=$charts。" +
-                "它们读的是同一个属性 $SELFTEST_PROPERTY 却给出了不同结果——" +
-                "**这不是图表坏了，是开关解析分叉了**（历史上真发生过：" +
-                "一侧认 1 与 true、另一侧只认 1）。读数不可信，直接退出。"
+                    "它们读的是同一个属性 $SELFTEST_PROPERTY 却给出了不同结果——" +
+                    "**这不是图表坏了，是开关解析分叉了**（历史上真发生过：" +
+                    "一侧认 1 与 true、另一侧只认 1）。读数不可信，直接退出。"
         )
         return false
     }
@@ -599,7 +618,7 @@ class JfglDemoApp : Application() {
      *
      * <p>**每一次都要乘 [FXGLTransfer.deviceScale]**：鼠标事件给的是节点的**逻辑**局部坐标，
      * 而 [Gc] 要的是**设备像素**。漏乘的表现是"图形画在别的地方"或"点 A 命中 B"，
-     * 而画面本身完全正常——在 100% 缩放的机器上还一切正常。
+
      * `MOUSE_MOVED` **也不例外**（见 [onMove]）：它是虚线预览唯一的输入源，
      * 漏乘的话预览轮廓会整体缩到 1/缩放 的位置上，而**提交的图形是对的**——
      * "只是预览偏了一点"正是最难发现的那一类。
@@ -611,6 +630,9 @@ class JfglDemoApp : Application() {
         // 虚线预览要"没有键按下也跟着鼠标走"，所以必须再注册 MOUSE_MOVED——
         // MOUSE_DRAGGED 只在按键期间才有。
         node.addEventHandler(MouseEvent.MOUSE_MOVED) { e -> onMove(bridge, node, e) }
+        node.addEventHandler(MouseEvent.MOUSE_EXITED) {
+            DemoChart.clearHoverPointer()
+        }
     }
 
     /**
@@ -622,6 +644,7 @@ class JfglDemoApp : Application() {
         val s = bridge.deviceScale(node)
         previewX = (e.x * s).toFloat()
         previewY = (e.y * s).toFloat()
+        DemoChart.updateHoverPointer(previewX, previewY)
     }
 
     private fun onPress(bridge: FXGLTransfer, node: Node, e: MouseEvent) {
@@ -643,6 +666,7 @@ class JfglDemoApp : Application() {
                 trajectory = floatArrayOf(dx, dy)
                 previewX = dx; previewY = dy      // 按下时预览立刻定住，不等下一次 MOUSE_MOVED
             }
+
             Mode.TEXT -> Unit          // 文本在抬起时落字
             Mode.CHART -> Unit         // 图表模式不吃鼠标
         }
@@ -841,7 +865,7 @@ class JfglDemoApp : Application() {
                         anchorX = ax
                         anchorY = ay
                         status.text = "${kind.label}：已定第一点 (${ax.toInt()},${ay.toInt()})，" +
-                            "再点一下完成（Esc 取消）"
+                                "再点一下完成（Esc 取消）"
                     } else {
                         val before = shapes.get().size
                         commitTwoPointShape(dx, dy)
@@ -851,7 +875,7 @@ class JfglDemoApp : Application() {
                         // 那时 commitTwoPointShape 自己写了原因，别把它盖掉。
                         if (shapes.get().size > before) {
                             status.text = "已画：${shapes.get().last().shape.describe()} · " +
-                                "共 ${shapes.get().size} 个"
+                                    "共 ${shapes.get().size} 个"
                         }
                     }
                 } else {
@@ -866,7 +890,7 @@ class JfglDemoApp : Application() {
                         status.text = "${kind.label}请点两下：第一下定起点、第二下完成"
                     } else {
                         status.text = "${kind.label}：第一点还在 (${anchorX.toInt()},${anchorY.toInt()})，" +
-                            "点第二下完成（Esc 取消）"
+                                "点第二下完成（Esc 取消）"
                     }
                 }
             }
@@ -896,6 +920,7 @@ class JfglDemoApp : Application() {
                 if (moved < CLICK_SLOP) commitText(dx, dy) else dragStartX = Float.NaN
                 resetDragState()
             }
+
             Mode.CHART -> Unit
         }
     }
@@ -933,8 +958,10 @@ class JfglDemoApp : Application() {
                 // 于是同一个框拖出的圆**比预览框还大**，而预览画的正是那个框
                 // （[drawDragPreview] 画 `strokeRect`），用户看不出多出来的那一圈从哪来。
                 ShapeKind.CIRCLE -> if (planar)
-                    Shape.CircleShape(sx + w / 2f, sy + h / 2f, minOf(abs(w), abs(h)) / 2f,
-                        color, style, lineWidth)
+                    Shape.CircleShape(
+                        sx + w / 2f, sy + h / 2f, minOf(abs(w), abs(h)) / 2f,
+                        color, style, lineWidth
+                    )
                 else null
 
                 ShapeKind.ELLIPSE -> if (planar)
@@ -950,9 +977,9 @@ class JfglDemoApp : Application() {
             // 这句提示说的数就与实际判据不一致——而它恰恰是**用户唯一能看到**的那句话。
             // 两种拒绝理由共用这一句：轨迹型是"点数不够"，面状是"有一轴为零"。
             status.text = "拖得太短，没有形成图形" +
-                "（多边形至少 ${ShapeMath.MIN_POLYGON_POINTS} 个点、" +
-                "曲线至少 ${ShapeMath.MIN_CURVE_POINTS} 个点；" +
-                "矩形/圆/椭圆要求横竖都不为零）"
+                    "（多边形至少 ${ShapeMath.MIN_POLYGON_POINTS} 个点、" +
+                    "曲线至少 ${ShapeMath.MIN_CURVE_POINTS} 个点；" +
+                    "矩形/圆/椭圆要求横竖都不为零）"
             return
         }
         // pickRegistry 自己是线程安全的（Gc 文档里明确的例外），
@@ -1028,13 +1055,15 @@ class JfglDemoApp : Application() {
     private fun commitText(x: Float, y: Float) {
         val sample = TEXT_SAMPLES[textSeq % TEXT_SAMPLES.size]
         textSeq++
-        shapes.set(shapes.get() + Placed(
-            Shape.TextShape(sample, x, y, fontSize, color), 0   // 文本不参与拾取，见上
-        ))
+        shapes.set(
+            shapes.get() + Placed(
+                Shape.TextShape(sample, x, y, fontSize, color), 0   // 文本不参与拾取，见上
+            )
+        )
         // 坐标一律取整再进状态栏（本文件别处都这么写）——原样插 float 会显示成
         // "笔位 (671.4286,183.71428)"，读起来像精度暴露，其实只是没取整。
         status.text = "落字：「$sample」${fontSize.toInt()}px，" +
-            "笔位 (${x.toInt()},${y.toInt()})，基线 y=${y.toInt()}"
+                "笔位 (${x.toInt()},${y.toInt()})，基线 y=${y.toInt()}"
     }
 
     /**
@@ -1054,7 +1083,9 @@ class JfglDemoApp : Application() {
         val id = hit?.id() ?: 0
         // 自检用的交付计数（见字段说明）。放在**这里**而不是回调外面：
         // 这条路径就是"点击 → 拾取 → 回调"的终点，数它才等于数"回调被交付了几次"。
-        if (SELFTEST) { if (item == null) pickMissCount++ else pickHitCount++ }
+        if (SELFTEST) {
+            if (item == null) pickMissCount++ else pickHitCount++
+        }
         selection.set(if (item == null) emptySet() else setOf(id))
         status.text = if (item == null) {
             "未命中（设备像素 ${dx.toInt()},${dy.toInt()}）"
@@ -1069,7 +1100,9 @@ class JfglDemoApp : Application() {
 
     private fun deleteSelected() {
         val sel = selection.get()
-        if (sel.isEmpty()) { status.text = "没有选中任何图形"; return }
+        if (sel.isEmpty()) {
+            status.text = "没有选中任何图形"; return
+        }
         // 注册表在**本线程**（JavaFX 线程）解析好再传进去——`transfer` 是个**普通**字段，
         // 它不是线程安全的载体（见 [start] 里 `bridge.gc()` 那段说明）。
         removeShapes(sel, transfer?.gc()?.pickRegistry)
@@ -1253,8 +1286,10 @@ class JfglDemoApp : Application() {
             val py = if (previewY.isNaN()) anchorY else previewY
             val outline = twoPointPreviewOutline(kind, ax, anchorY, px, py)
             if (outline != null) {
-                strokeDashedPolyline(gc, outline, closed = kind != ShapeKind.LINE,
-                    dashOn = PREVIEW_DASH_ON, dashOff = PREVIEW_DASH_OFF)
+                strokeDashedPolyline(
+                    gc, outline, closed = kind != ShapeKind.LINE,
+                    dashOn = PREVIEW_DASH_ON, dashOff = PREVIEW_DASH_OFF
+                )
                 // ★ **末尾探针**（只在自检模式下写，见 [previewDashedFrames]）。
                 //   位置有讲究：写在 `strokeDashedPolyline` **之后**，所以它证明的是
                 //   "整段调用都返回了"——而 GL 线程的异常在本项目是被 openglfx 静默吞掉的，
@@ -1270,7 +1305,9 @@ class JfglDemoApp : Application() {
         } else {
             // ② 轨迹型：与第一版一致
             val sx = dragStartX
-            if (sx.isNaN()) { gc.restore(); return }
+            if (sx.isNaN()) {
+                gc.restore(); return
+            }
             val pts = trajectory
             if (pts.size >= 4) gc.strokePolyline(pts, closed = false)
         }
@@ -1434,6 +1471,7 @@ class JfglDemoApp : Application() {
             status.text = "框选到 ${ids.size} 个图形"
         }
     }
+
     private fun buildMenuBar(): MenuBar {
         val modeGroup = ToggleGroup()
         fun modeItem(m: Mode) = RadioMenuItem(m.label).apply {
@@ -1453,6 +1491,7 @@ class JfglDemoApp : Application() {
             }
             modeMenuItems[m] = this     // 只给自检用（第 8~10 条按菜单动作驱动）
         }
+
         val modeMenu = Menu("模式").apply { items.addAll(Mode.entries.map { modeItem(it) }) }
 
         val kindGroup = ToggleGroup()
@@ -1747,7 +1786,7 @@ class JfglDemoApp : Application() {
             check(
                 "脚本超时", false,
                 "已过 $selfTestPulses 次脉冲（帧计数 $frameCount），停在「${selfTestSteps.getOrNull(selfTestStep)?.title}」" +
-                    "——它之后的断言一条都没被评估"
+                        "——它之后的断言一条都没被评估"
             )
             return selfTestFinish()
         }
@@ -1833,7 +1872,7 @@ class JfglDemoApp : Application() {
                 // 而它的症状（下一次运行的行为）与这里毫无关系，不写下来就查不到。
                 System.err.println(
                     "[自检-合成] ★ 警告：Platform.exit() 之后 ${DISPOSE_TIMEOUT_SECONDS} 秒内" +
-                        " stop()/dispose() 没跑完，直接退出（这一轮会漏掉一批 GL/D3D 对象）"
+                            " stop()/dispose() 没跑完，直接退出（这一轮会漏掉一批 GL/D3D 对象）"
                 )
             }
             System.out.flush()
@@ -1873,7 +1912,7 @@ class JfglDemoApp : Application() {
             if (!selfTestDone.await(SELFTEST_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                 println(
                     "[自检-合成] 超时：${SELFTEST_TIMEOUT_SECONDS} 秒内没跑完，且**脉冲已经停了**" +
-                        "（窗口被最小化/遮挡时 JavaFX 会暂停主定时器，`selfTestTick` 一次都不会再被调）"
+                            "（窗口被最小化/遮挡时 JavaFX 会暂停主定时器，`selfTestTick` 一次都不会再被调）"
                 )
                 println("[自检-合成] 已评估 $selfTestStep/${selfTestSteps.size} 条断言，失败 $selfTestFailures 项")
                 System.out.flush()
@@ -2100,13 +2139,13 @@ class JfglDemoApp : Application() {
                         geomOk && previewGrew > 0
                 check(
                     "① 点两下画出矩形（shapes 0→1、状态栏「已画：」、**设备坐标等于局部×缩放**、" +
-                        "**虚线预览真的画了**)",
+                            "**虚线预览真的画了**)",
                     ok,
                     "shapes.size=${s.size}，第一个=${s.firstOrNull()?.shape?.describe() ?: "无"}" +
-                        "（pickId=$selfTestAId），状态栏=「${status.text}」；" +
-                        "设备坐标实测=(${b?.x},${b?.y},${b?.width})，期望=($expX,$expY,$expW)" +
-                        "（= 局部 (${nx(0.06)},${ny(0.10)}) × deviceScale $scale），容差 1px；" +
-                        "虚线预览画了 $previewGrew 帧（期望 ≥1）"
+                            "（pickId=$selfTestAId），状态栏=「${status.text}」；" +
+                            "设备坐标实测=(${b?.x},${b?.y},${b?.width})，期望=($expX,$expY,$expW)" +
+                            "（= 局部 (${nx(0.06)},${ny(0.10)}) × deviceScale $scale），容差 1px；" +
+                            "虚线预览画了 $previewGrew 帧（期望 ≥1）"
                 )
             }
         ),
@@ -2135,7 +2174,7 @@ class JfglDemoApp : Application() {
                 check(
                     "② 右键单击图形内部 → 命中并选中（回调真的被交付了）", ok,
                     "selection=$sel（期望 {${selfTestAId}}），命中回调本次 ${pickHitCount - selfTestHitBefore} 次" +
-                        "（累计 $pickHitCount）/ 未命中累计 $pickMissCount 次，状态栏=「${status.text}」"
+                            "（累计 $pickHitCount）/ 未命中累计 $pickMissCount 次，状态栏=「${status.text}」"
                 )
             }
         ),
@@ -2161,7 +2200,7 @@ class JfglDemoApp : Application() {
                 check(
                     "③ 重叠处命中的是后画的那个（z 序，号更大）", ok,
                     "shapes.size=${s.size}，第一个号=$selfTestAId，第二个=${b?.shape?.describe()}" +
-                        "（号=${b?.pickId}），selection=$sel，状态栏=「${status.text}」"
+                            "（号=${b?.pickId}），selection=$sel，状态栏=「${status.text}」"
                 )
             }
         ),
@@ -2195,8 +2234,8 @@ class JfglDemoApp : Application() {
                 check(
                     "④ 只描边的图形：点内部**不**命中（拾取只看几何，与填充无关）", ok,
                     "shapes.size=${s.size}，第三个=${c?.describe()}（样式=${c?.style}），" +
-                        "selection=$sel，未命中回调本次 ${pickMissCount - selfTestMissBefore} 次" +
-                        "（累计 $pickMissCount），状态栏=「${status.text}」"
+                            "selection=$sel，未命中回调本次 ${pickMissCount - selfTestMissBefore} 次" +
+                            "（累计 $pickMissCount），状态栏=「${status.text}」"
                 )
             }
         ),
@@ -2215,7 +2254,8 @@ class JfglDemoApp : Application() {
         Step(
             "⑤ ★ 圆的尺规：圆心 = 锚点、半径 = 锚点到第二点的距离",
             listOf(
-                Segment(6, drive = { fireKind(ShapeKind.CIRCLE); clickAt(0.22, 0.58) },
+                Segment(
+                    6, drive = { fireKind(ShapeKind.CIRCLE); clickAt(0.22, 0.58) },
                     until = { !anchorX.isNaN() }),
                 Segment(6, drive = { clickAt(0.30, 0.70) }),
             ),
@@ -2233,10 +2273,10 @@ class JfglDemoApp : Application() {
                 val ok = s.size == 4 && c != null && dCenter <= 1.0 && dR <= 1.0
                 check(
                     "⑤ ★ 圆的尺规：圆心 = **锚点**（不是两点中点）、半径 = **锚点到第二点的距离**" +
-                        "（不是 min(|dx|,|dy|)/2）", ok,
+                            "（不是 min(|dx|,|dy|)/2）", ok,
                     "shapes.size=${s.size}，最后一个=${c?.describe() ?: "无（不是圆）"}；" +
-                        "圆心实测=(${c?.cx},${c?.cy})，期望锚点=($ax,$ay)，偏差=${"%.3f".format(dCenter)}px；" +
-                        "半径实测=${c?.r}，期望=$expR（= hypot 两个设备像素点），偏差=${"%.3f".format(dR)}px；容差 1px"
+                            "圆心实测=(${c?.cx},${c?.cy})，期望锚点=($ax,$ay)，偏差=${"%.3f".format(dCenter)}px；" +
+                            "半径实测=${c?.r}，期望=$expR（= hypot 两个设备像素点），偏差=${"%.3f".format(dR)}px；容差 1px"
                 )
             }
         ),
@@ -2252,7 +2292,8 @@ class JfglDemoApp : Application() {
         Step(
             "⑥ Esc 取消「已定第一点」",
             listOf(
-                Segment(6, drive = { selfTestSizeBeforeEsc = shapes.get().size; clickAt(0.42, 0.82) },
+                Segment(
+                    6, drive = { selfTestSizeBeforeEsc = shapes.get().size; clickAt(0.42, 0.82) },
                     until = { !anchorX.isNaN() }),
                 Segment(6, drive = { fireEscKey() }, until = { anchorX.isNaN() }),
                 // 再点一下：**不该**接着上一点画东西，而应该只是重新定了个第一点。
@@ -2265,8 +2306,8 @@ class JfglDemoApp : Application() {
                 check(
                     "⑥ Esc 取消：取消后 shapes 不变，且再点一下**不会**接着上一点画出来", ok,
                     "按 Esc 之前 shapes.size=$selfTestSizeBeforeEsc（期望 >0），" +
-                        "三步走完 shapes.size=$sizeNow（期望与之前相同）；" +
-                        "（此刻锚点已被最后那一下重新设上，收尾会清掉）"
+                            "三步走完 shapes.size=$sizeNow（期望与之前相同）；" +
+                            "（此刻锚点已被最后那一下重新设上，收尾会清掉）"
                 )
                 // ★ 把这一条自己留下的锚点收掉。不收的话下一条（⑦）一进 `onRelease`
                 //   就会拿它**提交**一个图形，而 ⑦ 的断言是"拖拽什么都不做"——
@@ -2296,7 +2337,7 @@ class JfglDemoApp : Application() {
                 check(
                     "⑦ 两点式上拖拽**什么都不做**（shapes 不变、状态栏提示「请点两下」）", ok,
                     "拖之前 shapes.size=$selfTestSizeBeforeDrag（期望 >0），拖之后 ${shapes.get().size}；" +
-                        "状态栏=「${status.text}」（期望含「请点两下」）"
+                            "状态栏=「${status.text}」（期望含「请点两下」）"
                 )
             }
         ),
@@ -2360,9 +2401,9 @@ class JfglDemoApp : Application() {
                 check(
                     "⑨ 合成 Delete 键删掉选中（走 Scene 的按键处理器），原位置不再命中", ok,
                     "删除前 shapes.size=${selfTestDeleteBefore}（期望 4），删除那一刻状态栏=「$selfTestDeleteStatus」" +
-                        "（期望以「已删除 4 个图形 · 剩 0 个」开头），删后 shapes.size=${shapes.get().size}，" +
-                        "未命中回调本次 ${pickMissCount - selfTestMissBefore} 次（累计 $pickMissCount），" +
-                        "状态栏（点击后）=「${status.text}」"
+                            "（期望以「已删除 4 个图形 · 剩 0 个」开头），删后 shapes.size=${shapes.get().size}，" +
+                            "未命中回调本次 ${pickMissCount - selfTestMissBefore} 次（累计 $pickMissCount），" +
+                            "状态栏（点击后）=「${status.text}」"
                 )
             }
         ),
@@ -2380,7 +2421,8 @@ class JfglDemoApp : Application() {
                 // 第二下：提交 D。observe 里记下 D 的号——最后那条断言要判的正是
                 // "那个被回收的号"，而它只有在 D **真的被画出来之后**才存在
                 //（所以 observe 挂在这一段，不能挂在定锚点那一段）。
-                Segment(6, drive = { clickAt(0.70, 0.72) },
+                Segment(
+                    6, drive = { clickAt(0.70, 0.72) },
                     observe = { selfTestDId = shapes.get().lastOrNull()?.pickId ?: 0 }),
                 // **右键**单击 D 的内部 → 选中集 = {D}。**这一步的落定要等**（拾取往返 2~3 帧），
                 // 所以它单独占一段：`until` 等"命中回调交付了"（**不是**等"选中集等于 {D}"，
@@ -2416,9 +2458,9 @@ class JfglDemoApp : Application() {
                 check(
                     "⑩ ★ 框选读回落地前按 Delete：LIFO 回收的号不该被高亮", ok,
                     "钩子执行 $selfTestDeleteHookRuns 次；那一次读回命中的号=${selfTestHookHitIds}" +
-                        "（含被删的 $selfTestDId=$sawD）；点中 D=${selfTestArmed}；" +
-                        "新图形=${e?.shape?.describe()}（号=${e?.pickId}，复用了那个号=$recycled）；" +
-                        "selection=${selection.get()}"
+                            "（含被删的 $selfTestDId=$sawD）；点中 D=${selfTestArmed}；" +
+                            "新图形=${e?.shape?.describe()}（号=${e?.pickId}，复用了那个号=$recycled）；" +
+                            "selection=${selection.get()}"
                 )
             }
         ),
@@ -2441,7 +2483,7 @@ class JfglDemoApp : Application() {
                 check(
                     "⑪ 文本模式：合成 press+release 落下一个 TextShape", ok,
                     "shapes.size=${s.size}，最后一个是 ${last?.describe() ?: "无"}" +
-                        "（pickId=${s.lastOrNull()?.pickId ?: -1}），状态栏=「${status.text}」"
+                            "（pickId=${s.lastOrNull()?.pickId ?: -1}），状态栏=「${status.text}」"
                 )
             }
         ),
@@ -2525,15 +2567,20 @@ class JfglDemoApp : Application() {
         Step(
             "⑭ ★ 四种图型遍历",
             listOf(
-                Segment(12, drive = { chartKindStep(1) }, until = { chartDrawnAfterStep() },
+                Segment(
+                    12, drive = { chartKindStep(1) }, until = { chartDrawnAfterStep() },
                     observe = { selfTestKindReadings.add(reading()) }),
-                Segment(12, drive = { chartKindStep(2) }, until = { chartDrawnAfterStep() },
+                Segment(
+                    12, drive = { chartKindStep(2) }, until = { chartDrawnAfterStep() },
                     observe = { selfTestKindReadings.add(reading()) }),
-                Segment(12, drive = { chartKindStep(3) }, until = { chartDrawnAfterStep() },
+                Segment(
+                    12, drive = { chartKindStep(3) }, until = { chartDrawnAfterStep() },
                     observe = { selfTestKindReadings.add(reading()) }),
-                Segment(12, drive = { chartKindStep(0) }, until = { chartDrawnAfterStep() },
+                Segment(
+                    12, drive = { chartKindStep(0) }, until = { chartDrawnAfterStep() },
                     observe = { selfTestKindReadings.add(reading()) }),
-                Segment(12, drive = { chartKindStep(1) }, until = { chartDrawnAfterStep() },
+                Segment(
+                    12, drive = { chartKindStep(1) }, until = { chartDrawnAfterStep() },
                     observe = { selfTestKindReadings.add(reading()) }),
             ),
             {
@@ -2553,10 +2600,10 @@ class JfglDemoApp : Application() {
                 } else "只记到 ${r.size} 步"
                 check(
                     "⑭ ★ 遍历四种图型：每换一种就重建（身份跳变）、切回旧的复用（身份回归）；" +
-                        "而号**不随切换增长**（切走的那两条被库回收、号被归还）", ok,
+                            "而号**不随切换增长**（切走的那两条被库回收、号被归还）", ok,
                     "$series ；起点（折线）身份=$selfTestIdentityKind0、进入图表模式时号=$selfTestSizeAfterKind0；" +
-                        "图表系列一共占 $chartIds 个拾取号（上限 8 = 4 图型 × 2 系列）。" +
-                        "四个号读数必须是**不增**的——递增就说明回收没发生（每换一种新图型 +2）"
+                            "图表系列一共占 $chartIds 个拾取号（上限 8 = 4 图型 × 2 系列）。" +
+                            "四个号读数必须是**不增**的——递增就说明回收没发生（每换一种新图型 +2）"
                 )
             }
         ),

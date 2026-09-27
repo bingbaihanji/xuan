@@ -27,6 +27,8 @@ public final class Chart {
 
     private final List<Layer> layers = new ArrayList<>();
 
+    private final ChartInteraction interaction = new ChartInteraction();
+
     // ------------------------------------------------------------------
     // 装配配置：标题、图例、间距
     //
@@ -202,6 +204,11 @@ public final class Chart {
             out.addAll(layer.series());
         }
         return Collections.unmodifiableList(out);
+    }
+
+    /** 返回线程安全的 hover 交互状态。 */
+    public ChartInteraction interaction() {
+        return interaction;
     }
 
     // ------------------------------------------------------------------

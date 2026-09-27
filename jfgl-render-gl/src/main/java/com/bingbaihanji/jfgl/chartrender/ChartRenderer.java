@@ -369,6 +369,67 @@ public final class ChartRenderer implements Disposable {
             painter.end();
         }
         draw(chart, layout.plotRect(), viewportWidth, viewportHeight);
+        drawInteraction(chart, layout.plotRect());
+    }
+
+    /** 绘制当前 hover 的十字线、命中点和可配置提示框。 */
+    private void drawInteraction(Chart chart, Rect plot) {
+        if (painter == null || !chart.interaction().config().enabled()) {
+            return;
+        }
+        com.bingbaihanji.jfgl.chart.ChartHover hover = chart.interaction().probe(chart, plot);
+        if (hover == null) {
+            return;
+        }
+        var config = chart.interaction().config();
+        painter.begin(plot);
+        try {
+            if (config.crosshairVisible()) {
+                painter.strokeDashedLine(plot.x, hover.screenY(), plot.x + plot.width,
+                        hover.screenY(), config.crosshairWidth(), config.dashLength(),
+                        config.crosshairColor());
+                painter.strokeDashedLine(hover.screenX(), plot.y, hover.screenX(),
+                        plot.y + plot.height, config.crosshairWidth(), config.dashLength(),
+                        config.crosshairColor());
+            }
+            painter.fillRect(hover.screenX() - 3f, hover.screenY() - 3f, 6f, 6f,
+                    config.crosshairColor());
+            if (config.tooltipVisible()) {
+                drawTooltip(painter, hover, plot, config);
+            }
+        } finally {
+            painter.end();
+        }
+    }
+
+    private static void drawTooltip(ChartPainter painter,
+                                    com.bingbaihanji.jfgl.chart.ChartHover hover,
+                                    Rect plot,
+                                    com.bingbaihanji.jfgl.chart.ChartInteractionConfig config) {
+        float width = 0f;
+        float lineHeight = config.tooltipFontSize() * 1.4f;
+        for (var line : hover.lines()) {
+            width = Math.max(width, painter.width(line.label() + ": " + line.value(),
+                    config.tooltipFontSize()));
+        }
+        width += config.tooltipPadding() * 2f;
+        float height = hover.lines().size() * lineHeight + config.tooltipPadding() * 2f;
+        float x = hover.screenX() + config.tooltipOffset();
+        float y = hover.screenY() - height - config.tooltipOffset();
+        if (x + width > plot.x + plot.width) x = hover.screenX() - width - config.tooltipOffset();
+        if (y < plot.y) y = hover.screenY() + config.tooltipOffset();
+        x = Math.max(plot.x, Math.min(x, plot.x + plot.width - width));
+        y = Math.max(plot.y, Math.min(y, plot.y + plot.height - height));
+
+        painter.fillRect(x, y, width, height, config.tooltipBackground());
+        painter.strokeRect(x, y, width, height, 1f, config.tooltipBorder());
+        float baseline = y + config.tooltipPadding() + config.tooltipFontSize();
+        for (var line : hover.lines()) {
+            painter.drawText(line.label() + ": " + line.value(),
+                    x + config.tooltipPadding(), baseline,
+                    config.tooltipFontSize(), config.tooltipText());
+            baseline += lineHeight;
+        }
     }
 
     /**

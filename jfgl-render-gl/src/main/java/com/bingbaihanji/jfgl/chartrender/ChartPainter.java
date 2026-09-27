@@ -79,4 +79,14 @@ public interface ChartPainter extends ChartTextMetrics {
      * @param argb 颜色，{@code 0xAARRGGBB}
      */
     void fillRect(float x, float y, float width, float height, int argb);
+
+    /** 画一条实线。 */
+    void strokeLine(float x1, float y1, float x2, float y2, float width, int argb);
+
+    /** 画一条由等长线段和间隙组成的虚线。 */
+    void strokeDashedLine(float x1, float y1, float x2, float y2,
+                          float width, float dashLength, int argb);
+
+    /** 画一个轴对齐矩形边框。 */
+    void strokeRect(float x, float y, float width, float height, float lineWidth, int argb);
 }

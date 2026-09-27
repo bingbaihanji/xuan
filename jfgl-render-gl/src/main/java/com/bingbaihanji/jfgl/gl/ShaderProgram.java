@@ -22,7 +22,9 @@ import static org.lwjgl.opengl.GL20.*;
 public class ShaderProgram implements Disposable {
 
     /** 着色器程序 ID */
-    private final int programId;
+    private int programId;
+
+    private boolean disposed;
 
     /**
      * uniform 名字 → 位置。程序链接后位置就固定了，不必每次现查。
@@ -97,6 +99,7 @@ public class ShaderProgram implements Disposable {
      * 激活此着色器程序，用于后续的绘制调用。
      */
     public void use() {
+        checkNotDisposed();
         glUseProgram(programId);
     }
 
@@ -122,6 +125,7 @@ public class ShaderProgram implements Disposable {
      * @return uniform 位置，未找到时为 -1
      */
     public int getUniformLocation(String name) {
+        checkNotDisposed();
         Integer cached = uniformLocations.get(name);
         if (cached != null) {
             return cached;
@@ -200,6 +204,9 @@ public class ShaderProgram implements Disposable {
      */
     @Override
     public void dispose() {
+        if (disposed) {
+            return;
+        }
         unuse();
         if (vertexShaderId != 0) {
             glDetachShader(programId, vertexShaderId);
@@ -212,5 +219,13 @@ public class ShaderProgram implements Disposable {
             fragmentShaderId = 0;
         }
         glDeleteProgram(programId);
+        programId = 0;
+        disposed = true;
+    }
+
+    private void checkNotDisposed() {
+        if (disposed) {
+            throw new IllegalStateException("着色器程序已释放");
+        }
     }
 }

@@ -15,11 +15,13 @@ import static org.lwjgl.opengl.GL13.glActiveTexture;
  */
 public class Texture implements Disposable {
 
-    private final int textureId;
+    private int textureId;
 
     private final int width;
 
     private final int height;
+
+    private boolean disposed;
 
     /**
      * 用项目统一的 ARGB 像素数据创建一张纹理。
@@ -29,21 +31,16 @@ public class Texture implements Disposable {
      * @param pixels 像素数据，每个 int 为 {@code 0xAARRGGBB}
      */
     public Texture(int width, int height, int[] pixels) {
+        if (width <= 0 || height <= 0) {
+            throw new IllegalArgumentException("纹理尺寸必须为正数：" + width + "x" + height);
+        }
+        if (pixels == null || pixels.length != width * height) {
+            throw new IllegalArgumentException("像素数量必须等于纹理面积");
+        }
         this.width = width;
         this.height = height;
 
-        // int[] 拆成字节缓冲（GL 只接受字节流）
-        ByteBuffer buffer = BufferUtils.createByteBuffer(width * height * 4);
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                int pixel = pixels[y * width + x];
-                buffer.put((byte) ((pixel >> 0) & 0xFF));   // 红
-                buffer.put((byte) ((pixel >> 8) & 0xFF));   // 绿
-                buffer.put((byte) ((pixel >> 16) & 0xFF));  // 蓝
-                buffer.put((byte) ((pixel >> 24) & 0xFF));  // 透明
-            }
-        }
-        buffer.flip();
+        ByteBuffer buffer = argbToRgba(width, height, pixels);
 
         // 建纹理并设参数
         textureId = glGenTextures();
@@ -65,12 +62,14 @@ public class Texture implements Disposable {
      * @param unit 纹理单元（从 0 开始，例如 {@code GL_TEXTURE0} 就是 0）
      */
     public void bind(int unit) {
+        checkNotDisposed();
         glActiveTexture(GL_TEXTURE0 + unit);
         glBindTexture(GL_TEXTURE_2D, textureId);
     }
 
     /** 从当前活动的纹理单元上解绑。 */
     public void unbind() {
+        checkNotDisposed();
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
@@ -80,6 +79,7 @@ public class Texture implements Disposable {
      * @return 纹理名
      */
     public int getTextureId() {
+        checkNotDisposed();
         return textureId;
     }
 
@@ -103,6 +103,28 @@ public class Texture implements Disposable {
 
     @Override
     public void dispose() {
-        glDeleteTextures(textureId);
+        if (!disposed) {
+            glDeleteTextures(textureId);
+            textureId = 0;
+            disposed = true;
+        }
+    }
+
+    private void checkNotDisposed() {
+        if (disposed) {
+            throw new IllegalStateException("纹理已释放");
+        }
+    }
+
+    /** 将公共 API 的 ARGB 像素转换为 OpenGL 的 RGBA 字节序，供无上下文测试复用。 */
+    static ByteBuffer argbToRgba(int width, int height, int[] pixels) {
+        ByteBuffer buffer = BufferUtils.createByteBuffer(width * height * 4);
+        for (int pixel : pixels) {
+            buffer.put((byte) ((pixel >>> 16) & 0xFF));
+            buffer.put((byte) ((pixel >>> 8) & 0xFF));
+            buffer.put((byte) (pixel & 0xFF));
+            buffer.put((byte) ((pixel >>> 24) & 0xFF));
+        }
+        return buffer.flip();
     }
 }
