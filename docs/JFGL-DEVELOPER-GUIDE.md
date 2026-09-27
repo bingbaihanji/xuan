@@ -165,7 +165,7 @@ gc.dashPattern = null                   // 回到实线
 gc.beginPath()
 gc.moveTo(40f, 80f)
 gc.lineTo(120f, 80f)
-gc.quadTo(160f, 20f, 220f, 80f)
+gc.quadraticCurveTo(160f, 20f, 220f, 80f)
 gc.bezierCurveTo(260f, 120f, 320f, 20f, 380f, 80f)
 gc.closePath()
 gc.fillPath()

@@ -268,7 +268,7 @@ gc.dashPattern = null                          // 回到实线
 beginPath()
 moveTo(x, y)
 lineTo(x, y)
-quadTo(cx, cy, x, y)                                  // 二次贝塞尔
+quadraticCurveTo(cx, cy, x, y)                        // 二次贝塞尔
 bezierCurveTo(c1x, c1y, c2x, c2y, x, y)               // 三次贝塞尔
 closePath()
 

@@ -652,10 +652,17 @@ public final class Main extends Application {
                         //   因为"阶梯的平滑该长什么样"没有答案）。
                         .smooth(true));
 
-        chart.interaction().setConfig(ChartInteractionConfig.defaults()
-                .crosshairColor(0xC8FF9BC0)
-                .tooltipColors(0xF02D1F2B, 0xFFFF7CAB, 0xFFFFF3F8)
-                .formatter((value, range) -> String.format(Locale.ROOT, "%.2f", value)));
+        chart.interaction().setConfig(
+                ChartInteractionConfig.defaults()
+                        .crosshairColor(0xC8FF9BC0)
+                        .tooltipColors(0xF02D1F2B, 0xFFFF7CAB, 0xFFFFF3F8)
+                        .tooltipFontSize(18)
+                        .formatter((value, range) -> String.format(Locale.ROOT, "%.2f", value))
+
+        );
+        // 设置文字大小
+        chart.axisTitleFontSize(18);
+
         return chart;
     }
 

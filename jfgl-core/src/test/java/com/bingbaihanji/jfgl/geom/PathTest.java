@@ -43,7 +43,7 @@ class PathTest {
     void 二次贝塞尔记录两个点() {
         Path p = new Path();
         p.moveTo(0f, 0f);
-        p.quadTo(1f, 2f, 3f, 4f);
+        p.quadraticCurveTo(1f, 2f, 3f, 4f);
         assertEquals(Path.Type.QUAD_TO, p.commandType(1));
         assertEquals(1f, p.commandX(1, 0), 1e-4f);
         assertEquals(2f, p.commandY(1, 0), 1e-4f);
@@ -55,7 +55,7 @@ class PathTest {
     void 三次贝塞尔记录三个点() {
         Path p = new Path();
         p.moveTo(0f, 0f);
-        p.cubicTo(1f, 2f, 3f, 4f, 5f, 6f);
+        p.bezierCurveTo(1f, 2f, 3f, 4f, 5f, 6f);
         assertEquals(Path.Type.CUBIC_TO, p.commandType(1));
         assertEquals(3, p.pointCount(1));
         assertEquals(1f, p.commandX(1, 0), 1e-4f);
@@ -83,14 +83,14 @@ class PathTest {
         for (int i = 0; i < 39; i++) {
             switch (i % 4) {
                 case 0 -> p.moveTo(i * 10f + 1f, i * 10f + 2f);
-                case 1 -> p.quadTo(i * 10f + 1f, i * 10f + 2f, i * 10f + 3f, i * 10f + 4f);
-                case 2 -> p.cubicTo(i * 10f + 1f, i * 10f + 2f, i * 10f + 3f, i * 10f + 4f,
+                case 1 -> p.quadraticCurveTo(i * 10f + 1f, i * 10f + 2f, i * 10f + 3f, i * 10f + 4f);
+                case 2 -> p.bezierCurveTo(i * 10f + 1f, i * 10f + 2f, i * 10f + 3f, i * 10f + 4f,
                         i * 10f + 5f, i * 10f + 6f);
                 default -> p.close();
             }
         }
         // 第 40 条命令固定为三次贝塞尔，使末尾命令携带全部 3 个点，六个坐标都能被核对。
-        p.cubicTo(391f, 392f, 393f, 394f, 395f, 396f);
+        p.bezierCurveTo(391f, 392f, 393f, 394f, 395f, 396f);
 
         assertEquals(40, p.commandCount());
         assertTrue(p.arrayCapacity() > 16, "命令数超过 16 后应已扩容");
@@ -128,7 +128,7 @@ class PathTest {
 
         p.reset();
         // 第二次填充：命令 0 换成三点的 CUBIC_TO，类型、点数与六个坐标全部应被覆盖
-        p.cubicTo(21f, 22f, 23f, 24f, 25f, 26f);
+        p.bezierCurveTo(21f, 22f, 23f, 24f, 25f, 26f);
 
         assertEquals(1, p.commandCount());
         assertEquals(Path.Type.CUBIC_TO, p.commandType(0));

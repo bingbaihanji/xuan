@@ -157,7 +157,7 @@ public final class Path {
      * @param y  端点的 y 坐标
      * @return 此对象，便于链式调用
      */
-    public Path quadTo(float cx, float cy, float x, float y) {
+    public Path quadraticCurveTo(float cx, float cy, float x, float y) {
         return add(Type.QUAD_TO, 2, cx, cy, x, y, 0f, 0f);
     }
 
@@ -173,7 +173,7 @@ public final class Path {
      * @param y   端点的 y 坐标
      * @return 此对象，便于链式调用
      */
-    public Path cubicTo(float c1x, float c1y, float c2x, float c2y, float x, float y) {
+    public Path bezierCurveTo(float c1x, float c1y, float c2x, float c2y, float x, float y) {
         return add(Type.CUBIC_TO, 3, c1x, c1y, c2x, c2y, x, y);
     }
 

@@ -19,7 +19,7 @@ class FlattenerTest {
     @Test
     void 三次贝塞尔被细分成多个点() {
         Path p = new Path();
-        p.moveTo(0f, 0f).cubicTo(0f, 100f, 100f, 100f, 100f, 0f);
+        p.moveTo(0f, 0f).bezierCurveTo(0f, 100f, 100f, 100f, 100f, 0f);
         Flattener f = new Flattener();
         f.flatten(p, 1f);
         assertTrue(f.pointCount() > 5, "曲线应细分成多个点，实际 " + f.pointCount());
@@ -30,7 +30,7 @@ class FlattenerTest {
     @Test
     void 缩放越大细分越密() {
         Path p = new Path();
-        p.moveTo(0f, 0f).cubicTo(0f, 100f, 100f, 100f, 100f, 0f);
+        p.moveTo(0f, 0f).bezierCurveTo(0f, 100f, 100f, 100f, 100f, 0f);
 
         Flattener coarse = new Flattener();
         coarse.flatten(p, 1f);
@@ -46,7 +46,7 @@ class FlattenerTest {
     @Test
     void 曲线端点被精确保留() {
         Path p = new Path();
-        p.moveTo(0f, 0f).quadTo(50f, 100f, 100f, 0f);
+        p.moveTo(0f, 0f).quadraticCurveTo(50f, 100f, 100f, 0f);
         Flattener f = new Flattener();
         f.flatten(p, 1f);
         int last = f.pointCount() - 1;
@@ -78,7 +78,7 @@ class FlattenerTest {
     @Test
     void 显式容差生效() {
         Path p = new Path();
-        p.moveTo(0f, 0f).cubicTo(0f, 100f, 100f, 100f, 100f, 0f);
+        p.moveTo(0f, 0f).bezierCurveTo(0f, 100f, 100f, 100f, 100f, 0f);
 
         Flattener loose = new Flattener();
         loose.flatten(p, 1f, 64f);
@@ -94,7 +94,7 @@ class FlattenerTest {
     @Test
     void 平坦化偏差不超过设备像素容差() {
         Path p = new Path();
-        p.moveTo(0f, 0f).cubicTo(0f, 100f, 100f, 100f, 100f, 0f);
+        p.moveTo(0f, 0f).bezierCurveTo(0f, 100f, 100f, 100f, 100f, 0f);
 
         final float scale = 16f;
         final float tolerance = 0.25f;

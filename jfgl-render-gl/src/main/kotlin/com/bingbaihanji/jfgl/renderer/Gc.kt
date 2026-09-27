@@ -1244,8 +1244,8 @@ class Gc constructor(private val batch: RenderBatch) {
      * @param x  终点 x（用户坐标）
      * @param y  终点 y（用户坐标）
      */
-    fun quadTo(cx: Float, cy: Float, x: Float, y: Float) {
-        path.quadTo(cx, cy, x, y)
+    fun quadraticCurveTo(cx: Float, cy: Float, x: Float, y: Float) {
+        path.quadraticCurveTo(cx, cy, x, y)
     }
 
     /**
@@ -1259,7 +1259,7 @@ class Gc constructor(private val batch: RenderBatch) {
      * @param y   终点 y（用户坐标）
      */
     fun bezierCurveTo(c1x: Float, c1y: Float, c2x: Float, c2y: Float, x: Float, y: Float) {
-        path.cubicTo(c1x, c1y, c2x, c2y, x, y)
+        path.bezierCurveTo(c1x, c1y, c2x, c2y, x, y)
     }
 
     /** 用一条直线回到当前子路径的起点，闭合该子路径。 */
@@ -1436,7 +1436,7 @@ class Gc constructor(private val batch: RenderBatch) {
                 current++
                 continue
             }
-            if (current < 0 || current >= subPaths) {
+            if (current !in 0..<subPaths) {
                 continue
             }
             flags[current] = type == Path.Type.CLOSE

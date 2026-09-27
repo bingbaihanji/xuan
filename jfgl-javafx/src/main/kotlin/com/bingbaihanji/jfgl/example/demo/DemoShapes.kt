@@ -3,8 +3,6 @@ package com.bingbaihanji.jfgl.example.demo
 import com.bingbaihanji.jfgl.renderer.Gc
 import com.bingbaihanji.jfgl.util.Rect
 import kotlin.math.abs
-import kotlin.math.floor
-import kotlin.math.hypot
 
 /**
  * **笔位十字**的颜色（橙）。
@@ -209,7 +207,7 @@ sealed interface Shape {
             // 只描边不填充——一条开放曲线的"内部"没有定义。
             var i = 2
             while (i + 3 < points.size) {
-                gc.quadTo(points[i], points[i + 1], (points[i] + points[i + 2]) / 2f, (points[i + 1] + points[i + 3]) / 2f)
+                gc.quadraticCurveTo(points[i], points[i + 1], (points[i] + points[i + 2]) / 2f, (points[i + 1] + points[i + 3]) / 2f)
                 i += 2
             }
             gc.lineTo(points[points.size - 2], points[points.size - 1])
