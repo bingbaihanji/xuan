@@ -341,11 +341,13 @@ class JfglDemoApp : Application() {
     /**
      * 自检专用的**末尾探针**：[drawDragPreview] 的两点式**虚线分支真的画完了**的帧数。
      *
-     * <p><strong>为什么在调用方、不在 `strokeDashedPolyline` 里</strong>：那支助手的闸门是
-     * `DemoShapeMath.kt` 里那几条**判据的单元测试**（它们只比较布尔值、不跑循环），
-     * 而"这一段接线真的通了"只有这里能证——`drawDragPreview` 跑在 GL 线程上，
+     * <p><strong>为什么在调用方、不在被调的那个绘制里</strong>：2026-09-28 之前这里调的是一支
+     * demo 自带的虚线助手（`strokeDashedPolyline`），它的闸门是 `DemoShapeMath.kt` 里那几条
+     * **判据的单元测试**（只比较布尔值、不跑循环）；现在改调 `Gc.strokePolyline`，
+     * 弧长切分在库里、有 `PathVerifier` 第 8 个变体按像素钉着——**但那个变体证的是
+     * "虚线画得对"，证不了"这一段接线通了"**：`drawDragPreview` 跑在 GL 线程上，
      * 帧缓冲读不回来，且 GL 线程的异常在本项目**被 openglfx 的原生回调吞掉**
-     * （"少画了一帧"与"这一帧抛了异常"在画面上长得一样）。
+     * （"少画了一帧"与"这一帧抛了异常"在画面上长得一样）。所以这个探针仍然需要。
      *
      * <p>它记的是"**锚点已定 → 鼠标移动过 → 轮廓非退化 → 虚线描边调用返回了**"这一整条链：
      * 锚点刚设上时 `previewX/Y` 还等于锚点本身，RECT 的轮廓在那里是零宽/零高
@@ -1286,12 +1288,24 @@ class JfglDemoApp : Application() {
             val py = if (previewY.isNaN()) anchorY else previewY
             val outline = twoPointPreviewOutline(kind, ax, anchorY, px, py)
             if (outline != null) {
-                strokeDashedPolyline(
-                    gc, outline, closed = kind != ShapeKind.LINE,
-                    dashOn = PREVIEW_DASH_ON, dashOff = PREVIEW_DASH_OFF
-                )
+                // ★ 虚线现在由 **`Gc` 的状态字段**提供（2026-09-28 接上公开 API）：
+                //   设一次模式，然后**照常描边**——弧长切分在库里做。
+                //
+                //   此前这里调的是 `DemoShapes.strokeDashedPolyline`：一份约 100 行的
+                //   手写弧长切分，还自带 `isUsableDashPattern` / `MAX_DASH_SEGMENTS`
+                //   两道守卫（防的是"迭代次数无上界 ⇒ GL 线程卡死"）。
+                //   **那份守卫现在不需要了**——同样的死循环在库里被修掉了
+                //   （`StrokeGenerator.strokeDashed` 加了一条"每一项都太短就什么都不画"，
+                //   判据是 `StrokeDashTest` 里带 `@Timeout` 的那条）。
+                //
+                //   ⚠️ `dashPattern` 是**状态栈里的一员**，而本函数开头有 `gc.save()`，
+                //   所以其实不复位也安全；显式复位是为了让"这一段用虚线"读起来一眼可见。
+                gc.dashPattern = floatArrayOf(PREVIEW_DASH_ON, PREVIEW_DASH_OFF)
+                gc.dashPhase = 0f
+                gc.strokePolyline(outline, closed = kind != ShapeKind.LINE)
+                gc.dashPattern = null
                 // ★ **末尾探针**（只在自检模式下写，见 [previewDashedFrames]）。
-                //   位置有讲究：写在 `strokeDashedPolyline` **之后**，所以它证明的是
+                //   位置有讲究：写在描边**之后**，所以它证明的是
                 //   "整段调用都返回了"——而 GL 线程的异常在本项目是被 openglfx 静默吞掉的，
                 //   "少画一帧"与"这一帧抛了"在画面上长得一样，只有这个计数能把两者分开。
                 if (SELFTEST) previewDashedFrames++
@@ -1342,7 +1356,7 @@ class JfglDemoApp : Application() {
         else -> null
     }
 
-    /** 预览用的圆周折线。段数是**固定的**（预览不追求与 `Gc` 的细分规则一致，见 `strokeDashedPolyline` 的说明）。 */
+    /** 预览用的圆周折线。段数是**固定的**（预览不追求与 `Gc` 的细分规则一致）。 */
     private fun circlePoints(cx: Float, cy: Float, r: Float): FloatArray =
         ellipsePoints(cx, cy, r, r)
 

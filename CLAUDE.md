@@ -88,7 +88,9 @@ mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime
 **退出码 0 要过两道闸门，两道都不可省**（一条命令里跑完）：
 
 1. **`onInit` 里的纯计算自检**（`selfCheckShapeMath`，输出前缀 `[自检]`）——
-   **21 条**，末行也打 `[自检] 全部通过`。它**与自检模式无关**，正常跑 demo 也执行；
+   **12 条**（原 21 条；2026-09-28 删掉 demo 那份虚线绕法时，连带删了钉它的 9 条——
+   那 9 条钉的是 `isUsableDashPattern`，而同一个死循环现在在库里被修掉并有自己的判据了），
+   末行也打 `[自检] 全部通过`。它**与自检模式无关**，正常跑 demo 也执行；
    失败时打 `[自检] 失败 N 项，demo 不可信，退出` 并退 1，
    **不会**打「已评估 k/14」（那句话属于第二道闸门，别把它当成唯一的判据）。
    它崩在断言里时另有一行 stderr 定位（见上面 `stderr.encoding` 那条）。
@@ -1527,6 +1529,7 @@ DSL 的 `jfgl { antialias { msaa = 4 } }`——见「抗锯齿」一节
     于是任何想画虚线的应用都得在应用层重写一遍——`example/demo/DemoShapes.kt` 的
     `strokeDashedPolyline`、`Main.java` 的 `strokeDashedCircle`，两份。
     与「`Gc` 没公开 `ChartTextMetrics`」同族：**能力在库里、但没接到公开 API 上**。
+    **那两份现在都已删除**（见下面那条），`ChartTextMetrics` 那条**仍然在**。
   - **没有"可拾取图元列表"抽象**：每个应用都要自己维护
     `列表 + 可变 pickId + register/unregister 配对 + 选中集的跨线程可见性`。
   - ✅ **已修（2026-09-28）：`Gc` 公开虚线描边——状态字段，不是每个形状加一个重载。**
@@ -1552,11 +1555,23 @@ DSL 的 `jfgl { antialias { msaa = 4 } }`——见「抗锯齿」一节
     所以 `ensureStyleCapacity` 多了一处扩容。⚠️ **漏掉它不会立刻出错**（只是 save 到第 8 层
     之后越界抛异常），最容易在改动里被忘记。
 
-    **应用层的两份绕法**：`Main.java` 的 `strokeDashedCircle`（约 30 行，还得自己防除零）
-    **已删**，改用 `setDashPattern` + 一次普通 `strokeCircle`。
-    ⚠️ **`DemoShapes.strokeDashedPolyline` 仍在**（约 60 行 + `isUsableDashPattern` +
-    `MAX_DASH_SEGMENTS` + `DemoShapeMath` 的 9 条断言 + 自检探针）——它现在**冗余但正确**，
-    拆它是一条独立的改动链（要同时处置那 9 条判据断言与 ⑩/⑩b/⑩c），本次没做。
+    **应用层的两份绕法都删了**（它们正是为同一个缺口写的）：
+    - `Main.java` 的 `strokeDashedCircle`（约 30 行，还得自己防除零）⇒
+      `setDashPattern(...)` + 一次普通 `strokeCircle`；
+    - `DemoShapes.strokeDashedPolyline`（约 100 行）+ 它自带的两道守卫
+      （`isUsableDashPattern` / `MAX_DASH_SEGMENTS`）+ `DemoShapeMath` 里钉那两道守卫的
+      **9 条断言** ⇒ `gc.dashPattern = floatArrayOf(on, off)` + 一次普通 `strokePolyline`。
+      `DemoShapes.kt` 507 → 373 行；`selfCheckShapeMath` 的断言 21 → **12 条**。
+
+    ⚠️ **那两道守卫不是白删的，是被库里的修复取代了**：它们防的是"pattern 太小 ⇒
+    迭代无上界 ⇒ GL 线程卡死"，而同一个死循环在 `StrokeGenerator` 里已经修掉、
+    并且有了自己的判据（`StrokeDashTest` 那条带 `@Timeout` 的）。
+    **顺序不能反**：先删守卫再接公开 API 的话，那段窗口里演示程序是可以被一行配置卡死的。
+
+    ⚠️ **`previewDashedFrames` 那个末尾探针保留**：它证的是"这一段**接线**通了"
+    （锚点 → onMove → 轮廓 → 描边返回了），而 `PathVerifier` 第 8 个变体证的是
+    "虚线**画得对**"——两件事。`drawDragPreview` 跑在 GL 线程上、帧缓冲读不回来，
+    所以只有那个计数能证明这一帧跑到了底。
 
     ### ★ 接上公开 API 时**暴露出的一个死循环**（根因已修）
     `StrokeGenerator.strokeDashed` 的内层循环有一支是
