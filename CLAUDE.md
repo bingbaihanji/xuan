@@ -51,13 +51,13 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
 
 > **⚠️ Windows 下必须带 `-Dstdout.encoding=UTF-8`。**
 > JVM 的 `stdout.encoding` 默认取系统编码（本机实测是 **GBK**），而 `exec:exec`
-> **不会**替你把它设成 UTF-8——于是七个校验器打印的中文断言（含**失败清单**）
+> **不会**替你把它设成 UTF-8——于是八个校验器打印的中文断言（含**失败清单**）
 > 全是乱码。**实测**：同一支 `ChartVerifier`，不加时整份输出不可读，加上之后逐行可读；
 > 失败信息可读恰恰是这些校验器存在的一半理由（一个读不出原因的 FAIL 与没有断言差不多）。
 > 它必须写在 `-Dexec.args` 的值里（即分给那个 fork 出来的 JVM），放在 `-cp` 之前。
 
 > **⚠️ `-Dstderr.encoding=UTF-8` 是**另一个**开关，只写 stdout 那个不够。**
-> 上面那条讲的是 `stdout.encoding`（默认 GBK，会让七个校验器的中文断言全乱）。
+> 上面那条讲的是 `stdout.encoding`（默认 GBK，会让八个校验器的中文断言全乱）。
 > 但 `stderr.encoding` 是**独立的**系统属性，默认同样是 GBK——而**诊断信息走的是 stderr**。
 > 典型受害者是本仓库现有的自检：`ClickDslExample.kt` 的两处
 > `System.err.println("[叠加层] 自检失败：…")`（中文），`JfglDemo.kt` 的四条
@@ -489,6 +489,52 @@ gc.endFrame()
 - **配色归一化成 1×256 LUT**（`ColorMapping.toLut()` 返回 `byte[1024]`，RGBA）。
   热力图换配色 = 换一张纹理，与数据量无关。
 
+#### 坐标系：网格 / 轴线 / 箭头 / 刻度（2026-09-28）
+
+**网格、坐标轴、箭头、刻度线、刻度文字现在由库画**，配置在 `chart/AxisStyle`
+（record + 逐字段 wither），经 `Chart.axisStyle(...)` 装配。在这之前，
+每一个用图表的应用都要自己抄一遍这段（`Main.java` 一份约 70 行、`JfglDemo` 另一份
+约 40 行，写法还不一样），而且**已经抄错过**：`Main.java` 从没声明过
+`tickLabelReserve`，于是它的刻度文字一直画在没留过位置的绘图区之外。
+
+- ★ **`visible` 默认 `false`，这是承重约束不是偏好。** 开了轴绘图区就要让出带子，
+  而 `ChartVerifier` 现有 168 条像素断言**全部**建立在"不设装饰时绘图区 = 外框"上。
+  这条由**两个方向**钉着：默认关时那 168 条一条不动（实测 168 PASS / 0 FAIL），
+  而把默认值改成 `true` ⇒ **10 条现有断言倒**（其中一条直接报"3502 px 不同——
+  `ChartLayout` 在没有装饰时也动了绘图区"）。
+- **`ChartLayout` 里的刻度预留改成"二选一"**：关着用调用方声明的
+  `chart.tickLabelReserve(...)`（**既有行为一字不变**）；开着用库自己算的
+  `tickLength + 字号 × LINE_HEIGHT_FACTOR`，**调用方声明的那个被忽略**。
+  选**覆盖**而不是相加/取大，是因为后两者会让"绘图区到底多大"有两个来源，
+  而绘图区算错只表现为"图小了一圈"、没有任何报错。
+  ⚠️ **代价照实说**：y 轴上很宽的文字（`1000000`）会在预留带边缘被切断——
+  与"装饰裁到带子里、不折行"同一条取舍，**看得见**。要更多空间请加 `Chart.padding`。
+  按实际字宽算是不行的：`Axis.ticks()` 依赖 `displayLength`，而那个来自本函数算出的
+  绘图区——**循环**。所以用与字体无关的可预测口径（与 `LINE_HEIGHT_FACTOR` 那条同源）。
+- **`ChartAxes` 只开一层 `begin(frame)`**（不像 `ChartDecorations` 每个带子各开一层）：
+  轴与刻度跨越绘图区边界、文字在绘图区外，没有"一个带子装得下"的矩形。
+- **坐标系画在数据系列之前**，而刻度文字在绘图区**之外**——数据被 `glScissor`
+  裁在绘图区之内，**盖不到它**。所以应用层不再需要"网格 → flush → 数据 → 刻度"
+  那个两趟写法，`DemoChart` 的那句"顺序是硬约束"随之作废（只剩"背景要 flush 在
+  `drawChart` 之前"这一条）。
+- **网格线只画严格在绘图区内部的主刻度**（`0 < position < displayLength`），
+  两个端点上的与坐标轴重合。⚠️ 这**不是**"跳过 `value == 0`"（应用层的常见写法）——
+  那样会把"y 窗口跨过 0 时中间那条零线"也吃掉。
+- **坐标映射不依赖调用方守约**：`ChartAxes` 用 `tick.position() / displayLength × 绘图区边长`，
+  而**不是**把 `position` 当像素直接加。后者只在调用方把 `setDisplayLength` 设成
+  绘图区尺寸时才对（那是 `ChartRenderLayout` 写明的调用方义务）；前者换一种算法就绕开了它。
+- **验收**：新增第九个校验器 **`AxisVerifier`**（11 条，退出码 0/1）。
+  它证的：默认关时三个轴色**一个像素都没有**（纯增量）；开轴后**网格竖线数 ==
+  内部主 x 刻度数、横线数 == 内部主 y 刻度数**（两个数都从**同一份 `ticks()`** 算出来，
+  不是写死的）；箭头在轴端**上方**（轴线本身伸不到那里）；刻度文字落在预留带里；
+  预留两个方向都恰好 21.8。
+  **变异**：让 `ChartAxes.paint` 直接 return ⇒ **恰好那 4 条像素断言倒**。
+  ⚠️ **写这个校验器时我自己踩了两个坑，都表现为"读数恒为 0"**（四条本来通过的断言
+  被报成失败）：① `glReadPixels` 行序自下而上，行号忘了翻；
+  ② `rgbAt` 返回 24 位 RGB 而常量是 ARGB，**比较两边口径不同**。
+  第二个只有靠"把画面里到底有什么颜色直接印出来"才看得出来——所以
+  `AxisVerifier` 里那两行颜色直方图**是刻意留着的**，见它的注释。
+
 #### 绘制后端（②，`chartrender/`）
 
 - **GPU 里存的是数值，不是屏幕坐标。** 位置在顶点着色器里算
@@ -555,10 +601,10 @@ gc.endFrame()
 - **轴标题与刻度预留带**：`axisTitlesVisible(true)` 打开后 `AxisRange` 的 name/unit
   被画出来（轴 0 → x 轴标题、轴 1 → y 轴标题，形如 `电压 (V)`），**默认关着**——
   打开会让绘图区让出两条带子，而"绘图区变了就是画面变了"（既有图不该被新开关挪像素）。
-  刻度文字仍由**调用方**画，所以"它占多高"是调用方的信息：
-  `chart.tickLabelReserve(BOTTOM/LEFT, px)` 由调用方声明，图表层负责扣掉。
-  带子从外向里是 **图例 → 轴标题带 → 刻度预留 → 绘图区**；
+   带子从外向里是 **图例 → 轴标题带 → 刻度预留 → 绘图区**；
   x 轴标题带横跨**绘图区**（不是整条内框），所以它不会与 y 轴标题带在左下角重叠。
+- ★ **坐标系（网格 / 轴线 / 箭头 / 刻度线 / 刻度文字）已入库，默认关**（2026-09-28）。
+  见下面单独一节「坐标系」——那一段取代了本文档先前"刻度文字仍由调用方画"的说法。
 - **装饰被裁到各自的带子里**（`ChartPainter.begin(Rect band)`）：一项文字比带子宽时，
   后面的部分在带子边缘被切断，而不是越过边界画到别处。折行/省略号都不做（排版决策）。
   **抛异常被明确否掉**：`ChartLayout.compute` 在绘制路径上每帧被调用，而"每帧抛一次"
@@ -733,14 +779,15 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
   给出 `GL_SAMPLES=32` 的多采样画布、`glReadPixels` 同样非法。所以判据只能是 `== 0`。）
   - 多采样 FBO 上 `glReadPixels` 是**非法操作**（实测 `GL_INVALID_OPERATION`，读回全 0。
     注意：不是"读到旧帧"、也不是"读到黑"，是**那次调用整个非法**），而本仓库
-    **靠画布 FBO 回读的那六个像素校验器全部靠它回读**（`Pipeline` / `Path` / `Pick` /
-    `Click` / `Text` / `Chart`）。所以有 `FXGLTransfer.canReadPixels`（= **`msaa == 0`**
+    **靠画布 FBO 回读的那七个像素校验器全部靠它回读**（`Pipeline` / `Path` / `Pick` /
+    `Click` / `Text` / `Chart` / `Axis`）。所以有 `FXGLTransfer.canReadPixels`（= **`msaa == 0`**
     ——**不是 `<= 0`**：负数与 1 都会被驱动变成多采样，见本节开头），
-    七个校验器入口各调一次 `requirePixelReadback(bridge)`——**一份共享判定，不是七份抄写**
+    八个校验器入口各调一次 `requirePixelReadback(bridge)`——**一份共享判定，不是八份抄写**
     （"共用属性名 ≠ 共用判定"是本仓库刚吃过的亏）。`msaa` 非 0 时**明确拒绝**，
     而不是读回全 0 之后报一堆"画面全黑"式的**假失败**：假失败会让人去查渲染，
     而真因在配置里。
-    ⚠️ **第七个 `FftVerifier` 是例外，就地写在这里**（别把"六个"读成"七个"）：它
+    ⚠️ **`FftVerifier` 是例外，就地写在这里**（**别按序号数**——本仓库的校验器数目已经
+    改过两回，序号一律会过期；认名字）：它
     **不画像素**，读的是 SSBO（`glGetBufferSubData`），那条路与画布 FBO 的采样数
     **无关** ⇒ `msaa` 非 0 **不影响它**（实测：挂在 `msaa=4` 下跑，50 条断言全过、
     与 `msaa=0` 逐行相同）。它也挂同一道守卫，但那是**纪律**（七个一律 `msaa=0`
@@ -876,13 +923,13 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
   ⚠️ 本条原来写的是"`vEdge` 是 `float`（只有横向）"——**与代码和规格都相反**，
   而它挂在"下一个人照着判断能不能验"的清单里：信它的人会去找一个不存在的 `float`
   varying，甚至以为第二个分量可以省——而省掉它正是那个"一点 AA 都没有"的坑。
-- **`lineWidth <= 0f` 仍无断言覆盖**（AA 开时它不再画出淡淡一条，但七个校验器里
+- **`lineWidth <= 0f` 仍无断言覆盖**（AA 开时它不再画出淡淡一条，但八个校验器里
   没有这个场景）。与 Task 3 记的是同一条。
 - **`ChartRenderer` 的 3 参构造无任何调用点** ⇒ "不注入 `antialias` 时恒按 AA 关画"
   这条**没有断言盖着**。
-- **回读守卫的"接线"没有闸门**：七处 `FXGLTransfer(msaa = readRequestedMsaa())` 里
+- **回读守卫的"接线"没有闸门**：八处 `FXGLTransfer(msaa = readRequestedMsaa())` 里
   任何一处退回 `FXGLTransfer()`，**那处的守卫就又变成死代码，而没有任何断言会响**
-  （`MsaaVerifier` 只验"属性 → `msaa` 值"这条链与守卫的前提，它验不到"七个入口都读了它"）。
+  （`MsaaVerifier` 只验"属性 → `msaa` 值"这条链与守卫的前提，它验不到"八个入口都读了它"）。
 - **`MSAA_READING` 的字段与进程内被断言的变量没有对过**：它由**手写字符串**拼出
   （`fringe=$fringe core=$coreWhite …`），若把两个字段**写成一致的偏移**（例如
   `fringe=$coreWhite core=$coreWhite`），脚本的跨进程比较照样成立、**两边都看不见**；
@@ -891,7 +938,7 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
 - **DSL 的 `jfgl { antialias { msaa = N } }` 没有端到端证据**：接线读码正确
   （`JFGL.antialiasConfig.msaa` → `JFGLApplication.start` 里那次 `FXGLTransfer(...)`，
   它是**唯一**经 DSL 构造桥接对象的入口），但**没有任何校验器或 demo 走这条路径**
-  （七个校验器与 `MsaaVerifier` 都直接 `new FXGLTransfer(...)`）。
+  （八个校验器与 `MsaaVerifier` 都直接 `new FXGLTransfer(...)`）。
   ⇒ "DSL 里设的 msaa 真的会生效"是**已声明、未验证**——要验它得写一个
   `jfgl { antialias { msaa = 4 } }` 的探针应用（或让 demo 支持该配置）。
 - ⚠️ **上面这批实测都在本机（NVIDIA 4.6）**：MSAA 的样本位置、`fwidth` 的行为都是
@@ -1191,10 +1238,10 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
    ⚠️ **四个数都得带条件**：写成"正确版是 3 种"而不写 `msaa=0`，就是把两次读数混成了一句
    （本条的上一版正是这么写的：限定词只加在了后一半上）。
 
-   ★ 七个校验器的采样数都从**同一个系统属性** `-Djfgl.probe.msaa` 读（解析与
+   ★ 八个校验器的采样数都从**同一个系统属性** `-Djfgl.probe.msaa` 读（解析与
    `MsaaVerifier` **共用一份**，见 `example/MsaaVerifier.kt` 的 `readRequestedMsaa`）
    ⇒ **`-Djfgl.probe.msaa=4` 会让它们在那道守卫上明确拒绝并以 1 退出**。
-   这一条是刻意的：在那之前七个入口全写 `FXGLTransfer()`，`msaa` 恒为默认 0，
+   这一条是刻意的：在那之前八个入口全写 `FXGLTransfer()`，`msaa` 恒为默认 0，
    于是"明确拒绝"**只在有人改源码时才可能触发**——守卫是**死代码**。
 
    改 **FFT / 频谱的数据来源**后跑 `FftVerifier`（退出码 0/1）。
@@ -1305,13 +1352,13 @@ DSL 的 `jfgl { antialias { msaa = 4 } }`——见「抗锯齿」一节
     `#CCCCCC` 与 `#666666`——正好是 4 个子样本的四分档 0.75 / 0.25）、
     **拾取逐项不受影响**。
   - ⚠️ **但有一笔没人记过的连带成本**：**`msaa` 非 0 时画布 FBO 上 `glReadPixels` 非法**
-    （`GL_INVALID_OPERATION`，读回全 0）⇒ **靠画布 FBO 回读的那六个像素校验器立刻
-    全部失去读数能力**（`Pipeline` / `Path` / `Pick` / `Click` / `Text` / `Chart`；
-    **第七个 `FftVerifier` 不在此列**，理由见下一条）。所以 `msaa` 默认必须是 0，
-    且七个校验器入口都有 `requirePixelReadback` 守卫——**统一挂是刻意的**：
+    （`GL_INVALID_OPERATION`，读回全 0）⇒ **靠画布 FBO 回读的那七个像素校验器立刻
+    全部失去读数能力**（`Pipeline` / `Path` / `Pick` / `Click` / `Text` / `Chart` / `Axis`；
+    **`FftVerifier` 不在此列**，理由见下一条）。所以 `msaa` 默认必须是 0，
+    且八个校验器入口都有 `requirePixelReadback` 守卫——**统一挂是刻意的**：
     那个例外将来若改成画像素，守卫已经在了。
   - ⚠️ **"零额外实现成本"假在哪里**：成本不在实现，在**测量**——`msaa` 非 0 之后本仓库
-    最重要的那套验收手段（那六个像素校验器的读数能力）整个失效。
+    最重要的那套验收手段（那七个像素校验器的读数能力）整个失效。
     **"零成本"是只算了实现那一半。**
   - ⚠️ **"全部七个"是一句过度概括**（设计文档 §6.2 原来就是这么写的，
     2026-09-26 已**就地更正为"六个"**；这里留一句是因为那个概括很容易再被推一遍）：
@@ -1602,11 +1649,11 @@ mvn -o install -DskipTests     # 先在仓库根：子模块从本地仓库解�
 mvn -o test                    # 411 / 0 失败 / 2 跳过
 ```
 
-再加**七个校验器**（`PipelineVerifier` / `PathVerifier` / `PickVerifier` /
-`ClickVerifier` / `TextVerifier` / `ChartVerifier` / `FftVerifier`，逐个退出码 0）、
+再加**九个校验器**（`PipelineVerifier` / `PathVerifier` / `PickVerifier` /
+`ClickVerifier` / `TextVerifier` / `ChartVerifier` / `FftVerifier` / **`AxisVerifier`**，
+逐个退出码 0；`AxisVerifier` 是 2026-09-28 坐标系入库时新增的第九个，见「坐标系」一节）、
 **demo 合成事件自检**（`-Djfgl.demo.selftest=1`，21 + 14 条）、
 **MSAA 三档跨进程比对**（`bash jfgl-javafx/scripts/msaa-verify.sh`）。
-0.1.0 这一次九项**全部通过**。
 
 > **⚠️ 跨模块的未提交改动会让 `jfgl-javafx` 编译不过，报错却指向一个不存在的引用。**
 > 实测：`jfgl-core` 里新加了 `Chart.interaction()` 但没 install，

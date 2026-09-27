@@ -31,7 +31,8 @@
 - 📈 **图表**：折线、散点、阶梯、面积、柱状与**频谱**（GPU 上跑 FFT）走实例化绘制，
   数据常驻显存、每帧只上传新增的点，滚动缩放零重传；
   轴、标题、图例、轴标题、间距都可配置（`ChartLayout` / `Chart.title` / `Chart.legendVisible` /
-  `Chart.axisTitlesVisible` / `Chart.tickLabelReserve` / `Chart.padding`）
+  `Chart.axisTitlesVisible` / `Chart.axisStyle`（网格 / 轴线 / 箭头 / 刻度，一台配齐）/
+  `Chart.tickLabelReserve` / `Chart.padding`）
 
 ## 快速开始
 
@@ -440,12 +441,36 @@ gc.charts.drawChart(chart, frame, gc.width, gc.height)   // 装饰 + 数据系�
   会明确抛异常，而不是把标题画成横的。图例四个方向都支持。
 - 绘制入口是 `ChartPainter`（`Gc` 里有一个转发实现）：量文字、画文字、填色块。
   它同时是 `ChartTextMetrics`，所以布局能脱离 GL 单测。
+
+#### 坐标系（网格 / 轴线 / 箭头 / 刻度）
+
+这一套不用自己画了，配一次即可：
+
+```kotlin
+chart.axisStyle(AxisStyle.defaults()
+        .visible(true)                     // ★ 必须显式打开：默认是关的
+        .gridVisible(true).gridColor(0xFF394452).gridWidth(1f)
+        .axisColor(0xFFE3E8EF).axisWidth(1.5f)
+        .arrowsVisible(true).arrowSize(8f)
+        .tickMarksVisible(true).tickLength(5f)
+        .tickLabelsVisible(true).tickLabelFontSize(12f).tickLabelColor(0xFFC7D0DB))
+
+gc.charts.drawChart(chart, frame, gc.width, gc.height)   // 一步画完：装饰 + 坐标系 + 数据
+```
+
+- **默认关**（`visible = false`）：开了轴绘图区就要让出带子，而"绘图区变了就是画面变了"
+  ——既有图不该被一个新开关悄悄挪几像素。所以这个特性是**纯增量**的。
+- **打开之后刻度预留由库自己算**，`chart.tickLabelReserve(...)` 会被**覆盖**
+  （不是相加）。要更多空间请给整张图加 `padding`。
+- **坐标系画在数据系列之前**：网格在数据之下；刻度文字虽在绘图区外，
+  但数据被裁在绘图区之内、**盖不到它**，所以不需要"网格 → flush → 数据 → 刻度"那种两趟写法。
+- 网格线只画**严格在绘图区内部**的主刻度（两端点上的与坐标轴重合）。
 - **轴标题**：`chart.axisTitlesVisible(true)` 打开后，`AxisRange` 的 name/unit 会被画出来
   （`轴 0` 的名字/单位 → x 轴标题、`轴 1` → y 轴标题，文字形如 `电压 (V)`；
   单位为空时只画名字）。它默认**关着**——打开会让绘图区让出两条带子，而"绘图区变了
   就是画面变了"，既有图不该被一个新开关悄悄挪几像素。
-- **刻度文字仍然是调用方画的**（`Axis.ticks()` 只给位置），所以图表层不知道它占多高：
-  `chart.tickLabelReserve(ChartSide.BOTTOM, 18f)` 由调用方声明"我画的刻度文字占多少"，
+- **刻度文字**：现在可以交给库画（见下一条「坐标系」）。仍然自己画时，
+  图表层不知道它占多高，所以由调用方声明：`chart.tickLabelReserve(ChartSide.BOTTOM, 18f)`，
   图表层负责把它从绘图区里扣掉。预留带紧贴绘图区，轴标题带在它**外面**。
 - **装饰被裁到各自的带子里**：一项文字比带子宽时（系列名很长、外框很窄），
   后面的部分在带子边缘被切断，而不是越过边界画到别处。折行与省略号都不做

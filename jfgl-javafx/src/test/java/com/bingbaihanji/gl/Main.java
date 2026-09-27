@@ -3,6 +3,7 @@ package com.bingbaihanji.gl;
 import com.bingbaihanji.jfgl.chart.ArrayChartData;
 import com.bingbaihanji.jfgl.chart.Axis;
 import com.bingbaihanji.jfgl.chart.AxisRange;
+import com.bingbaihanji.jfgl.chart.AxisStyle;
 import com.bingbaihanji.jfgl.chart.AxisType;
 import com.bingbaihanji.jfgl.chart.Chart;
 import com.bingbaihanji.jfgl.chart.ChartInsets;
@@ -11,7 +12,6 @@ import com.bingbaihanji.jfgl.chart.ChartLayout;
 import com.bingbaihanji.jfgl.chart.ChartTextMetrics;
 import com.bingbaihanji.jfgl.chart.ChartType;
 import com.bingbaihanji.jfgl.chart.Series;
-import com.bingbaihanji.jfgl.chart.Tick;
 import com.bingbaihanji.jfgl.glview.FXGLTransfer;
 import com.bingbaihanji.jfgl.renderer.Gc;
 import com.bingbaihanji.jfgl.renderer.PickHit;
@@ -141,10 +141,12 @@ public final class Main extends Application {
 
     /** 两点式的第一点（圆心）；NaN 表示"手上没有已定的圆心"。 */
     private volatile float anchorX = Float.NaN;
+
     private volatile float anchorY = Float.NaN;
 
     /** 预览用的鼠标位置（设备像素）；NaN 表示指针不在画布上。 */
     private volatile float pointerX = Float.NaN;
+
     private volatile float pointerY = Float.NaN;
 
     /** 当前选中的拾取号；0 表示没有选中（0 也是"什么都没命中"的返回值）。 */
@@ -178,6 +180,22 @@ public final class Main extends Application {
 
         // GL 线程每帧只执行当前下拉框对应的绘制方法。
         bridge.onFrame(gc -> {
+            // ★ 抗锯齿（解析式）。**这一个开关管两拨消费者**：① Gc 自己的描边；
+            //   ② 六个图表渲染器（经 `Gc.charts` 那个 supplier 透传给每个系列的 uAntialias）。
+            //   图表曲线的锯齿就是它管的。
+            //
+            //   **默认是关的**（`Gc.antialias` 初值 false），所以"看着有锯齿"是默认行为。
+            //
+            //   ⚠️ 它必须**每帧设**：`antialias` 是 `save`/`restore` 状态栈里的一员，
+            //   而本帧的绘制里到处都有 save/restore（选中高亮、预览、图表装饰…），
+            //   任何一次 restore 都会把值还原回压栈时的样子。
+            //   （`JfglDemo` 为此每帧把菜单开关拷进 gc，同一条理由。）
+            //
+            //   ⚠️ **它对"填充"无效**：`fillRect`/`fillCircle`/面积图的填充这类**面**，
+            //   几何里没有"中心线"，解析式算不出边距——那要靠构造时的 `msaa`
+            //   （见类文档里 MSAA 那段）。所以面积图的**顶边**（描边）会变平滑，
+            //   而它的**填充边缘**不会——两者是两套机制。
+            gc.setAntialias(true);
             // 先兑现 JavaFX 线程交过来的意图，再画——否则刚落下的圆要等下一帧才看得见。
             drainRequests(gc);
             clearBackground(gc);
@@ -605,103 +623,21 @@ public final class Main extends Application {
         };
 
         Rect plot = ChartLayout.compute(chart, frame, metrics).plotRect();
+        // displayLength 仍然要设：它是"数据值 → 显示位置"的比例基准，
+        // 轴与数据系列都靠它（渲染器用的是绘图区边长，本库按比例换算，两者一致）。
         chart.axis(0).setDisplayLength(Math.max(1f, plot.width));
         chart.axis(1).setDisplayLength(Math.max(1f, plot.height));
 
-        // ChartRenderer 只负责数据系列和装饰布局，坐标轴、箭头、网格和刻度
-        // 由应用层绘制。这样可以自由决定轴线样式，也能把业务刻度格式化逻辑留在应用侧。
-        Tick[] xTicks = chart.axis(0).ticks();
-        Tick[] yTicks = chart.axis(1).ticks();
-        drawChartGridAndAxes(gc, plot, xTicks, yTicks);
-
         // 图表数据是立即绘制的，而背景在 Gc 的批次中等待提交。
-        // 先 flush 才能保证 z 序为：背景 -> 图表 -> 标题/tooltip，
-        // 否则帧末提交的背景会把面积和折线覆盖掉，只留下后画的坐标文字。
+        // 先 flush 才能保证 z 序为：背景 -> 图表 -> tooltip，
+        // 否则帧末提交的背景会把面积和折线覆盖掉，只留下后画的 tooltip。
+        //
+        // ★ 从前这里还要在 flush 之前手绘一遍网格与坐标轴、之后手绘一遍刻度文字
+        //   （共约 70 行，且别处还有第二份）。现在那三样都由 `chart.axisStyle` 打开
+        //   的库内绘制负责，且**画在数据系列之前**——刻度文字在绘图区之外，
+        //   而数据被裁在绘图区之内，所以数据盖不住它，不必再分两趟。
         gc.flush();
         gc.getCharts().drawChart(chart, frame, gc.getWidth(), gc.getHeight());
-
-        // 刻度文字放在数据系列和 tooltip 之上，避免被面积填充覆盖。
-        drawChartTickLabels(gc, plot, xTicks, yTicks);
-    }
-
-    /** 绘制网格、x/y 轴线和两端箭头。 */
-    private static void drawChartGridAndAxes(Gc gc, Rect plot, Tick[] xTicks, Tick[] yTicks) {
-        gc.save();
-        gc.setStroke(0xFF394452);
-        gc.setLineWidth(1f);
-
-        for (Tick tick : yTicks) {
-            if (!tick.isMajor() || tick.value() == 0.0) {
-                continue;
-            }
-            float sy = plot.y + plot.height - (float) tick.position();
-            gc.drawLine(plot.x, sy, plot.x + plot.width, sy);
-        }
-        for (Tick tick : xTicks) {
-            if (!tick.isMajor() || tick.value() == 0.0) {
-                continue;
-            }
-            float sx = plot.x + (float) tick.position();
-            gc.drawLine(sx, plot.y, sx, plot.y + plot.height);
-        }
-
-        // x 轴：从左向右；y 轴：从下向上。箭头大小固定在设备像素中。
-        int axisColor = 0xFFE3E8EF;
-        gc.setStroke(axisColor);
-        gc.setLineWidth(1.5f);
-        float xAxisY = plot.y + plot.height;
-        float xAxisRight = plot.x + plot.width;
-        float yAxisX = plot.x;
-        float yAxisTop = plot.y;
-        gc.drawLine(plot.x, xAxisY, xAxisRight, xAxisY);
-        gc.drawLine(yAxisX, xAxisY, yAxisX, yAxisTop);
-        gc.drawLine(xAxisRight, xAxisY, xAxisRight - 8f, xAxisY - 4f);
-        gc.drawLine(xAxisRight, xAxisY, xAxisRight - 8f, xAxisY + 4f);
-        gc.drawLine(yAxisX, yAxisTop, yAxisX - 4f, yAxisTop + 8f);
-        gc.drawLine(yAxisX, yAxisTop, yAxisX + 4f, yAxisTop + 8f);
-
-        // 刻度短线。
-        gc.setLineWidth(1f);
-        for (Tick tick : xTicks) {
-            if (!tick.isMajor()) {
-                continue;
-            }
-            float sx = plot.x + (float) tick.position();
-            gc.drawLine(sx, xAxisY, sx, xAxisY + 5f);
-        }
-        for (Tick tick : yTicks) {
-            if (!tick.isMajor()) {
-                continue;
-            }
-            float sy = plot.y + plot.height - (float) tick.position();
-            gc.drawLine(yAxisX - 5f, sy, yAxisX, sy);
-        }
-        gc.restore();
-    }
-
-    /** 绘制 x/y 轴刻度标签。 */
-    private static void drawChartTickLabels(Gc gc, Rect plot, Tick[] xTicks, Tick[] yTicks) {
-        gc.save();
-        gc.setFill(0xFFC7D0DB);
-        gc.setFontSize(12f);
-
-        for (Tick tick : xTicks) {
-            if (!tick.isMajor() || tick.label().isEmpty()) {
-                continue;
-            }
-            float sx = plot.x + (float) tick.position();
-            float textWidth = gc.measureText(tick.label());
-            gc.drawText(tick.label(), sx - textWidth / 2f, plot.y + plot.height + 22f);
-        }
-        for (Tick tick : yTicks) {
-            if (!tick.isMajor() || tick.label().isEmpty()) {
-                continue;
-            }
-            float sy = plot.y + plot.height - (float) tick.position();
-            float textWidth = gc.measureText(tick.label());
-            gc.drawText(tick.label(), plot.x - textWidth - 9f, sy + 4f);
-        }
-        gc.restore();
     }
 
     /** 构造粉色面积图及其 tooltip 配置。 */
@@ -725,14 +661,28 @@ public final class Main extends Application {
         chart.title("月度数量统计")
                 .axisTitlesVisible(true)
                 .legendVisible(true)
-                .padding(ChartInsets.uniform(8f));
+                .padding(ChartInsets.uniform(8f))
+                // ★ 网格 / 轴线 / 箭头 / 刻度线 / 刻度文字**全部由库画**。
+                //   `AxisStyle.defaults()` 的 visible 是 false（默认关是承重约束，
+                //   见它的类文档），所以要显式打开。
+                //
+                //   打开之后**刻度预留也由库自己算**，`chart.tickLabelReserve(...)` 会被
+                //   覆盖——所以这里不需要（也不应该）再声明一次。
+                //   以前这里没声明过预留，于是刻度文字是画在没留过位置的绘图区之外的。
+                .axisStyle(AxisStyle.defaults().visible(true));
 
         chart.addLayer("统计")
                 .add(new Series("数量", data, ChartType.AREA)
                         .color(0xFFFF5C9A)
                         .lineWidth(2f)
                         .baseline(0f)
-                        .fillAlpha(0.42f));
+                        .fillAlpha(0.42f)
+                        // ★ 平滑曲线：框架里已有（着色器侧 Catmull-Rom），不是应用层要画的东西。
+                        //   对 AREA 而言**只有顶边**平滑，基线那一条照旧是直的。
+                        //   认它的图型：LINE / LINE_AND_MARKERS / AREA；
+                        //   忽略它的是 STEP / SPECTRUM / SCATTER / BAR（不报错，
+                        //   因为"阶梯的平滑该长什么样"没有答案）。
+                        .smooth(true));
 
         chart.interaction().setConfig(ChartInteractionConfig.defaults()
                 .crosshairColor(0xC8FF9BC0)
@@ -751,7 +701,9 @@ public final class Main extends Application {
     private static final class Circle {
 
         final float cx;
+
         final float cy;
+
         final float r;
 
         /** 拾取号；0 表示尚未注册，此时不参与拾取。 */

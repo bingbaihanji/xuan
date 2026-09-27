@@ -304,7 +304,7 @@ public final class ChartLayout {
             xTitleY = bottom - axisBandH;
             bottom = xTitleY - chart.axisTitleGap();
         }
-        bottom -= chart.tickLabelReserve(ChartSide.BOTTOM);
+        bottom -= tickLabelReserve(chart, ChartSide.BOTTOM, metrics);
 
         // 左边：y 轴标题是一行**横排**文字（本层没有旋转文字路径，与左右放的图例
         // 同一条取舍），所以它的带宽由度量决定——这是本类第二处与字体有关的算术。
@@ -318,7 +318,7 @@ public final class ChartLayout {
                     top + (h + axisFontSize * (2f * CENTER_BASELINE_FACTOR)) * 0.5f);
             left += bandW + chart.axisTitleGap();
         }
-        left += chart.tickLabelReserve(ChartSide.LEFT);
+        left += tickLabelReserve(chart, ChartSide.LEFT, metrics);
 
         // ---- 5) 剩下的是绘图区。两个方向都可能被挤成 0（见类文档）----
         Rect plotRect = new Rect(left, top,
@@ -388,6 +388,38 @@ public final class ChartLayout {
     }
 
     /** 每一行文字需要的高度（与字体无关，见类文档）。 */
+    /**
+     * 某一方向上刻度文字要占的预留量（像素）。**两条来源，二选一**。
+     *
+     * <ul>
+     *   <li>{@link AxisStyle#visible()} <b>关着</b>（默认）：刻度文字由调用方画，
+     *       所以用它声明的量（{@code Chart.tickLabelReserve}）。<b>既有行为一字不变。</b></li>
+     *   <li><b>开着</b>：刻度文字由库自己画，就用库自己算的量
+     *       （{@code tickLength + 字号 × LINE_HEIGHT_FACTOR}），
+     *       <b>调用方声明的那个被忽略</b>。</li>
+     * </ul>
+     *
+     * <p><b>为什么是覆盖而不是相加 / 取大</b>：后两者都会让"绘图区到底多大"有两个来源，
+     * 而绘图区算错只表现为"图小了一圈"，不会有任何报错。覆盖只有一条规则。
+     *
+     * <p>这里用"字号 × {@link #LINE_HEIGHT_FACTOR}"而不是去量真实字宽，与
+     * {@link ChartTextMetrics} 的类文档是同一条口径：<b>布局要可被精确预测</b>。
+     * 顺带也避开了一个循环——真要按刻度文字的实际宽度算，就得先知道有哪些刻度，
+     * 而 {@code Axis.ticks()} 依赖 {@code displayLength}，那个又来自本函数算出来的绘图区。
+     *
+     * <p><b>已知代价</b>：y 轴上一个很宽的文字（{@code 1000000}）会在预留带边缘被切断。
+     * 这与"装饰裁到带子里、不折行不省略"是同一条取舍，而且<b>看得见</b>。
+     * 要更多空间请给整张图加 {@link Chart#padding}。
+     */
+    private static float tickLabelReserve(Chart chart, ChartSide side,
+                                          ChartTextMetrics metrics) {
+        AxisStyle style = chart.axisStyle();
+        if (style.visible() && style.tickLabelsVisible()) {
+            return style.tickLength() + lineHeight(style.tickLabelFontSize(), metrics);
+        }
+        return chart.tickLabelReserve(side);
+    }
+
     private static float lineHeight(float fontSize, ChartTextMetrics metrics) {
         return metrics.lineHeight(fontSize);
     }

@@ -439,6 +439,38 @@ gc.charts.draw(chart, plotRect, gc.width, gc.height)
 背景 -> 网格 -> 数据系列 -> crosshair/tooltip -> 刻度和标注
 ```
 
+> **★ 2026-09-28 起，上面那套 z 序里的「网格」与「刻度」可以整段交给库。**
+> 打开坐标系后，`drawChart` 自己按「装饰 → 网格 → 轴线/箭头/刻度线 → 数据 →
+> 刻度文字 → crosshair/tooltip」的顺序画完，**不需要中间插 `flush()`**
+> （刻度文字在绘图区之外，而数据被裁在绘图区之内，盖不到它）。
+> 低层入口 `draw(chart, plotRect, …)` 拿的是**已经算好的绘图区**，
+> 排不下轴与刻度文字，所以坐标系**只在 `drawChart` 那条路上生效**。
+
+#### 坐标系（`AxisStyle`）
+
+```kotlin
+chart.axisStyle(AxisStyle.defaults()
+        .visible(true)                    // ★ 必须显式打开：默认是关的
+        .gridVisible(true).gridColor(0xFF394452).gridWidth(1f)
+        .axisColor(0xFFE3E8EF).axisWidth(1.5f)
+        .arrowsVisible(true).arrowSize(8f)
+        .tickMarksVisible(true).tickLength(5f)
+        .tickLabelsVisible(true).tickLabelFontSize(12f).tickLabelColor(0xFFC7D0DB))
+
+gc.charts.drawChart(chart, frame, gc.width, gc.height)   // 一步画完：装饰 + 坐标系 + 数据
+```
+
+打开之后：
+
+- **刻度预留由库自己算**，`chart.tickLabelReserve(...)` 会被**覆盖**（不是相加）。
+  要更多空间请给整张图加 `padding`；
+- **网格线只画严格在绘图区内部的主刻度**——两端点上的与坐标轴本身重合，
+  再画一遍只是把轴线加粗一档。注意这**不是**"跳过值为 0 的刻度"：
+  y 窗口跨过 0 时，中间那条零线是要画的；
+- 刻度文字取 `Tick.label()`，所以**业务上的格式化仍然在应用侧配 `Axis`**；
+- **默认关**：开了轴绘图区就要让出带子，而"绘图区变了就是画面变了"，
+  既有图不该被一个新开关悄悄挪几像素。
+
 ### 4.5 图表类型
 
 当前后端支持：

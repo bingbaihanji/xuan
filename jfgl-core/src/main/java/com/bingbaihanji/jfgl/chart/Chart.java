@@ -112,6 +112,19 @@ public final class Chart {
     private float leftTickLabelReserve = 0f;
 
     /**
+     * 坐标系（网格 / 轴线 / 箭头 / 刻度线 / 刻度文字）的外观与开关。
+     *
+     * <p><strong>默认整体关着</strong>（见 {@link AxisStyle#defaults()}）——理由与
+     * {@link #axisTitlesVisible} 完全一样：开了轴绘图区就要让出带子，而"绘图区变了
+     * 就是画面变了"。默认关是**纯增量**成立的前提。
+     *
+     * <p>打开之后本库**自己画刻度文字**，于是刻度预留也由库自己算——
+     * 那两处 {@link #tickLabelReserve} 会被**覆盖**（不是相加），理由见
+     * {@link #tickLabelReserve} 的说明。
+     */
+    private AxisStyle axisStyle = AxisStyle.defaults();
+
+    /**
      * 构造，至少给一根轴。
      *
      * @param axes 各维度的轴，顺序即维度下标
@@ -411,13 +424,53 @@ public final class Chart {
     }
 
     /**
+     * 坐标系（网格 / 轴线 / 箭头 / 刻度线 / 刻度文字）的外观与开关。默认整体关着。
+     *
+     * @see AxisStyle
+     */
+    public AxisStyle axisStyle() {
+        return axisStyle;
+    }
+
+    /**
+     * 设置坐标系样式。**打开它需要显式 {@code .visible(true)}**——默认关是纯增量成立的前提
+     * （见 {@link #axisStyle} 字段的说明）。
+     *
+     * <p>打开之后本库自己画刻度文字，那两处 {@link #tickLabelReserve} 会被**覆盖**。
+     *
+     * @return 自身，便于链式调用
+     * @throws IllegalArgumentException 传入 null 时
+     */
+    public Chart axisStyle(AxisStyle style) {
+        if (style == null) {
+            throw new IllegalArgumentException("坐标系样式不能为 null（要关掉请用 "
+                    + "AxisStyle.defaults()，它的 visible 默认就是 false）");
+        }
+        this.axisStyle = style;
+        return this;
+    }
+
+    /**
      * 刻度文字的预留量（像素）。
      *
-     * <p><b>它为什么是一个配置项，而不是自动测量</b>：刻度文字由调用方画
+     * <p><b>它为什么是一个配置项，而不是自动测量</b>：刻度文字**默认由调用方画**
      * （{@code Axis.ticks()} 只给位置），图表层拿不到它的高度；硬猜一个值的话，
      * 字号一大刻度文字就压在数据上——而"刻度文字和数据线重叠"看起来像绘图区太小，
      * 不像配置问题。所以这里让调用方声明自己画的刻度文字占多少，
      * 图表层负责把它从绘图区里扣掉。
+     *
+     * <h2>⚠️ 但 {@link AxisStyle#visible()} 打开时，这个量会被**覆盖**</h2>
+     *
+     * <p>那种配置下刻度文字由**库自己画**，于是它自己知道文字占多高，
+     * 就用自己算的那个（{@code tickLength + 字号 × LINE_HEIGHT_FACTOR}），
+     * **本方法的返回值不再参与布局**。
+     *
+     * <p><b>为什么是覆盖，不是相加、也不是取大</b>：后两者都会让"绘图区到底多大"
+     * 有两个来源，而绘图区算错只表现为"图小了一圈"，不会有任何报错。
+     * 覆盖只有一条规则，一眼能算出来。
+     *
+     * <p>要更多空间（比如 y 轴文字很宽），请给整张图加 {@link #padding}——
+     * 那是一个方向明确的手段，而"两边都声明一点"不是。
      *
      * @param side {@link ChartSide#BOTTOM}（x 轴刻度，绘图区下方）或
      *             {@link ChartSide#LEFT}（y 轴刻度，绘图区左侧）

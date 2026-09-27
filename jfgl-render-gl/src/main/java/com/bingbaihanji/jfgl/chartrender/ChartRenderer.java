@@ -363,6 +363,10 @@ public final class ChartRenderer implements Disposable {
         painter.begin(frame);
         try {
             ChartDecorations.paint(painter, chart, layout);
+            // ★ 坐标系（网格 → 轴线 → 箭头 → 刻度线 → 刻度文字），画在**数据系列之前**：
+            //   网格要在数据之下；而刻度文字虽在绘图区之外，数据被裁在绘图区里、盖不到它
+            //   （理由见 ChartAxes 的类文档）。`AxisStyle.visible()` 默认 false ⇒ 这行是空操作。
+            ChartAxes.paint(painter, chart, layout);
         } finally {
             // finally 不能省：装饰画到一半抛异常时，状态栈会少弹一层，
             // 之后画的每一个图元都带着"标题那次压栈"的状态。

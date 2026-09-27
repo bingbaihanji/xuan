@@ -4,38 +4,17 @@ import com.bingbaihanji.jfgl.chart.*
 import com.bingbaihanji.jfgl.renderer.Gc
 import com.bingbaihanji.jfgl.util.Rect
 
-/** 绘图区底色 / 网格线 / 刻度文字 / 数据线。 */
+/**
+ * 绘图区底色。
+ *
+ * <p>★ **2026-09-28 起，网格线与刻度文字的颜色/字号/预留量都不再是本文件的常量**
+ * ——它们改由 `AxisStyle` 配置（见 `build()` 里的 `axisStyle(...)`），
+ * 库负责画、也负责按字号算预留。这里删掉的五个常量（`GRID` / `TICK_TEXT` /
+ * `TICK_FONT` / `TICK_GAP` / `TICK_RESERVE`）连同它们那段"预留量必须 ≥ 标签宽"
+ * 的说明一起迁走了——那段推理本身没错，只是现在由库里同一条口径统一管
+ * （`tickLength + 字号 × LINE_HEIGHT_FACTOR`），不再需要每个应用各算一遍。
+ */
 private const val PLOT_BG = 0xFF1A1D22.toInt()
-private const val GRID = 0xFF3A3F47.toInt()
-private const val TICK_TEXT = 0xFFC0C6CF.toInt()
-
-/**
- * 刻度文字的字号。
- *
- * <p>**单独抽出来是因为它有三个隐式消费者**：刻度文字本身、`tickLabelReserve` 声明的预留量、
- * 以及四处对齐偏移（y 标签右端留白、y 标签的半字高、x 标签的基线偏移）。
- * 字号一改，只有写字的那一处会跟着改，**另外几处会静默错位**——而画面只是"刻度字
- * 压到了轴标题上 / 没对齐"，不像一个字号问题。所以让它们共用这一个常量。
- */
-private const val TICK_FONT = 12f
-
-/** 刻度文字与绘图区之间的缝（像素）。y 标签的右端留它，x 标签的基线也按它错开。 */
-private const val TICK_GAP = 6f
-
-/**
- * 刻度文字的预留量，交给 `Chart.tickLabelReserve`。
- *
- * <p>**它必须 ≥ `TICK_GAP + 最宽标签的宽度`**：y 标签是**右对齐**画的
- * （`plot.x - w - TICK_GAP`），所以预留小于这个和，标签的**左端会压进左侧的轴标题带**。
- * 12px 下三字符标签（`"120"`）约 18px，故 `6 + 18 = 24`。
- *
- * <p>**早先这里是 `18f`——那正是"标签压进「金额 (万元)」带约 2px"的成因**
- * （质量评审算出来的：标签左缘落在 `plot.x - 24`，而轴标题带右缘是 `plot.x - 18 - 4`）。
- * 更彻底的做法是运行时拿 `measureText` 量最宽标签再设（demo 手里就有这把尺），
- * 但那要求每帧改缓存住的 `Chart`，代价与收益不成比例——**12px 固定字号下 24f 够用**，
- * 而字号一旦要可变，这里就是第一个该改成动态量的地方。
- */
-private const val TICK_RESERVE = TICK_GAP + 18f
 
 /** 图表外框相对画布的边距。给标题带、图例带与状态栏留的地方。 */
 private const val FRAME_MARGIN = 40f
@@ -313,8 +292,16 @@ internal object DemoChart {
             .legendSide(ChartSide.BOTTOM)
             .axisTitlesVisible(true)
             .axisTitleFontSize(12f)
-            .tickLabelReserve(ChartSide.BOTTOM, TICK_RESERVE)
-            .tickLabelReserve(ChartSide.LEFT, TICK_RESERVE)
+            // ★ 网格 / 轴线 / 箭头 / 刻度线 / 刻度文字**全部交给库**（2026-09-28 起）。
+            //
+            //   从前这里自己画网格与刻度文字（约 40 行），还把"算布局 → 设 displayLength
+            //   → 网格 → flush → drawChart → 刻度"称作**硬约束**——那是因为网格必须垫在
+            //   数据底下、而数据是当场画的。现在库把坐标系画在数据**之前**，
+            //   那条顺序约束随之消失（只留下"背景要 flush 在 drawChart 之前"这一条）。
+            //
+            //   ⚠️ 打开之后**刻度预留由库自己算**，下面那两处 `tickLabelReserve` 会被
+            //   覆盖——所以它们**已经删掉**（留着会让下一个人以为还在生效）。
+            .axisStyle(AxisStyle.defaults().visible(true))
             .padding(ChartInsets(8f, 8f, 8f, 8f))
             .apply {
                 addLayer("数据").add(styleFor(Series("销售额", data, type).color(COLOR_SALES), smooth))
@@ -406,8 +393,9 @@ internal object DemoChart {
         //   这里的量级比那个大得多（每次生成要算三级刻度 + 格式化每个标签）。
         //   **必须在 `setDisplayLength` 之后取**——刻度的位置依赖显示长度；
         //   两次遍历之间没有东西改轴，所以取一次、用两遍是等价的。
-        val xTicks = chart.axis(0).ticks()
-        val yTicks = chart.axis(1).ticks()
+        //
+        //   ⚠️ **2026-09-28：这两行本身也删了**——网格与刻度文字改由库画之后，
+        //      本文件**一处都不再读 `ticks()`**，取出来也没人用（而它每帧要跑两次）。
 
         // 绘图区底色。**放在 save/restore 里**——`gc.fill` 是**可变状态**，
         // 写在外面会泄漏给本帧后续的图元（今天无害，只因为 `drawScene` 紧接着就 return）。
@@ -415,59 +403,18 @@ internal object DemoChart {
         gc.save()
         gc.fill = PLOT_BG
         gc.fillRect(plot.x, plot.y, plot.width, plot.height)
-
-        // 网格。**库没有辅助**，全仓唯一一份手写循环在 README.md
-        gc.lineWidth = 1f
-        gc.stroke = GRID
-        for (t in yTicks) {         // y 轴要翻：值越大越靠上
-            if (!t.isMajor()) continue
-            val sy = plot.y + plot.height - t.position().toFloat()
-            // 0 那条横线**也不画**，理由与下面 x 轴那条**逐字相同**（终审指出的一处不对称）：
-            // y 轴的 0 刻度映射到绘图区**下边缘**（`position() == 0` ⇒ `sy == plot.y +
-            // plot.height`），画了只是把那条边加重一道。刻度文字照旧画（它在下面那一段里），
-            // 所以"0"这个读数不会丢——丢的只是与边界重合的那条线。
-            if (t.value() == 0.0) continue
-            gc.drawLine(plot.x, sy, plot.x + plot.width, sy)
-        }
-        for (t in xTicks) {
-            if (!t.isMajor()) continue
-            val sx = plot.x + t.position().toFloat()
-            // 0 那条竖线**不画**：它与绘图区左边缘重合，画了只是把网格加重一道。
-            // （注意：这里**不是**"让给 y 轴"——本 demo 与 `ChartDecorations` 都**不画轴线**，
-            //   绘图区没有左/下边框线。早年的注释说"让给 y 轴"，那个"对象"并不存在。）
-            // ★ 上面 y 轴那条**同理**——这一条早先只写了这半边，y 轴那条一直在画
-            //   （终审指出的不对称），本轮补齐。
-            if (t.value() == 0.0) continue
-            gc.drawLine(sx, plot.y, sx, plot.y + plot.height)
-        }
         gc.restore()
 
-        // ★ 网格落定。数据系列是当场就画的，不 flush 就没有"网格 → 数据 → 标注"的夹心 z 序
+        // ★ 背景落定。数据系列（以及库现在自己画的网格）是当场就画的，
+        //   不 flush 的话帧末提交的背景会把它们整个盖掉。
+        //
+        //   从前这里还要在 flush 之前手绘网格、之后手绘刻度文字（共约 40 行），
+        //   并因此背着一句"顺序是硬约束"。现在坐标系由 `chart.axisStyle` 打开的
+        //   库内绘制负责，且它画在**数据之前**，那条约束没有了。
         gc.flush()
 
-        // 装饰（标题 / 图例 / 轴标题）+ 数据系列。**不能带着变换调用**（会抛）。
+        // 装饰（标题 / 图例 / 轴标题）+ **坐标系** + 数据系列。**不能带着变换调用**（会抛）。
         gc.charts.drawChart(chart, frame, gc.width, gc.height)
-
-        // 刻度文字画在数据之上。只有主刻度的 label 非空，中/次是空串。
-        // **三个偏移都由 `TICK_FONT` 推出来**，不写死——否则改字号时只有 `fontSize` 跟着改，
-        // 另三处静默错位，而画面只是"刻度字压到轴标题上 / 没对齐"，不像字号问题。
-        gc.save()
-        gc.fontSize = TICK_FONT
-        gc.fill = TICK_TEXT
-        for (t in yTicks) {
-            if (!t.isMajor()) continue
-            val sy = plot.y + plot.height - t.position().toFloat()
-            val w = gc.measureText(t.label())
-            // 右对齐、右端留 `TICK_RESERVE` 里那个 6px 的缝；`+0.35em` 让基线落在半个字面高处
-            gc.drawText(t.label(), plot.x - w - TICK_GAP, sy + TICK_FONT * 0.35f)
-        }
-        for (t in xTicks) {
-            if (!t.isMajor()) continue
-            val sx = plot.x + t.position().toFloat()
-            val w = gc.measureText(t.label())
-            gc.drawText(t.label(), sx - w / 2f, plot.y + plot.height + TICK_FONT * 1.3f)
-        }
-        gc.restore()
 
         // ★★ **末尾探针**（自检模式下才写，见 [selfTestDrawnFrames]）：这行是"整条绘制路径
         //    跑到了末尾"的唯一直接证据——本项目 GL 线程上的异常是静默吞掉的，
