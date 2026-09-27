@@ -131,17 +131,41 @@ mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime
 > 先复现一次崩溃并留下 `hs_err_pid*.log`（JVM 崩溃时默认会写，`halt` 那条路径看不到），
 > 或者用 `-XX:+CreateCoredumpOnCrash`。**在拿到栈之前，别在文档里把它写成定论。**
 
-> **⚠️ 图表 / 文字路径上的异常仍然不可观测（本期只记录，不修）。**
-> GL 线程上的异常被 openglfx 的原生回调吞掉（我们代码里一处 `catch` 都没有），
-> 所以"少画了一帧东西"与"这一帧抛了异常"在画面上长得一样。
-> 但**"完全不可观测"这句话已经不成立**：帧循环一断，`DemoChart` 的帧计数就不再涨，
-> ⑩⑪ 会挂在等待条件上 ⇒ 60 秒后看门狗打出「已评估 k/11」并以 1 退出
-> ——也就是说这个自检能把"帧停了"报出来，只是报不出**原因**。
-> **真正该做的是库侧**：给 `FXGLTransfer` 的帧回调加 `try/finally`，让
-> `endFrame()` 无论如何都执行（现在抛一次异常就 `frameActive` 卡住、此后每帧都抛、
-> 画布永久冻结）。那是架构评审的 **P1-6**（也是那份评审里"最该先做的一条"），
-> 属于库的改动，**本期只记录、不做**。`DemoShapes.kt` 的 `drawWith` KDoc 里
-> 记着同一条。
+> **★ 帧回调里的异常现在可观测了（架构评审 P1-6 / 建议 5a 已落地，工作区未提交）。**
+> 评审的原话是"用户的渲染回调抛一次异常，应用就**永久冻屏且不报错**"，
+> 建议（5a，它自称"本表里最该先做的一条"）是"**`try/finally` + 异常计数器**"。
+> 这条以前写的是"**本期只记录、不做**"——**那已经过期**，落地的是：
+> - `Gc` 新增 **`abortFrame()`**：`frameActive = false` + `writer.reset()` +
+>   `state.clearStack()` + `styleDepth = 0`，把一帧中途崩掉的状态**恢复到能继续渲染**；
+>   且第一句就是 `if (!frameActive) return`（可重入）。
+> - `Gc.endFrame()` 里 `batch.submit(writer)` 包进 `try/catch`，**清理放在 `finally`**
+>   ——所以提交抛异常时 `frameActive` 与 `save` 栈**照样归零**（这两件事以前一起
+>   卡住，此后每帧都抛、画布永久冻结）。
+> - `FXGLTransfer` 的 `addOnRenderEvent` 把 `onFrameCallback` / `endFrame()` /
+>   `resolvePendingPick()` 整段包进 `try/catch`，捕获后调 `context.abortFrame()` 再
+>   走 **`reportRenderFailure`**；`onRenderCallback` 与 `onDisposeCallback` 各自也包了。
+> - 新增公开入口 **`FXGLTransfer.onError(callback)`**（回调在 **GL 渲染线程**上），
+>   没设处理器时 `printStackTrace()`——**默认不再静默**。
+>   `onDispose` 那条用 `finally` 保证 `disposeCharts()` → `RenderBatch.dispose()`
+>   的释放链照样走完，回调抛出的异常**释放完之后**才报。
+> - **异常计数器补上了，而且它同时解决了"刷屏"**：新增 `@Volatile renderFailureCount`
+>   与 `renderFailureCount()`；`reportRenderFailure` **只在第 1 次与每 60 次**
+>   打完整栈（约每秒一行），其余只累加计数。这一条是**必需的、不是锦上添花**：
+>   帧回调里的失败会**每帧重演**（漏一个 `restore()` 就每帧都抛），
+>   不节流的话控制台 60 段/秒刷同一段栈，把有用的第一段立刻冲走——
+>   而本文件在零尺寸那个分支上早就写着同一条口径（"这里跳过而不是抛异常，
+>   **否则渲染线程会每帧刷一次栈**"）。
+>   `onError` 处理器**每次都会被调用**（它可能有自己的计数/上报），
+>   但**它自己抛出的异常只报第一次**——否则处理器坏掉会变成新的刷屏源。
+> - `onErrorCallback` 加了 `@Volatile`：它由 JavaFX 线程写、**GL 线程读**，
+>   不加的话 JVM 允许 GL 线程一直读到 `null` ⇒ 处理器注册了却永不生效，
+>   表现是"我设了 onError，它却还在刷栈"。
+> **证据强度照实说**：这是照着代码读出来的，**没有任何断言或校验器盖着它**
+> ——`abortFrame()` 的"恢复后还能继续渲染"没有被测过，"回调抛异常后画布不再冻结"
+> 也没有一条端到端的断言。按本仓库的口径，这属于**已实现、未验证**。
+> 要给它立一条，最自然的是合成事件那套：让 `onFrame` 在第 N 帧抛一次，
+> 断言"第 N+1 帧照常出画、`onError` 收到的正是那个异常"。
+> `fwidth`/`fwidth==0` 那类"画面上长得一样"的静默错误**仍然**只有校验器拦得住。
 
 > **★ 一次被推翻的"间歇性缺陷"值得记下来，因为它的真因是"同一属性名下两份解析"。**
 > 现象：`-Djfgl.demo.selftest=true` 时 ⑩⑪ 全倒（末尾探针恒 +0、身份恒 0），
@@ -197,13 +221,24 @@ jfgl-render-gl/src/test/.../gpu/        FftWindowTest、FftKernelTest
 + `MsaaVerifier`（**要跑三次**：`msaa=0` / `4` / `-1`，由 `jfgl-javafx/scripts/msaa-verify.sh` 比对）。
 后两者的处境与那六个的区别见「抗锯齿」一节。）
 
-当前 **405 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+当前 **411 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
 `@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`（跨模块加 `-pl 模块名`）。
-分布：`geom/` 91、`renderer/` 107、`gl/` 12、`text/` 32、`chart/` 80、`chartrender/` 69、
-`gpu/` 14（合计 405；子项目 A 抗锯齿那一步加了 15 条——`geom/` +12（`StrokeGenerator`
+分布：`geom/` 91、`renderer/` 107、`gl/` 13、`text/` 32、`chart/` 85、`chartrender/` 69、
+`gpu/` 14（合计 411 = `jfgl-core` 176 + `jfgl-render-gl` 235；
+里程碑 `0.1.0` 那一步又给 `chart/` 加了 3 条——`ChartInteractionTest` 的
+「窗口外的样本不可命中」「窗口边界上的样本仍可命中」「提示框文本只构造一次」，
+它们是 chart hover 那两条缺陷的定向断言：注入变异后**各自只有对应的那一条倒**；
+子项目 A 抗锯齿那一步加了 15 条——`geom/` +12（`StrokeGenerator`
 的 `aEdge`）、`renderer/` +3（`VertexFormatTest` +1 与 `VertexWriterTest` +2）；
 平滑曲线那一步（`deca1a7`）给 `chartrender/` 加了 20 条
-——`SmoothCurveTest` / `SeriesBufferTest` / `SeriesUploadPlanTest`）。
+——`SmoothCurveTest` / `SeriesBufferTest` / `SeriesUploadPlanTest`；
+图表交互那一步（工作区未提交）加了 3 条——`chart/` +2（新的 `ChartInteractionTest`：
+「命中最近点并生成轴名称单位和系列名称」与「指针离开绘图区或遇到 NaN 时不命中」）、
+`gl/` +1（`LwjglGLAbstractionTest.公开Texture封装也遵守ARGB到RGBA契约`，
+它把 `Texture.argbToRgba` 提成包级可见以便脱离 GL 上下文测）。
+**数这几个数请从 surefire 报告里数**（`*/target/surefire-reports/TEST-*.xml` 的
+`tests=` 属性求和）：`mvn -q test` 把汇总行吃掉了，而 `README.md` 里那个
+「357 个测试」是**另一份更陈旧的读数**（与本文档对不上，以本行为准）。
 ⚠️ **`renderer/` 里没有任何一条覆盖"`Gc.antialias` 的样式栈"**——全仓没有 `GcTest`，
 `Gc` 只能靠校验器（见「测试」节开头与「抗锯齿」一节）。
 
@@ -526,8 +561,12 @@ gc.endFrame()
   x 轴标题带横跨**绘图区**（不是整条内框），所以它不会与 y 轴标题带在左下角重叠。
 - **装饰被裁到各自的带子里**（`ChartPainter.begin(Rect band)`）：一项文字比带子宽时，
   后面的部分在带子边缘被切断，而不是越过边界画到别处。折行/省略号都不做（排版决策）。
-  **抛异常被明确否掉**：`ChartLayout.compute` 在绘制路径上每帧被调用，
-  而 GL 线程上的异常在本项目是**静默吞掉**的——用静默的坏事去修静默的坏事没有意义。
+  **抛异常被明确否掉**：`ChartLayout.compute` 在绘制路径上每帧被调用，而"每帧抛一次"
+  意味着每帧丢一帧画面。
+  ⚠️ **原来的理由写的是"GL 线程上的异常在本项目是静默吞掉的"，那句现在只对一半**：
+  P1-6 之后帧回调里的异常会走到 `reportRenderFailure`（见「常用命令」里那段），
+  **不再静默**；但"抛"仍然会让**那一帧**整个作废（`abortFrame`），而裁切只会让一项文字
+  短一截。**结论没变、理由换了**——"用静默的坏事去修静默的坏事"这个说法已经不成立。
 - **`drawChart` 不能带着变换**：布局算的是设备像素，带着 `translate/scale/rotate`
   会让装饰落到没算过的位置上。`Gc` 的实现里有一条**会抛 `IllegalStateException`** 的守卫
   （`ViewTransform.isBaseTransform()`，判据是"有没有被动过"而不是"矩阵等不等于基础矩阵"），
@@ -571,6 +610,96 @@ gc.endFrame()
   `binCapacityFor(binCount)`（**向上取到的下一个 2 的幂**，只用于算术）。
   容量取小了会让 `bin k` 与 `bin (k-容量)` 共用槽位，画出来的是**错位的谱**——
   谱形完全正常，所以那条路只有"取下一个 2 的幂"这一种。
+
+#### 图表交互：hover 十字线与提示框（工作区未提交）
+
+**交互状态属于 `Chart`，不属于 JavaFX，也不属于系列渲染器**——这是这一节的立意。
+新增四个类型，全在 **`chart/`（纯计算、零 GL 依赖，`ChartPackageIsolationTest` 的白名单
+不用改）**：`ChartInteraction`（状态 + 纯计算命中器）、`ChartHover`（一次命中的结果
+record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record + 逐字段 wither）、
+`ChartValueFormatter`（`@FunctionalInterface`，带 `DEFAULT`）。
+
+三段接线，**每一段在不同的层**：
+
+| 层 | 入口 | 干什么 |
+|---|---|---|
+| `chart/` | `Chart.interaction()` | 持有指针与配置；`probe(chart, plot)` 算出命中的点与提示框文本行 |
+| `chartrender/` | `ChartRenderer.drawChart` 末尾调 `drawInteraction` | 画虚线十字、命中点方块、提示框 |
+| `jfgl-javafx` | `FXGLTransfer.trackChartHover(node, chart)` | 把 `MOUSE_MOVED`（乘缩放）与 `MOUSE_EXITED` 接到 `updatePointer` / `clearPointer` |
+
+- **`probe` 是逐样本线性扫描**（`chart.allSeries()` × `itemCount()`，每帧一次），
+  **已限定在可见窗口内的样本**（见下一条）。它的 KDoc 明说大数据量该在这里换
+  二分/LOD 索引，换的时候不需要动 GL 后端与 JavaFX 层。
+  **残余成本照实说**：窗口判据在最前面、两次比较就能跳过，所以扫描本身仍是
+  `O(itemCount())`——"只遍历窗口内那一段下标"要求"x 值随下标单调"，
+  而 `ChartData` 没有这条契约，所以**没做**。这与折线渲染"只画可见实例"
+  的成本模型**仍然不是一回事**。
+- **配置 record 在紧凑构造器里校验，NaN/Inf 一律抛 `IllegalArgumentException`**
+  （`snapRadius` 可 0、`crosshairWidth`/`dashLength`/`tooltipFontSize` 必须 > 0、
+  `tooltipPadding`/`tooltipOffset` 可 0）。这与 `Series` 的 `fillAlpha`/`lineWidth` 那组
+  「NaN 抛异常、越界但有限的量照旧收下」**是同一条口径**。
+- **只扫 `polylineFamily()` 的系列**（`!series.type().polylineFamily() → continue`）。
+  按 `ChartType` 的定义这是 `connectsSamples() || drawsMarkers() || drawsBars()`
+  ⇒ **`LINE` / `LINE_AND_MARKERS` / `STEP` / `AREA` / `SCATTER` / `BAR` 都参与**，
+  **只有 `SPECTRUM` 被排除**（它的顶点不是逐样本点，是 FFT 的输出 bin——
+  与「频谱的独立渲染器」那一条同源）。**所以"交互只对折线有效"是错的**。
+- **NaN 缺口是"这个点不参与命中"，不是"整次不命中"**：
+  `!Double.isFinite(x) || !Double.isFinite(y) → continue` —— 跳过**那个点**、继续扫别的点。
+  所以指针落在缺口正上方时，只要 `snapRadius` 内有别的有效点，**照样会吸附到它**
+  （吸附是按屏幕距离算的，缺口两侧的邻居往往就在半径内）；
+  `probe` 返回 null 只在**半径内一个有效点都没有**时发生。
+  ⚠️ **别把它读成"悬在缺口上就什么都不画"**——那是错的，也会让据此写的断言
+  变成一条恒假断言。它与「缺口用 NaN 表示、渲染器遇到 NaN 就断开折线」是
+  **同一份数据约定的两个消费者**，但**处置方式不同**：渲染器断开，命中器只是无视那个点。
+- **提示框的坐标是"先偏移、再夹回绘图区"**：
+  `x = screenX + offset`，右边越界就翻到左侧，`y` 上边越界就翻到下边，
+  最后再 `clamp` 进 `plot`。所以**箭头/指向线不做**——只有位置。
+- **绘制那支笔是新长出来的**：`ChartPainter` 接口加了 `strokeLine` / `strokeDashedLine` /
+  `strokeRect` 三个方法，`Gc` 里那个**私有**的 `chartPainter` 对象实现它们
+  （用 `save/restore` 那套状态字段临时改 `stroke`/`lineWidth` 再改回来）。
+  ⚠️ **`Gc` 自己仍然没有公开虚线描边**——`strokeDashedLine` 只活在图表装饰那支**私有**的笔上，
+  应用层要画虚线仍然得自己切弧长（见「已实现 vs 未实现」里那条）。
+  `strokeDashedLine` 的切分是**按 `dashLength` 等长交替、逐段调 `drawLine`**，
+  没有相位参数、也不复用 `StrokeGenerator.strokeDashed`。
+- ★ **只考虑 x 在可见窗口内的样本**（`x ∈ [xAxis.windowMin(), windowMax()]`）。
+  这条是**正确性**，不是优化：`Axis.dataToDisplay` 不夹取，窗口外的样本会被映射到
+  绘图区**之外**，而十字线与命中点都被 `painter.begin(plot)` 裁在绘图区内 ⇒
+  命中一个窗口外的样本时，画面上的后果是**纵线被整条裁掉、命中点整块被裁掉
+  （看上去只有横线、没有命中点）、而提示框照常报出一个看不见的样本的读数**，全程无报错。
+  可达条件很普通：**窗口起点不是采样间隔的整数倍**（流式滚动图正是如此）。
+  实测复现：x 窗口 `[5.05, 15.05]`，x=5 那个样本落在 `sx = -3`，它比任何可见样本
+  都更靠近指针 ⇒ 修复前命中它（`screenX = -3`）。
+  **y 不做这个过滤是刻意的**：值出 y 窗口只是"现在在视野上下之外"，
+  "这个 x 上的值是多少"仍然有意义（纵轴放大时尤其如此）；而出 x 窗口意味着
+  这个样本根本不在当前视图里。两者处置不同是有理由的。
+- ★ **提示框文本只在循环结束后构造一次**。它以前在**每一个"更近的候选"**上都要构造
+  （建 `ArrayList` + 调 formatter），密集数据下那是这趟扫描里最贵的一块，
+  而且 `tooltipVisible == false` 时照样执行（`probe` 不看那个开关）。
+  判据用 **formatter 的调用次数**——两者的返回值完全相同，任何只看结果的断言都抓不住它。
+- **扫描仍是 `O(itemCount())` 全量**（只是窗口判据在最前面，两次比较就能跳过，
+  在算屏幕坐标那两次除法之前）。**没做成"只遍历窗口内那一段下标"**：那要求
+  "x 值随下标单调"，而 `ChartData` 没有这条契约（`value(0, i)` 返回用户 append 的
+  原始值，可以是时间戳、也可以是任意数）。要真做需要先立这条契约。
+- **⚠️ 绘制那一半仍然没有校验器覆盖**（写在这里是为了下一个人不必重新判定）。
+  `ChartVerifier` 里搜不到 `interaction` / `crosshair` / `tooltip` / `hover` 任何一个词
+  （实测 grep 为空）⇒ 十字线与提示框的**像素**、提示框夹取、`trackChartHover` 的**坐标换算**
+  **都只有眼睛能判**。`ChartInteraction.probe` 的**计算**那一侧现在由
+  `ChartInteractionTest` 的 **5 条**盖着（含窗口外不吸附、窗口边界可命中、文本只构造一次）。
+  按本仓库"静默错误输出"的口径，**绘制那一半仍是新渲染路径里最该补的一条**。
+  可参照的判别式：夹取用「把指针推到绘图区四角，断言提示框矩形仍逐边在 `plot` 内」、
+  缺口用「悬在缺口**且**半径内无有效点时该帧的十字线像素数为 0」
+  （⚠️ **不能**写成"悬在缺口上就为 0"——见上面那条，那是恒假的）。
+- **⚠️ `trackChartHover` 不能解绑、也不去重（已知缺口，本期不做）。**
+  它每次都往同一个节点上**再加 2 个处理器**，而处理器闭包**强引用住那个 `Chart`**
+  （`Chart → Layer → Series → ChartData`，`RingChartData` 可以是一整块环）。
+  于是"数据刷新后重建 `Chart` 再 `trackChartHover` 一次"这种写法（很自然——
+  `Chart` 看起来就是个纯计算对象）会造成：① 处理器列表无界增长，每次 `MOUSE_MOVED`
+  触发 N 次 `updatePointer` + N 次 `repaint()`；② 旧 `Chart` 永远回收不掉。
+  当前两个调用点都只挂一次，所以是**潜在**缺陷——但 API 形状上没有任何东西拦住它。
+  **没修的理由**：修法要么给 `untrackChartHover`、要么返回一个句柄，
+  **那是新增公开 API**，要自己的一轮设计（本期只做低风险的局部改动）。
+  ⚠️ 它与 `ChartRenderer` 的自动回收**不是**同一件事：那个管 GPU 缓冲与拾取号，
+  这个管 JavaFX 事件处理器与 `Chart` 对象本身。
 
 ### 抗锯齿
 
@@ -815,6 +944,37 @@ gc.endFrame()
 带 GL 资源的类统一实现 `com.bingbaihanji.jfgl.util.Disposable`。
 所有权：`FXGLTransfer.onDispose` → `RenderBatch.dispose()`。
 
+**`Disposable` 的四条契约**（`docs/JFGL-DEVELOPER-GUIDE.md` §5.3；本轮在
+`ShaderProgram` 与 `Texture` 上落地，两者此前**一条都不满足**）：
+
+1. **`dispose()` 幂等**——都加了一个 `disposed` 标志，第二次数直接返回
+   （以前第二次会拿着已经 `glDeleteProgram` 掉的 id 再删一遍）。
+2. **释放后继续使用明确抛异常**——`checkNotDisposed()` 挂在 `use()` / `getUniformLocation()`
+   （着色器）与 `bind()` / `unbind()` / `getTextureId()`（纹理）上，抛
+   `IllegalStateException`。**不是默默用 id 0 继续跑**：那正是"静默错误输出"的形态。
+3. **构造失败时回收已创建资源**——`Texture` 的构造器现在先校验
+   （尺寸必须为正、`pixels.length == width * height`）**再**建 GL 对象，
+   校验失败时还没创建任何东西。
+4. **所有权与释放顺序明确**——`FXGLTransfer.onDispose` 用 `finally` 保证
+   `disposeCharts()` → `RenderBatch.dispose()` 走完（图表后端挂在这条链下游）。
+
+**顺带一条可测性的做法**：`Texture.argbToRgba(width, height, pixels)` 被提成
+**包级可见的静态方法**（原来那段字节序转换内联在构造器里），于是"ARGB→RGBA 的通道顺序"
+这条**公共 API 契约**能脱离 GL 上下文单测——`LwjglGLAbstractionTest` 里两条断言
+（一条是既有的 `LwjglGLAbstraction.argbToRgba`，一条是新的 `Texture.argbToRgba`）
+**钉的是同一份契约的两份实现**。这也解释了为什么它会从 `private` 变成包级可见——
+不是为了复用，是为了**能被验证**。
+
+> ⚠️ **但那个类本身是死的，两份拷贝也没收敛。** 全仓（含测试）grep 不到任何
+> `new Texture(...)` 或 `import com.bingbaihanji.jfgl.gl.Texture` —— **`gl/Texture` 零引用**，
+> 真正在用的是 `GLAbstraction` 那条路（`createTexture` / `createR8Texture` /
+> `createIntegerTexture`）。也就是说这份契约现在有**两份实现**，
+> 而它们**已经漂移过一次**：`Texture` 里原先那段写的是 `[B,G,R,A]`（蓝红互换，
+> 注释还写着"红/绿/蓝/透明"），抽象层那份是对的，**没有任何东西发现它**。
+> 今天两边的测试都钉同样的字节序，风险低；但**别以为"两份都有测试"就等于"不会分家"**
+> ——两条断言钉的是各自的实现，不是一个共享的源。
+> 收敛它们的入口是"删掉 `Texture`"（它没人用），不是"再补一条交叉断言"。
+
 ## 怎么验证改动
 
 **这是本仓库最重要的一节。**
@@ -917,6 +1077,20 @@ gc.endFrame()
    `NO_FREE_SLOT`（两个 PBO 都忙）在 20 连发下**实测会走到**，且一条点击都不丢：
    取队列用的是 `peek`，只有提交成功才 `poll`。
 
+   > **⚠️ 它的 ★ Robot 那一条是环境敏感的，会偶发假红——别把它误判成回归。**
+   > 失败形态很干净：**恰好 1 条 FAIL**，内容是
+   > 「真实点击到达画布并命中正确的对象 — 期望=A_FILL_RECT 实际=未收到回调，命中ID=-1」，
+   > 而**同一份日志里 FIFO 那 8 下合成点击全部交付**。
+   > （恰好 1 条而不是 8 条，是因为 `7a3325b` 修掉了"一次落空污染七条"那件事，
+   > 见 `robotPhase` 的注释——**那个条数是这条提示的判据**。）
+   > **实测（2026-09-27）**：同一份二进制**先连跑 3 次全红、后连跑 3 次全绿**；
+   > 我拿"把 `reportRenderFailure` 的节流还原"做过单变量实验，**两种状态下都是 3/3 同向**
+   > ——即**与代码无关**。红的那批紧跟在 MSAA（连开三个窗口）之后，
+   > 所以成因是**窗口焦点/叠放**：`fireRobotClick` 过了 `stage.isFocused` 那道闸，
+   > 但真实点击在那之后落到了别的窗口上。
+   > ⚠️ **别做的事**：看到它红就去 diff 渲染路径。先**单独重跑一次**；
+   > 把它排在别的开窗校验器之后跑，它更容易红。
+
    ⚠️ **两条交付语义不能混**：`pickAsync` 是「最新覆盖旧的」，给 **hover / 拖拽**这类
    **连续量**用；**离散的点击必须走 `clickAsync` / `clickAsyncAtNode` / `onClick`**，
    它们是有界 FIFO、按序交付。曾经把点击也接在 `pickAsync` 上，实测「点一下、几微秒后
@@ -960,6 +1134,17 @@ gc.endFrame()
    以及**频谱**（见下），并且**场景逐帧在变**（有几张实验图只在观察期画、
    有一条系列中途整条消失）——静态场景的校验器有盲区（`PickVerifier` 当时 24 条全绿
    仍漏掉一个真缺陷，见 README 的「测试」一节）。
+
+   > ⚠️ **改「图表交互」（`ChartInteraction` / `drawInteraction` / `trackChartHover` /
+   > `ChartPainter` 那三个新方法）时——没有校验器可跑。**
+   > `ChartVerifier` 里搜不到 `interaction` / `crosshair` / `tooltip` / `hover`
+   > 任何一个词（实测 grep 为空），单测只有 `chart/ChartInteractionTest` 那 2 条
+   > （命中最近点、离开绘图区/NaN 不命中）。
+   > 也就是说**提示框与十字线的像素、"吸附半径的边界"、"提示框夹取"、
+   > "`trackChartHover` 的坐标换算"全都没有闸门**——而坐标换算这一条尤其危险：
+   > 漏乘窗口缩放的表现是"十字线落在别的点上"而画面完全正常，
+   > 与 `ClickVerifier` 守的那个 ★ 缺陷**是同一类**（那条的变异实测能让 41 条倒下）。
+   > 动这块之前，先按「图表交互」一节末列的三条判别式补上断言。
 
    **左/右图例、底部标题、轴标题、带子边界那一节**（"★ 左/右图例…"）是另一组此后要维护的：
    五个变体共用一个 108×38 的矩形、**按帧轮换**（一块地方只装得下一个变体），
@@ -1056,6 +1241,9 @@ gc.endFrame()
 `math/{Vec2,Mat3,Transform}`、`util/{Color,Rect}`、`renderer/ViewTransform`、
 `text/SdfGenerator`（覆盖度位图 → 有符号距离场）、`text/TextLayout`（槽位序列 → 四边形顶点）、
 `chart/` 全部（数据容器、轴与刻度、配色 LUT、图表装配——见「图表」一节）、
+**图表交互**：`chart/ChartInteraction`（指针状态 + 逐样本命中器）、`ChartHover`、
+`ChartInteractionConfig`（13 字段 record，紧凑构造器校验）、`ChartValueFormatter`
+（`@FunctionalInterface` + `DEFAULT`）——见「图表交互」一节；
 `gpu/FftWindow`（四种窗 + 相干增益补偿，**全项目唯一的一份**，纯算术）
 
 **可用（依赖 GL 上下文）**
@@ -1077,6 +1265,11 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
 `chartrender/` 全部（`ChartRenderer`——入口是 `Gc.charts`、`LineSeriesRenderer`、
 `ScatterSeriesRenderer`、`SpectrumSeriesRenderer`（频谱，`ChartType.SPECTRUM`）、
 `SeriesBuffer`、`SeriesShaders`；用法见「图表」一节）、
+**图表交互的绘制与接线**：`ChartRenderer.drawInteraction`、`ChartPainter` 的
+`strokeLine` / `strokeDashedLine` / `strokeRect`、`FXGLTransfer.trackChartHover`
+（**没有任何校验器覆盖**，见「图表交互」一节末）、
+**`FXGLTransfer.onError`**（GL 线程上的渲染异常处理器）、**`Gc.abortFrame()`**
+（帧中途失败后恢复，供桥接层调用）、
 **抗锯齿**：`Gc.antialias`（描边 + 六个图表渲染器，默认关）、顶点属性 `aEdge`
 （横向/沿向，`VertexFormat.OFFSET_EDGE` = 24）、图表侧的 `vEdge` + `uAntialias`、
 `FXGLTransfer(msaa = N)` 与 `FXGLTransfer.canReadPixels`（回读拒绝守卫）、
@@ -1289,17 +1482,39 @@ DSL 的 `jfgl { antialias { msaa = 4 } }`——见「抗锯齿」一节
     合成事件自检 ① 用末尾探针 `previewDashedFrames` 钉住。
   - **没有"可拾取图元列表"抽象**：每个应用都要自己维护
     `列表 + 可变 pickId + register/unregister 配对 + 选中集的跨线程可见性`。
+  - ✅ **已修：`Gc` 的虚线能力接上了——但只接在图表那支私有笔上，没接到公开 API。**
+    `ChartPainter` 新增 `strokeDashedLine(...)`（等长交替、逐段 `drawLine`、无相位），
+    `Gc` 里那个 `private val chartPainter` 实现它，供十字线使用。
+    **应用层仍然没有公开的虚线描边**——`Gc` 的描边路径照旧只调实线 `stroke(...)`，
+    全文上面那条缺口**没有因此消失**（私有笔上的方法应用层够不着）。
+    新增的是**图表装饰的**能力，不是 `Gc` 的。
   - **`jfgl-javafx` 跑不了单测**：pom 里没有 junit、没有 surefire，kotlin 插件也只配了
     `src/main/kotlin`。所以本模块的纯计算只能靠"启动自检 + 非 0 退出"
-    （`ClickDslExample` 与 `JfglDemo` 都是这个模式）。`src/test` 目录存在但是空的。
+    （`ClickDslExample` 与 `JfglDemo` 都是这个模式）。
+    ⚠️ **`src/test` 不再是空的，但那不是单测**：`src/test/java/com/bingbaihanji/gl/Main.java`
+    是一个**手动跑的 Java 示例**（顶栏 `ComboBox` 切几何/文字/图表；几何档是
+    **两点式画圆 + 右键拾取**，见它自己的类文档），surefire **不会**碰它——
+    本模块仍然只有 `src/main/kotlin` 一处源码根。
+    **它的跑法与上面那些示例不同，照抄会 `ClassNotFoundException`**：
+    ```bash
+    cd jfgl-javafx
+    mvn -o test-compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=test" \
+        "-Dexec.args=-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -cp %classpath com.bingbaihanji.gl.Main"
+    ```
+    两处差别都是必需的：`compile` **不编译** test 源码（那是 `test-compile` 的事），
+    而 `classpathScope` 必须是 **`test`**——`runtime` 的 classpath 里没有 `target/test-classes`。`jfgl-javafx/pom.xml` 与根 `pom.xml` 在本轮都**只是
+    重排格式**（把一行挤在一起的 `<dependency>` 拆成多行），**没有任何依赖或插件变化**。
   - ✅ **已修（2026-09-26）：`ChartRenderer` 的系列资源现在自动回收**（设计文档 §6.6）。
     原先它用 `IdentityHashMap` 按 **`Series` 对象身份**缓存 GPU 缓冲与拾取号
     （`buffers` 与 `pickIds.computeIfAbsent(series, pickRegistry::register)` 两处），
     而这两张 map **只在 `dispose()` 里清空**、中间没有任何回收路径 ⇒
     任何"每帧重建 `Chart`"的写法（最自然的写法，因为 `Chart` 看起来是个纯计算对象）
     都会**每帧泄漏一块 `SeriesBuffer` 并消耗两个拾取号**；号耗尽时 `PickRegistry`
-    抛异常，**而 GL 线程上的异常在本项目是静默吞掉的** ⇒
-    症状是"前几百帧完全正常，然后图表忽然不画了，没有任何报错"。
+    抛异常 ⇒ 症状是"前几百帧完全正常，然后图表忽然不画了"。
+    ⚠️ **当时那句"没有任何报错"现在只对一半**：P1-6 之前帧回调里的异常被 openglfx
+    静默吞掉，"静默"是这条缺陷的形态里最坏的一环；现在它会走到 `reportRenderFailure`
+    （`onError` 或 `printStackTrace`），**但图表照样不画了**——报错只解决了"能不能查"，
+    没解决"会不会坏"。所以"用自动回收而不是 `retainSeries`"那条理由**不变**。
     **做法是自动回收，不是 `retainSeries` / `releaseSeries`**：一个要记得调的 API
     仍然会被忘记，而忘记的症状是静默的——正是这条缺陷本身的形态。
     机制：`ChartRenderer` 记一个**代**（每帧 +1）与一张 `IdentityHashMap<Series, Long> lastSeen`
@@ -1341,15 +1556,100 @@ app 的窗口完全由 JavaFX 管理，GLFW 不参与。
   带 classifier 的是 Windows 原生库，项目当前是 **Windows 专用**。
 - `openglfx-lwjgl` 显式排除了 `kotlin-stdlib-jdk8`，避免与 `kotlin-stdlib` 冲突。
 - `pom.xml` 的 manifest `<mainClass>` 是 `com.bingbaihanji.jfgl.MainKt`。
-  但 `java -jar bin/jfgl-1.0-SNAPSHOT.jar` 仍可能因 JavaFX/openglfx 的原生库路径问题失败，
+  但 `java -jar bin/jfgl-0.1.0.jar` 仍可能因 JavaFX/openglfx 的原生库路径问题失败，
   优先用上面的 `exec:exec` 或 IDE 运行配置。
+
+## 发布（里程碑 0.1.0）
+
+**版本号**：三个模块统一 `0.1.0`（原为 `1.0-SNAPSHOT`）。Bump 时**四处都要改**——
+根 `pom.xml` 的 `<version>`，以及三个子模块 `<parent>` 里的 `<version>`
+（`jfgl-core` 那个写在一行里）。子模块之间用的是 `${project.version}`，不必单独改。
+
+**发布范围**：**内部发布**（2026-09-27 定）。这一条决定了下面几件事的处置。
+
+### ⚠️ 公开分发前必须先换掉自带字体（法务拦截项，不是技术债）
+
+`jfgl-render-gl/src/main/resources/fonts/simhei.ttf` 是**微软 / 中易的专有字体**，
+实测与 `C:\Windows\Fonts\simhei.ttf` **逐字节相同**（md5 `4093871a7f48e43b9ce7c38da0c34809`），
+也就是系统字体的直接拷贝。它与本项目的 MIT 声明**直接冲突**——
+把专有字体按 MIT 分发是不成立的。
+
+- 内部自用 / 跑测试：保留，没问题（`TextVerifier` 就是靠它换台机器也能跑）。
+- **公开分发：必须先换**。替代品要 **OFL 授权的静态（非可变）字体**。
+  ⚠️ **本机没有现成的可换件**：`C:\Windows\Fonts` 里唯一的 OFL 中文字体是
+  `NotoSansSC-VF.ttf` / `NotoSerifSC-VF.ttf`，**都是可变字体**（带 `fvar`），
+  而 `stb` 会忽略变体轴 —— 所以这一步要**联网下载静态版**，不是复制一个文件。
+- 换完**必须重跑 `TextVerifier`** 并重核所有与字体相关的期望值（换字体改度量）。
+- README 顶部有一块显著提示、`LICENSE` 末尾有例外条款、字体目录 README 有完整约束，
+  三处都写了。**改这条时三处要一起改。**
+
+### 仓库卫生（0.1.0 时补的）
+
+- **`LICENSE`**：原先 README 声明 MIT 但**根目录没有这个文件**。已补，并在末尾加
+  "例外（不在 MIT 授权范围内）"一段点明字体。
+- **`.gitignore`**：原先只逐条忽略 `.claude/` 的两个子路径 ⇒ `.claude/runs/`（177K
+  的 GPU 探针数据）与 `gpuwatch.sh` **会被误提交**。已改成整目录忽略 `.claude/`
+  （它里面全是本机工具与产物）。
+- **没有 `.gitattributes`**：每次 `git status` 都在报 "LF will be replaced by CRLF"。
+  **本期没加**（加它会让所有文本文件重新归一化，是一次全仓 diff）——
+  要加就单开一次提交，别混进功能改动里。
+
+### 发布时的验收口径（0.1.0 实测全过）
+
+```bash
+mvn -o install -DskipTests     # 先在仓库根：子模块从本地仓库解析依赖，
+                               # 不 install 的话跨模块改动会"编译不过"（见下面那条坑）
+mvn -o test                    # 411 / 0 失败 / 2 跳过
+```
+
+再加**七个校验器**（`PipelineVerifier` / `PathVerifier` / `PickVerifier` /
+`ClickVerifier` / `TextVerifier` / `ChartVerifier` / `FftVerifier`，逐个退出码 0）、
+**demo 合成事件自检**（`-Djfgl.demo.selftest=1`，21 + 14 条）、
+**MSAA 三档跨进程比对**（`bash jfgl-javafx/scripts/msaa-verify.sh`）。
+0.1.0 这一次九项**全部通过**。
+
+> **⚠️ 跨模块的未提交改动会让 `jfgl-javafx` 编译不过，报错却指向一个不存在的引用。**
+> 实测：`jfgl-core` 里新加了 `Chart.interaction()` 但没 install，
+> 于是 `DemoChart.kt` 报 `Unresolved reference 'interaction'`——**看起来像代码写错了**。
+> 触发条件比这里原先记的更宽：**任何**跨模块的未提交改动都会撞它
+> （原先只记了 `jfgl-render-gl` 的变异残留那一种）。**判据：报错的符号明明存在 ⇒ 先 install。**
 
 ## 文档与生成物
 
-- `docs/superpowers/specs/2026-09-11-jfgl-render-pipeline-design.md` — 子项目 A 的设计规格。
-- `docs/superpowers/plans/2026-09-11-jfgl-render-pipeline.md` — 实施计划（15 个任务）。
-  **注意计划里有若干已知缺陷**，执行前先核对；文件内已就地标注了多处更正。
-- `docs/superpowers/specs/2026-09-09-jfgl-drawing-engine-design.md` — **已过时**，
-  描述的是被删除的保留模式场景图架构，仅作历史参考。
+**`docs/superpowers/` 下是规格（specs）与计划（plans）成对的一组，各 10 份**，
+按子项目推进的时间顺序编号。**这一节以前只列了 render-pipeline 那两份**——
+那份清单早就不是全部了，找文档时直接看目录：
+
+```
+specs/                                        plans/
+2026-09-09-jfgl-drawing-engine-design.md      2026-09-09-jfgl-drawing-engine.md
+2026-09-11-jfgl-render-pipeline-design.md     2026-09-11-jfgl-render-pipeline.md   （15 个任务）
+2026-09-17-jfgl-gpu-picking-design.md         2026-09-17-jfgl-gpu-picking.md
+2026-09-20-jfgl-chart-framework-design.md     2026-09-20-jfgl-chart-framework.md
+2026-09-20-jfgl-chart-render-backend-design.md 2026-09-20-jfgl-chart-render-backend.md
+2026-09-20-jfgl-sdf-text-design.md            2026-09-20-jfgl-sdf-text.md
+2026-09-23-jfgl-gpu-fft-design.md             2026-09-23-jfgl-gpu-fft.md
+2026-09-24-jfgl-architecture-review.md        （评审，无对应计划）
+2026-09-24-jfgl-demo-design.md                2026-09-24-jfgl-demo.md
+                                              2026-09-25-jfgl-demo-click-draw.md
+2026-09-26-jfgl-antialias-design.md           2026-09-26-jfgl-antialias.md
+```
+
+- **`2026-09-09-jfgl-drawing-engine-design.md` 已过时**：它描述的是被删除的保留模式
+  场景图架构，仅作历史参考。**别照着它理解现状**。
+- **`2026-09-11-jfgl-render-pipeline.md` 里有若干已知缺陷**，执行前先核对；
+  文件内已就地标注了多处更正。
+- **`2026-09-24-jfgl-architecture-review.md` 是评审报告的出处**：本文件里的 `P1-6`
+  等编号、以及 §4.5.1 关于 chart-fx 降采样的那几段，都引它。
+  ⚠️ 它的 §4.5.1 有一条**已被实测推翻**（"尖峰看不见"），**引它之前先读本文件里
+  「③-2 降采样」那一段的更正**。
+- **`docs/JFGL-DEVELOPER-GUIDE.md`**（新，`README.md` 第 3 行指向它）是**面向使用者**的
+  手册——分层、设计模式、三大模块 API、`Disposable` 四条契约。它与本文件**受众不同**：
+  本文件写给"要改这个库的人"（陷阱、变异验证、证据强度分级），手册写给"要用这个库的人"。
+  **手册里没有的东西才是本文件存在的理由**，所以两边的重复不必去消除；
+  但**手册里出现了本文件没有的断言时要当心**——它写着"回调异常会通过 `abortFrame`
+  清理当前状态"（§1.5），而那条**没有断言盖着**（见「常用命令」里 P1-6 那段）。
 - `jfgl-workflow.js` — 生成此代码库的多智能体 Workflow 脚本。
+- `.claude/` — 本机配置（`settings.local.json`、`skills/`、`worktrees/`、`runs/`、
+  `gpuwatch.sh`）。**未纳入版本控制的意图不明，改它之前先问**。
 - `.xcodemap/` — xcodemap 插件配置。本项目**未**建立 codegraph 索引，codegraph 工具不可用。

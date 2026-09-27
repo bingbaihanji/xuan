@@ -3,7 +3,11 @@ bin/
 out/
 .idea/
 .xcodemap/
-.claude/settings.local.json
-.claude/worktrees/
+
+# 本机工具与它的产物：探针数据（.claude/runs/，约 177K）、GPU 时钟记录脚本、
+# 本地设置、worktree。原先是逐条列（只列了 settings.local.json 与 worktrees/），
+# 于是 runs/ 与 gpuwatch.sh 会**被误提交**——所以改成整目录忽略。
+.claude/
+
 *.iml
 *.log

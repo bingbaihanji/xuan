@@ -1,8 +1,25 @@
 # JFGL - JavaFX OpenGL 2D 绘图框架
 
+开发者设计、模块边界和扩展说明见 [JFGL 开发者手册](docs/JFGL-DEVELOPER-GUIDE.md)。
+
 一个基于 JavaFX + OpenGL 的 2D 绘图框架。API 手感类似 HTML Canvas（立即模式、像素坐标、
 `fillRect` / `strokePath` 这类方法形状），内部走 **GPU 批处理管线**：绘制调用只往顶点缓冲里
 追加数据，每帧一次性提交重放。
+
+## ⚠️ 公开分发前必须先做这一件事：换掉自带字体
+
+本仓库自带 `jfgl-render-gl/src/main/resources/fonts/simhei.ttf`，它是
+**微软 / 中易的专有字体**（Windows 系统自带的「黑体」SimHei）——**不是自由字体，
+不在本项目的 MIT 授权范围内**（见 [LICENSE](LICENSE) 末尾的例外条款）。
+
+- **本机自用 / 内部开发 / 跑测试**：没有问题，这份字体就是为此放进来的。
+- **要公开分发（开源、发 jar、镜像到别的平台）**：**必须先换掉它**，
+  否则是在按 MIT 分发一份专有字体。
+
+替代品要用 **OFL 授权的静态（非可变）** 中文字体，如 **Noto Sans SC / 思源黑体**。
+换完**必须重跑 `TextVerifier`**：不同字体的度量不同，那里与字体相关的期望值要重新核对。
+完整约束（为什么不能用 OTF/CFF、为什么不能用可变字体、怎么核对）见
+[`jfgl-render-gl/src/main/resources/fonts/README.md`](jfgl-render-gl/src/main/resources/fonts/README.md)。
 
 ## 特性
 
@@ -306,6 +323,29 @@ gc.drawText("可点的标签", 40f, 200f)
 
 ### 图表
 
+#### Hover 十字线与数据提示框
+
+图表交互状态属于 `Chart`，不依赖 JavaFX。应用只需在 JavaFX 节点上绑定 hover，
+渲染帧中调用 `drawChart` 时会自动画十字虚线、命中点和提示框：
+
+```kotlin
+val chart = buildChart()
+chart.interaction().setConfig(
+    ChartInteractionConfig.defaults()
+        .crosshairVisible(true)
+        .tooltipVisible(true)
+        .formatter { value, _ -> "%.2f".format(value) }
+)
+bridge.trackChartHover(canvasNode, chart)
+
+// onFrame 中：
+gc.charts.drawChart(chart, frame, gc.width, gc.height)
+```
+
+提示框默认显示 `x 轴名称 (单位)`、`系列名称 / y 轴名称 (单位)` 和对应值。
+可以通过 `enabled`、`crosshairVisible`、`tooltipVisible`、吸附半径、颜色、线宽、虚线长度、
+字体大小、内边距、偏移量和 `formatter` 完整配置。鼠标坐标会自动按 JavaFX 窗口缩放转换为设备像素。
+
 图表分两层：**`chart/` 是纯计算**（数据容器、轴与刻度、配色 LUT、图表装配，
 零 GL 依赖，可脱离 OpenGL 单测），**`chartrender/` 是 GPU 绘制后端**（把装配结果画成
 实例化 draw call）。两者是**兄弟包**，`chart/` 里一条 GL 依赖都没有，由
@@ -522,9 +562,13 @@ mvn -pl jfgl-core -Dtest=PathTest test  # 单个 core 测试类
 mvn -pl jfgl-render-gl -Dtest=PickBufferTest test
 ```
 
-当前 **357 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
-`@Disabled` 的已知缺陷）。分布：`geom/` 79、`renderer/` 100、`gl/` 12、`text/` 32、
-`chart/` 71、`chartrender/` 49、`gpu/` 14。
+当前 **411 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+`@Disabled` 的已知缺陷）。分布：`geom/` 91、`renderer/` 107、`gl/` 13、`text/` 32、
+`chart/` 85、`chartrender/` 69、`gpu/` 14。
+
+> 这几个数请从 surefire 报告里数（`*/target/surefire-reports/TEST-*.xml` 的 `tests=` 求和），
+> 不要凭印象写：`mvn -q test` 会把汇总行吃掉，而这里的数字以前就因为这样落后过两轮
+> （写过 357，当时实际已经是 405）。
 
 `geom/`、`renderer/` 的顶点侧、`math/`、`util/`、`chart/` 都是纯计算，不依赖 GL 上下文；
 `chartrender/` 里 `WindowRange`、`SeriesUploadPlan`、`ChartRenderLayout` 是纯算术，
@@ -576,4 +620,8 @@ FFT 本身的**数值**（峰值落在正确的 bin、与朴素 O(N²) DFT 逐 b
 
 ## 许可证
 
-MIT License
+**MIT License**，全文见 [LICENSE](LICENSE)。
+
+⚠️ **有一处例外**：仓库自带的 `fonts/simhei.ttf` 是第三方专有字体，
+**不在 MIT 授权范围内**，公开分发前必须换掉——详见上面「公开分发前必须先做这一件事」
+与 [LICENSE](LICENSE) 末尾的例外条款。
