@@ -5,6 +5,7 @@ import com.bingbaihanji.jfgl.chartrender.ChartPainter
 import com.bingbaihanji.jfgl.chartrender.ChartRenderer
 import com.bingbaihanji.jfgl.geom.Flattener
 import com.bingbaihanji.jfgl.geom.Path
+import com.bingbaihanji.jfgl.geom.PathHit
 import com.bingbaihanji.jfgl.geom.StrokeGenerator
 import com.bingbaihanji.jfgl.geom.Tessellator
 import com.bingbaihanji.jfgl.math.Mat3
@@ -1262,6 +1263,159 @@ class Gc constructor(private val batch: RenderBatch) {
         path.bezierCurveTo(c1x, c1y, c2x, c2y, x, y)
     }
 
+    /**
+     * 点是否落在**当前路径**的填充区域里（不看 [clipRect]，与 Canvas 一致）。
+     *
+     * <h2>坐标：(x, y) 是设备像素</h2>
+     * <p>这是 **Canvas 语义**，也是它最有名的一处反直觉：**点不受当前变换影响，
+     * 而路径受**。所以
+     * <pre>
+     * gc.translate(100f, 50f); gc.beginPath(); gc.moveTo(0f, 0f); …; gc.fillPath()
+     * gc.isPointInPath(100f, 50f)   // true —— 设备像素
+     * gc.isPointInPath(0f, 0f)      // false —— 那是路径自己的坐标
+     * </pre>
+     * 与 [isPointInStroke] 同一口径，也与 GPU 拾取同一口径（拾取也用设备像素）。
+     *
+     * <h2>算法：交叉计数（奇偶规则）</h2>
+     * <p>与 JFGL 的填充是**同一套语义**：{@code Tessellator} 按包含关系定洞
+     * （嵌套深度偶数为外轮廓、奇数为洞），而对良构路径——它的前提是"各轮廓是简单
+     * 多边形"——**嵌套深度奇偶 ≡ 交叉计数奇偶**。两者只在"部分重叠但不包含"的轮廓上
+     * 分家，而那已经踩了前提。理由与取舍见设计规格 §4.1。
+     *
+     * <p><strong>与 GPU 拾取的四处差别</strong>（都能回答"这一点在不在我的图形上"，
+     * 但答案会不同，**不是缺陷**）：拾取要注册过的对象与 `pickId`、必须在 GL 线程、
+     * **受 `clipRect` 影响**、且是像素精确的；本函数问的是当前路径、任意线程、
+     * 不看裁剪、且是解析判定。
+     *
+     * @param x 查询点 x（**设备像素**）
+     * @param y 查询点 y（**设备像素**）
+     * @return 在填充区域内部为 true；路径为空、点数不足、或查询点非有限数时为 false
+     */
+    fun isPointInPath(x: Float, y: Float): Boolean {
+        if (!x.isFinite() || !y.isFinite()) {
+            return false
+        }
+        if (path.isEmpty) {
+            return false
+        }
+        flattener.flatten(path, matrixScale())
+        if (flattener.pointCount() < 3) {
+            return false
+        }
+        val count = flattenToScratch()
+        // 变换到设备空间。用 `state.transformX/Y`——**与 emitTriangles 同一个函数**，
+        // 所以判定用的几何与画出去的几何是同一份变换，不存在"两处各算一遍"。
+        ensureHitCapacity(count * 2)
+        for (i in 0 until count) {
+            val wx = scratchPoints[i * 2]
+            val wy = scratchPoints[i * 2 + 1]
+            hitPoints[i * 2] = ndcToDeviceX(state.transformX(wx, wy))
+            hitPoints[i * 2 + 1] = ndcToDeviceY(state.transformY(wx, wy))
+        }
+        val contours = fillContourTable(count)
+        return PathHit.isPointInContours(
+            hitPoints, contourOffsets, contourCounts, contours, x, y)
+    }
+
+    /**
+     * 点是否落在**当前路径的描边**上（不看 [clipRect]，与 Canvas 一致）。
+     *
+     * <h2>坐标与 [isPointInPath] 同口径：设备像素</h2>
+     *
+     * <h2>★ 它复用 [strokeGenerator] 本身，而不是把接头几何再写一遍</h2>
+     * <p>判据是"点落在描边生成的**任一个三角形**里"（三角形互相重叠，取**并集**——
+     * 那正是墨迹覆盖的区域）。于是含 miter 尖角、含超限回退 bevel，且**与画面同源**：
+     * 同一份生成器、同一组参数。抄一遍接头几何等于制造"同一条尺规的两份实现"，
+     * 而本仓库已经为漂移吃过亏。
+     *
+     * <p>参数与 [strokeOutline] 逐项相同，**只有外扩量取 0**：`capExtension` 是
+     * **渲染期**为了让边缘有外侧片元而加的 AA 余量，不是几何。副作用是
+     * **AA 开启时本函数比拾取窄约 1 设备像素**（拾取的 ID pass 复用加宽过的几何，
+     * 那是已声明的行为）。
+     *
+     * <p>当前 [dashPattern] 会被遵守（与 Canvas 一致：`isPointInStroke` 算的是
+     * "当前设置下**会画出来**的那条虚线"）。
+     *
+     * @param x 查询点 x（**设备像素**）
+     * @param y 查询点 y（**设备像素**）
+     * @return 在描边上为 true；路径为空、点数不足、[lineWidth] ≤ 0、
+     *         或查询点非有限数时为 false
+     */
+    fun isPointInStroke(x: Float, y: Float): Boolean {
+        if (!x.isFinite() || !y.isFinite()) {
+            return false
+        }
+        if (path.isEmpty || lineWidth <= 0f) {
+            return false
+        }
+        flattener.flatten(path, matrixScale())
+        if (flattener.pointCount() < 2) {
+            return false
+        }
+        val count = flattenToScratch()
+        val subPaths = flattener.subPathCount()
+
+        // 子路径的处理与 [strokePath] **逐条对应**：每条子路径独立描边、各自的闭合标志。
+        // 少了这一步，一条"两段互不相连的横线"路径会被当成一条折线，中间多出一段
+        // 并不存在的连线——而那一段在**画面上也是没有的**（strokePath 就是分开描的）。
+        if (subPaths == 0 || (subPaths == 1 && flattener.subPathStart(0) == 0)) {
+            return strokeAndHit(scratchPoints, count, lastCommandIsClose(), x, y)
+        }
+        val closed = subPathClosedFlags(subPaths)
+        for (i in 0 until subPaths) {
+            val from = flattener.subPathStart(i)
+            val to = if (i + 1 < subPaths) flattener.subPathStart(i + 1) else count
+            val n = to - from
+            if (n < 2) {
+                continue
+            }
+            if (strokeAndHit(copySubPath(from, n), n, closed[i], x, y)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * 把一段折线描边后立刻判定，返回点是否落在它的墨迹里。
+     *
+     * <p>参数与 [strokeOutline] 逐项相同，**除了外扩量为 0**（理由见 [isPointInStroke]）。
+     * ⚠️ 它**会 `reset()` [strokeGenerator]**——那是它与 [strokeOutline] 共用的实例。
+     * 两者都是"reset → 生成 → 取走"一口气跑完、中间不交错的，所以安全；
+     * 但**不要**在别处把生成器借出去跨越一段绘制。
+     */
+    private fun strokeAndHit(points: FloatArray, count: Int, closed: Boolean,
+                             x: Float, y: Float): Boolean {
+        if (count < 2 || lineWidth <= 0f) {
+            return false
+        }
+        val pattern = dashPatternValue
+        if (pattern == null) {
+            strokeGenerator.stroke(
+                points, count, closed, lineWidth,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, MITER_LIMIT,
+                ROUND_SEGMENTS, 0f, lineWidth * 0.5f)
+        } else {
+            strokeGenerator.strokeDashed(
+                points, count, closed, lineWidth,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, MITER_LIMIT,
+                pattern, dashPhase, ROUND_SEGMENTS, 0f)
+        }
+        val floatCount = strokeGenerator.triangleCount() * 6
+        if (floatCount < 6) {
+            return false
+        }
+        val tris = strokeGenerator.rawTriangles()
+        ensureHitCapacity(floatCount)
+        var i = 0
+        while (i + 1 < floatCount) {
+            hitPoints[i] = ndcToDeviceX(state.transformX(tris[i], tris[i + 1]))
+            hitPoints[i + 1] = ndcToDeviceY(state.transformY(tris[i], tris[i + 1]))
+            i += 2
+        }
+        return PathHit.isPointInTriangles(hitPoints, floatCount, x, y)
+    }
+
     /** 用一条直线回到当前子路径的起点，闭合该子路径。 */
     fun closePath() {
         path.close()
@@ -1494,6 +1648,41 @@ class Gc constructor(private val batch: RenderBatch) {
             size *= 2
         }
         scratchPoints = FloatArray(size)
+    }
+
+    /**
+     * 命中判定专用的顶点缓冲：存**变换到设备像素之后**的点，由 [ensureHitCapacity] 按需增长。
+     *
+     * <p><strong>为什么与 [scratchPoints] 分开</strong>：{@code scratchPoints} 装的是
+     * **用户空间**的平坦化结果，而两个命中函数要拿设备空间的几何去比——就地覆盖它
+     * 会让"判定完再画"这条再自然不过的用法画出错位的图形（而画面只是"整体偏了一点"）。
+     * 分开之后两边各司其职，没有"哪个空间"要记。
+     */
+    private var hitPoints = FloatArray(INITIAL_SCRATCH_FLOATS)
+
+    /**
+     * NDC → 设备像素 x，**本帧基矩阵的逆**。
+     *
+     * <p>★ 这两个函数是这次实现踩过的一个坑的产物：`state.transformX/Y` 给的是
+     * **NDC**（基矩阵是 `translate(-1,1) × scale(2/W, -2/H)`），不是设备像素——
+     * 绘制那条路不需要逆映射，因为 GL 的视口会把 NDC 映成像素，所以从 `emitTriangles`
+     * 那一侧看过去"变换完就是屏幕位置"是**看不出来的**。把 NDC 当像素用的症状是
+     * **判定恒为 false**（几何被算到 [-1,1] 那个小方块里，而查询点是三位数的像素坐标）。
+     * 实测：x=200 变换后是 -0.595 = 200/988*2-1。
+     */
+    private fun ndcToDeviceX(ndcX: Float): Float = (ndcX + 1f) * 0.5f * width
+
+    private fun ndcToDeviceY(ndcY: Float): Float = (1f - ndcY) * 0.5f * height
+
+    private fun ensureHitCapacity(capacity: Int) {
+        if (hitPoints.size >= capacity) {
+            return
+        }
+        var size = hitPoints.size
+        while (size < capacity) {
+            size *= 2
+        }
+        hitPoints = FloatArray(size)
     }
 
     /**

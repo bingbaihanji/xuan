@@ -82,7 +82,45 @@ private const val FIRST_ASSERT_FRAME = 6
  * / ⑤**开放**的直角折线（走 [Gc.strokePath]）/ ⑥带孔填充（[Gc.fillPath]）
  * / ⑦**半透明**描边的退化接头（见 [PathVerifierApp.drawTranslucentJointCase]）。
  */
-private const val ASSERT_FRAME_COUNT = 8
+private const val ASSERT_FRAME_COUNT = 9
+
+// ---------------------------------------------------------------------------
+// 变体 8：`Gc.isPointInStroke` 与**画面**的逐点对照。
+//
+// 几何：一条 90° 折线 (200,300)→(400,300)→(400,100)，线宽 40（半宽 20）。
+// 两条带是 A: x∈[200,400], y∈[280,320] 与 B: x∈[380,420], y∈[100,300]，
+// 外角在右下，miter 三角形 = (400,320) (420,300) (420,320)。
+//
+// 两个探针**刻意分两类**（缺一不可，理由见断言那一段）：
+//   · 带内对照点 (300,300)：两种实现都判 true ⇒ 钉"判定不是整个反了"
+//   · 尖角判别点 (415,315)：距折线 21.21 > 半宽 20 ⇒ **半带宽实现判 false**，
+//     而它在 miter 三角形里（415+315=730 ≥ 720）⇒ 真描边有墨迹。**只有复刻接头会判 true。**
+// ---------------------------------------------------------------------------
+
+/** 描边对照用的折线与探针。 */
+private const val HIT_RGB = 0x33DD88
+
+private const val HIT_HALF_WIDTH = 20f
+
+/** 折线的两个拐点。 */
+private const val HIT_X0 = 200f
+private const val HIT_Y0 = 300f
+private const val HIT_X1 = 400f
+private const val HIT_Y1 = 300f
+private const val HIT_X2 = 400f
+private const val HIT_Y2 = 100f
+
+/** ① 带内对照点（在段 A 的中心线上）。 */
+private const val HIT_IN_BAND_X = 300
+private const val HIT_IN_BAND_Y = 300
+
+/** ② **判别点**：在 miter 尖角里、但在半宽圆盘之外。 */
+private const val HIT_TIP_X = 415
+private const val HIT_TIP_Y = 315
+
+/** ③ 反面：离得很远。 */
+private const val HIT_OUT_X = 500
+private const val HIT_OUT_Y = 500
 
 // ---------------------------------------------------------------------------
 // 变体 7：虚线描边（`Gc.dashPattern`）。
@@ -294,6 +332,18 @@ class PathVerifierApp : Application() {
      */
     private var drawnVariant = 0
 
+    /**
+     * 变体 8 的三个判定读数（**绘制期取、校验期用**）。
+     *
+     * <p>不在这里做断言，是因为判定需要 `Gc`（只在 GL 线程绘制期可用），
+     * 而像素对照需要帧缓冲快照（校验期才有）。两边都得在场，所以分成两处。
+     */
+    private var inBandHit = false
+    private var tipHit = false
+    private var outHit = false
+    private var pathHitCallable = false
+    private var pathHitOutside = false
+
     /** 各次断言累积的失败项。退出码取它，而不是最后一帧的结果。 */
     private val failures = ArrayList<String>()
 
@@ -337,7 +387,8 @@ class PathVerifierApp : Application() {
                 4 -> drawOpenPolylineCase(gc)
                 5 -> drawHoleFillCase(gc)
                 6 -> drawTranslucentJointCase(gc)
-                else -> drawDashedCase(gc)
+                7 -> drawDashedCase(gc)
+                else -> drawStrokeHitCase(gc)
             }
         } catch (t: Throwable) {
             println("\n=== 绘制过程抛出异常，判为失败 ===")
@@ -561,6 +612,30 @@ class PathVerifierApp : Application() {
         // 画完复位：**本类的每个变体共用同一个 Gc**，而这个字段是状态栈里的一员。
         // 不复位的话它只影响后面变体——而变体是轮转的，症状会变成"某些帧莫名其妙是虚线"。
         gc.dashPattern = null
+    }
+
+    /**
+     * 变体 8：`isPointInStroke` 与画面的对照。
+     *
+     * <p>**判定结果必须在这里取**：`Gc` 只在 GL 线程的绘制期可用，而校验期读的是
+     * 帧缓冲快照。所以这一帧既画、又把三个探针的判定值记进字段，校验期拿它们去比像素。
+     */
+    private fun drawStrokeHitCase(gc: Gc) {
+        gc.stroke = HIT_RGB or (0xFF shl 24)
+        gc.lineWidth = HIT_HALF_WIDTH * 2f
+        gc.beginPath()
+        gc.moveTo(HIT_X0, HIT_Y0)
+        gc.lineTo(HIT_X1, HIT_Y1)
+        gc.lineTo(HIT_X2, HIT_Y2)
+        gc.strokePath()
+
+        inBandHit = gc.isPointInStroke(HIT_IN_BAND_X.toFloat(), HIT_IN_BAND_Y.toFloat())
+        tipHit = gc.isPointInStroke(HIT_TIP_X.toFloat(), HIT_TIP_Y.toFloat())
+        outHit = gc.isPointInStroke(HIT_OUT_X.toFloat(), HIT_OUT_Y.toFloat())
+        // 顺带走一遍 `isPointInPath` 的接线。奇偶规则下这条未闭合的 L 隐式闭合成一个
+        // 三角形 (200,300)(400,300)(400,100)：y=200 处它的 x 跨度是 [300,400]。
+        pathHitCallable = gc.isPointInPath(380f, 200f)
+        pathHitOutside = gc.isPointInPath(HIT_OUT_X.toFloat(), HIT_OUT_Y.toFloat())
     }
 
     /**
@@ -864,7 +939,7 @@ class PathVerifierApp : Application() {
             println("\n-- 无杂散像素（覆盖整幅画面）--")
             // 本变体应当恰好 3 种颜色：背景、单层、以及两段带自相交处的双层 —— 由文件
             // 末尾那条统一的"画面只有 N 种颜色"断言按变体取 N 来钉（这里不重复断言）。
-        } else {
+        } else if (drawnVariant < 8) {
             println("\n-- 虚线描边：实段与空段真的交替 --")
 
             // ★ 判据选"**段数 + 墨迹总宽**"这一对，而不是只看其中一个。
@@ -900,6 +975,52 @@ class PathVerifierApp : Application() {
                 DASH_X1.toInt() - 1, DASH_Y.toInt() + 3, SUB_PATH_RGB)
             report("前提：这条线确实落在扫描行附近（宽度 4）", band > 0,
                 "线周围 400x7 的盒子里有 $band px 墨迹")
+        } else {
+            println("\n-- 描边命中判定：与画面逐点对照 --")
+
+            // ★ 判据是"**函数的结论**"与"**那一点上的像素**"这一对，两个都要对。
+            //
+            //   只比像素 ⇒ 抓不住"函数整个写反了"（像素与函数无关）；
+            //   只比函数的结论 ⇒ 抓不住"函数与画面不一致"——而本变体存在的**全部理由**
+            //   就是钉住"复刻接头几何"那条选择，它与"半带宽近似"唯一的差别**只在像素上**。
+            //
+            //   而两个探针又是**两类**，缺一不可：
+            //     · 带内对照点 —— 两种实现都判 true。它钉"判定不是整个反了"：
+            //       没有它的话，"函数恒返回 false"会让判别点那条以同样的方向倒，
+            //       读起来像"接头没复刻"，其实连带内都错了。
+            //     · 尖角判别点 —— 只有复刻接头会判 true。**它是唯一分得开两种实现的地方。**
+            //   （这与变体 ③/④ 用"像素总数之差"而不是"外角有没有像素"是同一条道理。）
+            val inBandPixel = pixelAt(HIT_IN_BAND_X, HIT_IN_BAND_Y)
+            report("① 带内对照点：判定为在描边上，且像素确实是描边色", inBandHit && inBandPixel == HIT_RGB,
+                "isPointInStroke=$inBandHit，该点像素 #%06X（期望描边色 #%06X）"
+                    .format(inBandPixel, HIT_RGB))
+
+            val tipPixel = pixelAt(HIT_TIP_X, HIT_TIP_Y)
+            // ⚠️ 这两个 `%06X` 曾经没被格式化：`.format(...)` 只绑到它**紧邻的那个**
+            //   字符串字面量上，而占位符在前一个字面量里 ⇒ 报告里印出的是裸的 `#%06X`。
+            //   断言照样能过（判据是 `tipHit && tipPixel == HIT_RGB`，与文案无关），
+            //   所以**只有人看输出才发现**。改成插值就不会再犯。
+            report("② ★ 尖角判别点：判定为在描边上，且像素确实是描边色", tipHit && tipPixel == HIT_RGB,
+                "isPointInStroke=$tipHit，该点像素 #${"%06X".format(tipPixel)}" +
+                        "（期望描边色 #${"%06X".format(HIT_RGB)}）。" +
+                        "距折线 21.21px > 半线宽 20px ⇒ **半带宽实现会判 false**，" +
+                        "而它在 miter 三角形里、画面上确实有墨迹 ⇒ 只有复刻接头才会判 true")
+
+            val outPixel = pixelAt(HIT_OUT_X, HIT_OUT_Y)
+            report("③ 反面：远处的点判为不在描边上，且背景是干净的",
+                !outHit && outPixel == BACKGROUND,
+                "isPointInStroke=$outHit，该点像素 #%06X（期望背景 #%06X）"
+                    .format(outPixel, BACKGROUND))
+
+            // ④ 走一遍 `isPointInPath` 的**接线**（平坦化 → 设备变换 → 轮廓表 → 判定）。
+            //    ⚠️ 它不接像素，因为本变体只描边不填充——没有"填充色"可比。
+            //    奇偶规则下这条未闭合的 L 隐式闭合成的三角形是 (200,300)(400,300)(400,100)：
+            //    y=200 处它的 x 跨度是 [300,400]，所以 (380,200) 在内部、
+            //    (500,500) 在外面。判据即这两个结论（纯计算那侧由 `PathHitTest` 覆盖）。
+            report("④ isPointInPath 走通 Gc 那条接线（平坦化→设备变换→轮廓表）",
+                pathHitCallable && !pathHitOutside,
+                "L 形内部 (380,200) ⇒ $pathHitCallable（期望 true）；" +
+                        "远处 (500,500) ⇒ $pathHitOutside（期望 false）")
         }
 
         // 半透明变体（最后一个）是唯一的例外：它必然多出一种"两层"颜色

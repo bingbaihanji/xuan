@@ -223,10 +223,11 @@ jfgl-render-gl/src/test/.../gpu/        FftWindowTest、FftKernelTest
 + `MsaaVerifier`（**要跑三次**：`msaa=0` / `4` / `-1`，由 `jfgl-javafx/scripts/msaa-verify.sh` 比对）。
 后两者的处境与那七个的区别见「抗锯齿」一节。）
 
-当前 **412 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+当前 **422 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
 `@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`（跨模块加 `-pl 模块名`）。
-分布：`geom/` 92、`renderer/` 107、`gl/` 13、`text/` 32、`chart/` 85、`chartrender/` 69、
-`gpu/` 14（合计 412 = `jfgl-core` 177 + `jfgl-render-gl` 235；
+分布：`geom/` 102、`renderer/` 107、`gl/` 13、`text/` 32、`chart/` 85、`chartrender/` 69、
+`gpu/` 14（合计 422 = `jfgl-core` 187 + `jfgl-render-gl` 235；
+路径命中那一步给 `geom/` 加了 10 条——`PathHitTest`，理由见「已实现 vs 未实现」里那一条；
 虚线那一步又给 `geom/` 加了 1 条——`StrokeDashTest`
 「每一项都低于阈值的模式不产生三角形而不是死循环」，理由见「已实现 vs 未实现」里那条；
 里程碑 `0.1.0` 那一步又给 `chart/` 加了 3 条——`ChartInteractionTest` 的
@@ -538,6 +539,40 @@ gc.endFrame()
   ② `rgbAt` 返回 24 位 RGB 而常量是 ARGB，**比较两边口径不同**。
   第二个只有靠"把画面里到底有什么颜色直接印出来"才看得出来——所以
   `AxisVerifier` 里那两行颜色直方图**是刻意留着的**，见它的注释。
+
+#### 路径命中判定（`isPointInPath` / `isPointInStroke`，2026-09-28）
+
+`Gc` 上加了两个 CPU 侧的命中判定，规格在
+`docs/superpowers/specs/2026-09-28-jfgl-path-hit-design.md`：
+
+```kotlin
+gc.beginPath(); gc.moveTo(…); gc.fillPath()
+gc.isPointInPath(x, y)      // 在填充区域里？
+gc.isPointInStroke(x, y)    // 在描边上？
+```
+
+- **(x, y) 是设备像素**（**Canvas 语义**：点不受变换影响、路径受）。与拾取同口径。
+- 针对**当前路径**，无需 `pickId`、不走 GPU、**任意线程**可调。`fillPath` 之后路径仍在。
+- **`isPointInPath` 用交叉计数（奇偶规则）**，不是复用 `Tessellator`。理由：JFGL 的填充
+  是"按包含关系定洞"，而对良构路径（`Tessellator` 写明的前提：各轮廓是简单多边形）
+  **嵌套深度奇偶 ≡ 交叉计数奇偶**，两者恒等；而走三角化有前提耦合、每次查询还要跑一遍耳切。
+- ★ **`isPointInStroke` 复用 `StrokeGenerator` 本身**，不抄接头几何：把平坦化后的点按
+  **与 `strokeOutline` 完全相同的参数**（只有 `capExtension` 取 0，那是渲染期的 AA 余量）
+  喂进去，取它产出的三角形，"点在任一三角形里"即命中（三角形互相重叠，取**并集**）。
+  抄一遍等于制造"同一条尺规的两份实现"，而本仓库为漂移吃过亏。
+- ★ **实现时踩的坑**：`state.transformX/Y` 给的是 **NDC 不是设备像素**
+  （基矩阵是 `translate(-1,1) × scale(2/W, -2/H)`）。绘制那条路看不出这一点，
+  因为 GL 的视口会把 NDC 映成像素——**只有做命中判定才需要那个逆映射**。
+  症状是**判定恒为 false**（几何被算进 [-1,1] 的小方块，而查询点是三位数的像素坐标）。
+  实测：x=200 变换后是 -0.595 = 200/988*2-1。修法是 `ndcToDeviceX/Y` 两个辅助。
+- **与 GPU 拾取的四处差别**（会给出不同答案，**不是缺陷，但必须知道**）：
+  拾取要注册过的对象、必须 GL 线程、**受 `clipRect` 影响**、像素精确；
+  本判定问当前路径、任意线程、**不看裁剪**、解析判定。**AA 开启时它比拾取窄约 1 像素**
+  （拾取的 ID pass 复用加宽过的几何，那是已声明的行为）。
+- **边界上的点没有约定**（`PathHit` 的类文档写明了）：浮点比较在边界上本来就没有稳定答案，
+  硬定一个只会给出一种"看起来确定"的行为。要用在边界上时调用方自己留余量。
+- 验收：`PathHitTest` 10 条（纯计算）+ `PathVerifier` 变体 ⑨（与画面逐点对照，见
+  「怎么验证改动」一节）。**变异**（`MITER`→`BEVEL`）⇒ 恰好尖角判别点那条倒。
 
 #### 绘制后端（②，`chartrender/`）
 
@@ -1055,7 +1090,7 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
    要改这条期望值，请照这四步重新量一遍，**不要凭"收个容差应该够"去调**。
 
    改 **`Gc` 的路径方法**（`strokePath` / `fillPath` / 子路径处理 / **`dashPattern` 那条分派**）
-   后跑 `PathVerifier`（退出码 0/1，**66 条**断言）。它有**八个变体**、逐帧轮转、逐个断言：
+   后跑 `PathVerifier`（退出码 0/1，**74 条**断言）。它有**九个变体**、逐帧轮转、逐个断言：
    ①一条路径里画两条互不相连的横线；②只画第一条（钉住"上一帧的顶点留在缓冲里"这类**跨帧残留**）；
    ③闭合的直角方框（粗线宽，把收尾接头放大成看得见的缺口）；④**同一份几何**的开放对照；
    ⑤**开放**的直角折线（钉住反面——开放子路径不该被当成闭合而多出一段收尾连线）；
@@ -1065,6 +1100,14 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
    **段数差 20 倍**）。只看总宽拦不住"两段各 20px、中间空 20px"，只看段数拦不住
    "每段 1px、空 19px"——**两个一起看**才钉住"周期 20、实段占一半"。
    变异（让 `strokeOutline` 忽略模式）⇒ 实测 **1 段 / 400 px**，**恰好那两条倒**。
+   ⑨**路径命中判定**（2026-09-28 加）——`isPointInStroke` 与**画面**逐点对照。
+   判据是「**函数的结论**」与「**那一点上的像素**」这一对，两个都要对：只比像素抓不住
+   "函数整个写反了"（像素与函数无关），只比结论抓不住"函数与画面不一致"——而那正是
+   本变体存在的**全部理由**（它钉的是"复刻接头几何"那条选择）。
+   探针**分两类、缺一不可**：**带内对照点**（两种实现都判 true，钉"没整个反"）+
+   **尖角判别点**（距折线 21.21px > 半线宽 20px，**只有复刻接头会判 true**）。
+   变异（`strokeAndHit` 的 `Join.MITER` → `Join.BEVEL`）⇒ **恰好 ② 那一条倒**，
+   读数是"函数说不在、而画面在那儿有墨迹"。
    ③ 与 ④ 之间还断言**像素总数之差**为 100 px（直角处完整接头恰好是 10x10 整块）：
    只断言"外角有像素"会被"整块都画错了"骗过去，差值才能把"接头补上了"与"别的地方也变了"
    分开。
@@ -1311,6 +1354,8 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
 半谱）、
 `chartrender/` 的装饰（`ChartLayout` 的轴标题带与刻度预留、`ChartPainter.begin(Rect)` 的
 带子裁剪）、`dsl/JFGL` 的 `overlay` / `onScene`（把 JavaFX 控件放进 DSL 应用）、
+**路径命中判定**：`Gc.isPointInPath` / `Gc.isPointInStroke`（CPU、任意线程、无需 `pickId`）
++ `geom/PathHit`（纯计算，见「路径命中判定」一节）、
 `renderer/PickRegistry`（ID 分配与 `id→对象` 映射，纯内存可单测）、
 `renderer/PickBuffer`、`PickHit`、`Gc` 的 `pickId` / `pickable` / `pick` / `pickRect`、
 `FXGLTransfer` 的 `pickAsync` / `pickAsyncAtNode`（hover，最新覆盖旧的）与

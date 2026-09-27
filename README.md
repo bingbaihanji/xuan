@@ -276,6 +276,32 @@ fillPath()      // 每个子路径是一条轮廓：按**包含关系**判定外
 strokePath()    // 每个子路径**独立**描边；末条命令是 CLOSE 的子路径补首尾接头
 ```
 
+### 路径命中判定
+
+画完一条路径之后，可以直接问"这一点在不在它里面 / 在不在它的描边上"：
+
+```kotlin
+gc.beginPath(); gc.moveTo(…); gc.lineTo(…); gc.fillPath()
+
+gc.isPointInPath(x, y)      // 在填充区域里？
+gc.isPointInStroke(x, y)    // 在描边上？
+```
+
+- **`(x, y)` 是设备像素**，路径按当前变换走 —— 这是 **Canvas 语义**，也是它最有名的
+  一处反直觉：**点不受变换影响，而路径受**。与 GPU 拾取同一口径。
+- 针对**当前路径**（`fillPath` 之后路径仍在，`beginPath` 才清空），
+  **不需要 `pickId`、不走 GPU、任意线程可调**。
+- **`isPointInPath` 用奇偶规则**，与 JFGL 的填充（按包含关系定洞）在良构路径上**恒等**。
+- **`isPointInStroke` 与画面同源**：它复用同一个描边生成器、同一组参数，
+  所以含 miter 尖角、含超限回退 bevel，当前 `dashPattern` 也被遵守。
+  ⚠️ 唯一不含的是 **AA 的 1 设备像素外扩**（那是渲染期的事）——所以开着 AA 时
+  它比拾取窄约 1 像素。
+
+> ⚠️ **它与 GPU 拾取是两条路，会给出不同答案**（不是缺陷）：
+> 拾取要注册过的对象、必须 GL 线程、**受 `clipRect` 影响**、像素精确；
+> 本判定问当前路径、任意线程、**不看裁剪**、解析判定。
+> 图形边缘那一个像素上、以及开着裁剪/AA 时会分家。
+
 ### 拾取
 
 ```kotlin
@@ -606,8 +632,8 @@ mvn -pl jfgl-core -Dtest=PathTest test  # 单个 core 测试类
 mvn -pl jfgl-render-gl -Dtest=PickBufferTest test
 ```
 
-当前 **412 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
-`@Disabled` 的已知缺陷）。分布：`geom/` 92、`renderer/` 107、`gl/` 13、`text/` 32、
+当前 **422 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+`@Disabled` 的已知缺陷）。分布：`geom/` 102、`renderer/` 107、`gl/` 13、`text/` 32、
 `chart/` 85、`chartrender/` 69、`gpu/` 14。
 
 > 这几个数请从 surefire 报告里数（`*/target/surefire-reports/TEST-*.xml` 的 `tests=` 求和），
