@@ -531,54 +531,22 @@ public final class Main extends Application {
 
         float radius = (float) Math.hypot(px - ax, py - ay);
         if (radius > 0f) {
-            strokeDashedCircle(gc, ax, ay, radius, PREVIEW_DASH, PREVIEW);
+            // ★ 虚线圆：**一行状态、一次普通描边**，弧长切分由 Gc 自己做
+            //   （`StrokeGenerator` 的虚线能力，2026-09-28 接到公开 API 上）。
+            //
+            //   在此之前这里有一段手写的弧长切分（约 30 行，还得自己防除零），
+            //   `example/demo/DemoShapes.kt` 里还有第二份。两处都是为同一个缺口写的绕法，
+            //   现在都删了。
+            gc.setDashPattern(new float[]{PREVIEW_DASH, PREVIEW_DASH});
+            gc.setStroke(PREVIEW);
+            gc.setLineWidth(1f);
+            gc.strokeCircle(ax, ay, radius);
+            // `dashPattern` 是 **save/restore 状态栈里的一员**（与 lineWidth 并列），
+            // 而这里本来就在 drawPreview 的 save/restore 里，所以其实不复位也安全。
+            // 显式复位是为了让"这一段用虚线、之后不用"在读代码时一眼可见。
+            gc.setDashPattern(null);
         }
         gc.restore();
-    }
-
-    /**
-     * 虚线圆：沿圆周按弧长切分，间隔地画。
-     *
-     * <p><strong>为什么手写</strong>：{@code StrokeGenerator.strokeDashed}
-     * （弧长切分 + dash 模式 + 相位）在库里、也有单测，但 {@code Gc} 的描边路径
-     * 只调实线那个 {@code stroke(...)}——<strong>能力在库里，没接到公开 API 上</strong>。
-     * {@code example/demo/DemoShapes.kt} 的 {@code strokeDashedPolyline} 是同一处缺口的
-     * 第一份绕法，这里是第二份。等 {@code Gc} 补上公开入口，两份都可以删掉。
-     *
-     * <p>段数是固定的（每段约 2 设备像素）：预览不追求与 {@code Gc} 的细分规则一致
-     * ——它与落地圆之间只差一个"看起来够圆"。
-     *
-     * @param dash 单个实段（或间隙）的弧长，设备像素
-     */
-    private static void strokeDashedCircle(Gc gc, float cx, float cy, float r,
-                                           float dash, int argb) {
-        if (!(dash > 0f)) {
-            // 防的是除零：dash = 0 时下面那个 `/(2*dash)` 会得到无穷大，
-            // `(int)` 之后是 Integer.MAX_VALUE（奇数）⇒ 整圈一段都不画。
-            // 那是"静默什么都不显示"，比明确不画更难查。
-            return;
-        }
-        gc.setStroke(argb);
-        gc.setLineWidth(1f);
-
-        float circumference = (float) (2 * Math.PI * r);
-        // 段数取"每段约 2px"，并夹到 [16, 512]：太小会画成多边形，太大是白扔顶点。
-        int segments = Math.min(512, Math.max(16, (int) Math.ceil(circumference / 2.0)));
-        float step = circumference / segments;
-
-        for (int i = 0; i < segments; i++) {
-            // 这一段落在第几个 dash 格子里：偶数格是实段、奇数格是间隙。
-            // 判据用**弧长**（i * step）而不是角度——dash 是按长度给的，
-            // 用角度判会让大圆的虚线跟着半径一起变长。
-            if (((int) (i * step / (2f * dash)) & 1) != 0) {
-                continue;
-            }
-            double a0 = 2 * Math.PI * i / segments;
-            double a1 = 2 * Math.PI * (i + 1) / segments;
-            gc.drawLine(
-                    cx + r * (float) Math.cos(a0), cy + r * (float) Math.sin(a0),
-                    cx + r * (float) Math.cos(a1), cy + r * (float) Math.sin(a1));
-        }
     }
 
     /** 绘制文字，y 坐标是文本基线。 */

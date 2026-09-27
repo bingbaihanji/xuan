@@ -366,11 +366,28 @@ public final class StrokeGenerator {
             return;
         }
         float patternLength = 0f;
+        float longestDash = 0f;
         for (float d : dashPattern) {
             patternLength += d;
+            if (d > longestDash) {
+                longestDash = d;
+            }
         }
-        if (patternLength <= 1e-6f) {
-            // 全零模式：没有任何实线格
+        if (patternLength <= 1e-6f || longestDash <= 1e-6f) {
+            // 没有任何实线格：总长为零（全零模式），**或者每一项都小于那个阈值**。
+            //
+            // ★ 第二个条件是**防死循环**的，不是优化。内层循环里那条
+            //   `if (dashLen <= 1e-6f) { consumed = 0f; patternIndex++; continue; }`
+            //   在本格"太短、不占弧长"时只推进 `patternIndex`、**不动 `cursor`**。
+            //   若模式里**每一项**都 ≤ 1e-6（而总和恰好 > 1e-6，于是上面那条早退不触发，
+            //   例如 `[6e-7, 6e-7]`），那条分支就会一直转下去——**`cursor` 一步不动、
+            //   循环永不退出**，调用它的 GL 线程整个卡死、画布永久冻结，且没有任何报错。
+            //
+            //   实测可达性：`Gc.dashPattern` 接上公开 API（2026-09-28）之前，
+            //   唯一的消费者是 `ChartRenderer` 的十字虚线，它的 dashLength 由配置层
+            //   强制为正——所以这一支**当时不可达**；接上公开 API 之后它就是可达的了。
+            //
+            //   语义上取"什么都不画"是对的：每一项都小于阈值 ⇒ 一格实线都发不出来。
             reset();
             return;
         }

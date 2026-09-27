@@ -139,6 +139,26 @@ gc.strokePolyline(points, closed = false)
 
 segments = 0 表示按半径和变换自动选择细分数量。
 
+### 2.3b 虚线
+
+虚线是**状态字段**（与 `lineWidth` / `antialias` 并列，进 `save`/`restore` 栈），
+不是每个形状各一个方法：
+
+```kotlin
+gc.dashPattern = floatArrayOf(6f, 4f)   // 偶数下标实线、奇数下标空白；null = 实线
+gc.dashPhase = 0f                       // 起始相位（流动虚线就逐帧加它）
+
+gc.strokeCircle(400f, 300f, 120f)       // 所有描边方法都吃这两个字段
+gc.strokePath()
+gc.dashPattern = null                   // 回到实线
+```
+
+- **一个字段管全部**：六个描边方法（`strokePath` / `strokePolyline` / `strokeRect` /
+  `strokeCircle` / `strokeEllipse` / `drawLine`）都汇进同一条描边路径。
+- 模式长度任意（`[6,4]`、`[8,3,2,3]`…），单位与 `lineWidth` 同为用户坐标。
+- **setter 拷贝数组**：不拷的话，改自己那个数组会静默改掉已压进状态栈的历史值。
+- 空数组、`NaN`/`Infinity`/负数项、总和为 0 的模式都会抛 `IllegalArgumentException`。
+
 ### 2.4 Path API
 
 ```kotlin

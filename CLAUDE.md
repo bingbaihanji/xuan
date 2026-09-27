@@ -214,17 +214,19 @@ jfgl-render-gl/src/test/.../gpu/        FftWindowTest、FftKernelTest
 ```
 
 （`...` 是 `java/com/bingbaihanji/jfgl`。`jfgl-javafx` 没有 surefire 测试——它的
-`example/` 里那**八个**校验器是**手动跑的 main**，不是单测：
-**六个像素校验器**（`Pipeline` / `Path` / `Pick` / `Click` / `Text` / `Chart`
-——靠 `glReadPixels` 从**画布 FBO** 回读）
+`example/` 里那**九个**校验器是**手动跑的 main**，不是单测：
+**七个像素校验器**（`Pipeline` / `Path` / `Pick` / `Click` / `Text` / `Chart` / `Axis`
+——靠 `glReadPixels` 从**画布 FBO** 回读；`Axis` 是 2026-09-28 坐标系入库时加的）
 + `FftVerifier`（**不画任何东西**，读的是 SSBO，不是像素校验器）
 + `MsaaVerifier`（**要跑三次**：`msaa=0` / `4` / `-1`，由 `jfgl-javafx/scripts/msaa-verify.sh` 比对）。
-后两者的处境与那六个的区别见「抗锯齿」一节。）
+后两者的处境与那七个的区别见「抗锯齿」一节。）
 
-当前 **411 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+当前 **412 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
 `@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`（跨模块加 `-pl 模块名`）。
-分布：`geom/` 91、`renderer/` 107、`gl/` 13、`text/` 32、`chart/` 85、`chartrender/` 69、
-`gpu/` 14（合计 411 = `jfgl-core` 176 + `jfgl-render-gl` 235；
+分布：`geom/` 92、`renderer/` 107、`gl/` 13、`text/` 32、`chart/` 85、`chartrender/` 69、
+`gpu/` 14（合计 412 = `jfgl-core` 177 + `jfgl-render-gl` 235；
+虚线那一步又给 `geom/` 加了 1 条——`StrokeDashTest`
+「每一项都低于阈值的模式不产生三角形而不是死循环」，理由见「已实现 vs 未实现」里那条；
 里程碑 `0.1.0` 那一步又给 `chart/` 加了 3 条——`ChartInteractionTest` 的
 「窗口外的样本不可命中」「窗口边界上的样本仍可命中」「提示框文本只构造一次」，
 它们是 chart hover 那两条缺陷的定向断言：注入变异后**各自只有对应的那一条倒**；
@@ -1050,12 +1052,17 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
    所以它不依赖光栅化 tie 规则，**不需要留余量**。
    要改这条期望值，请照这四步重新量一遍，**不要凭"收个容差应该够"去调**。
 
-   改 **`Gc` 的路径方法**（`strokePath` / `fillPath` / 子路径处理）后跑 `PathVerifier`
-   （退出码 0/1，**59 条**断言）。它有**七个变体**、逐帧轮转、逐个断言：①一条路径里画两条
-   互不相连的横线；②只画第一条（钉住"上一帧的顶点留在缓冲里"这类**跨帧残留**）；
+   改 **`Gc` 的路径方法**（`strokePath` / `fillPath` / 子路径处理 / **`dashPattern` 那条分派**）
+   后跑 `PathVerifier`（退出码 0/1，**66 条**断言）。它有**八个变体**、逐帧轮转、逐个断言：
+   ①一条路径里画两条互不相连的横线；②只画第一条（钉住"上一帧的顶点留在缓冲里"这类**跨帧残留**）；
    ③闭合的直角方框（粗线宽，把收尾接头放大成看得见的缺口）；④**同一份几何**的开放对照；
    ⑤**开放**的直角折线（钉住反面——开放子路径不该被当成闭合而多出一段收尾连线）；
-   ⑥带孔填充（环 + 两个互不相交的正方形）；⑦**半透明**描边的退化接头（见下）。
+   ⑥带孔填充（环 + 两个互不相交的正方形）；⑦**半透明**描边的退化接头（见下）；
+   ⑧**虚线**（2026-09-28 加）——判据是「**段数 + 墨迹总宽**」这一对：几何取 400 px 长、
+   模式 `[10 实, 10 空]`，于是期望精确到 **20 段 / 200 px**（同一段几何的实线是 1 段 400 px，
+   **段数差 20 倍**）。只看总宽拦不住"两段各 20px、中间空 20px"，只看段数拦不住
+   "每段 1px、空 19px"——**两个一起看**才钉住"周期 20、实段占一半"。
+   变异（让 `strokeOutline` 忽略模式）⇒ 实测 **1 段 / 400 px**，**恰好那两条倒**。
    ③ 与 ④ 之间还断言**像素总数之差**为 100 px（直角处完整接头恰好是 10x10 整块）：
    只断言"外角有像素"会被"整块都画错了"骗过去，差值才能把"接头补上了"与"别的地方也变了"
    分开。
@@ -1513,28 +1520,67 @@ DSL 的 `jfgl { antialias { msaa = 4 } }`——见「抗锯齿」一节
   - **`Gc` 没有公开 `ChartTextMetrics`**：自己算布局要重写一遍口径
     （`lineHeight = fontSize × ChartLayout.LINE_HEIGHT_FACTOR`）。重写歪了网格与标题带就
     对不上，而画面只是"看着有点挤"。demo 里的 `GcTextMetrics` 就是这份重写。
-  - **`Gc` 没有暴露虚线描边**：`StrokeGenerator.strokeDashed(...)`（弧长切分、dash 模式 +
-    相位）**存在且有单测**（`StrokeDashTest`），但 `Gc` 的描边路径只调实线那个 `stroke(...)`。
-    于是任何想画虚线的应用都得在应用层重写一遍弧长切分——`example/demo/DemoShapes.kt` 的
-    `strokeDashedPolyline` 就是这么做的（**只用预览**：提交时仍然走 `Gc` 的
-    `fillRect` / `fillCircle` / `fillEllipse` / `drawLine` / `fillPolygon` / `strokePath`，
-    所以助手坏掉最多是预览难看，画出来的东西与它无关）。
+  - ✅ **已修（2026-09-28）：`Gc` 公开虚线描边**——见下面新起的那一条；
+    原文保留是为了说明它当时是什么样子。**现在应用层不需要再重写弧长切分了。**
+    历史：`StrokeGenerator.strokeDashed(...)`（弧长切分、dash 模式 + 相位）
+    **存在且有单测**（`StrokeDashTest`），但 `Gc` 的描边路径只调实线那个 `stroke(...)`，
+    于是任何想画虚线的应用都得在应用层重写一遍——`example/demo/DemoShapes.kt` 的
+    `strokeDashedPolyline`、`Main.java` 的 `strokeDashedCircle`，两份。
     与「`Gc` 没公开 `ChartTextMetrics`」同族：**能力在库里、但没接到公开 API 上**。
-    **它的闸门在哪、不在哪**（别高估）：`DemoShapes.kt` 里有一个
-    `isUsableDashPattern(on, off, pathLength)` 纯函数，`DemoShapeMath.kt` 的 ⑩/⑩b/⑩c
-    有 9 条断言钉它（含 `MAX_DASH_SEGMENTS` 的**边界两侧**与 `NaN` / `+Inf` / 和溢出）。
-    但那些是**判据的单元测试，不是行为测试**——只比较布尔值，**没有一条跑循环**。
-    所以：**"迭代有上界"是由判据的定义 + 论证保证的，不是验出来的；循环本身没有闸门。**
-    接线那一半（锚点 → `onMove` → 预览轮廓 → 虚线描边返回了）由 `JfglDemo` 的
-    合成事件自检 ① 用末尾探针 `previewDashedFrames` 钉住。
   - **没有"可拾取图元列表"抽象**：每个应用都要自己维护
     `列表 + 可变 pickId + register/unregister 配对 + 选中集的跨线程可见性`。
-  - ✅ **已修：`Gc` 的虚线能力接上了——但只接在图表那支私有笔上，没接到公开 API。**
-    `ChartPainter` 新增 `strokeDashedLine(...)`（等长交替、逐段 `drawLine`、无相位），
-    `Gc` 里那个 `private val chartPainter` 实现它，供十字线使用。
-    **应用层仍然没有公开的虚线描边**——`Gc` 的描边路径照旧只调实线 `stroke(...)`，
-    全文上面那条缺口**没有因此消失**（私有笔上的方法应用层够不着）。
-    新增的是**图表装饰的**能力，不是 `Gc` 的。
+  - ✅ **已修（2026-09-28）：`Gc` 公开虚线描边——状态字段，不是每个形状加一个重载。**
+    `gc.dashPattern = floatArrayOf(6f, 4f)`（偶数下标实线、奇数下标空白；`null` = 实线）
+    与 `gc.dashPhase = 0f`，**两个都进 `save`/`restore` 栈**，与 `lineWidth` / `antialias` 并列。
+
+    **为什么是字段**：本类所有描边入口（`strokePath` / `strokePolyline` / `strokeRect` /
+    `strokeCircle` / `strokeEllipse` / `drawLine`）**都汇进同一个 `strokeOutline`**
+    ⇒ 一个字段让它们**全部**支持虚线；做成 `strokeXxxDashed` 要加六份、还会漏
+    （漏掉的那个不报错，只是一条实线）。这也与 HTML Canvas 的 `setLineDash` 同形。
+
+    **三处必须接对的地方**（都是"错了不报错"的那种）：
+    1. **setter 要拷贝数组**：不拷的话调用方改自己那个数组会**静默改掉已压进栈的历史状态**，
+       `restore()` 恢复出来的不是当时那个模式，而画面只是"虚线看着不太对"。
+    2. **`restore()` 不能走 setter**：那会在每次恢复时拷贝+重新校验，把
+       "save/restore 稳态零分配"这条承诺作废。所以有一个私有后备字段
+       `dashPatternValue`，内部读写一律走它。
+    3. **AA 的 `capExtension` 要一起传**：虚线每一格是**独立的开放两点折线**，
+       沿向在整格上是常量 0 ⇒ 不外扩时端头没有沿向羽化、会退化成硬边。
+       实线那条路靠的是同名参数，两条路是同一个。
+
+    **栈里多了一个数组**（`styleDashPatterns`，存引用不存拷贝——模式在 setter 里已经拷过），
+    所以 `ensureStyleCapacity` 多了一处扩容。⚠️ **漏掉它不会立刻出错**（只是 save 到第 8 层
+    之后越界抛异常），最容易在改动里被忘记。
+
+    **应用层的两份绕法**：`Main.java` 的 `strokeDashedCircle`（约 30 行，还得自己防除零）
+    **已删**，改用 `setDashPattern` + 一次普通 `strokeCircle`。
+    ⚠️ **`DemoShapes.strokeDashedPolyline` 仍在**（约 60 行 + `isUsableDashPattern` +
+    `MAX_DASH_SEGMENTS` + `DemoShapeMath` 的 9 条断言 + 自检探针）——它现在**冗余但正确**，
+    拆它是一条独立的改动链（要同时处置那 9 条判据断言与 ⑩/⑩b/⑩c），本次没做。
+
+    ### ★ 接上公开 API 时**暴露出的一个死循环**（根因已修）
+    `StrokeGenerator.strokeDashed` 的内层循环有一支是
+    `if (dashLen <= 1e-6f) { consumed = 0; patternIndex++; continue; }`
+    ——"本格太短、不占弧长，跳到下一格"。它**只推进 `patternIndex`、不动 `cursor`**。
+    若模式里**每一项都 ≤ 1e-6 而总和恰好 > 1e-6**（例如 `[6e-7, 6e-7]`），
+    那条"全零模式"的早退**不触发**，于是这一支**永远转下去**：`cursor` 一步不动、
+    循环永不退出 ⇒ **GL 线程整个卡死、画布永久冻结，且没有任何报错**。
+
+    修法是给那条早退加**第二个条件**：`|| longestDash <= 1e-6f`
+    （`longestDash` 是模式里最大的那一项）。语义上也对——每一项都小于阈值 ⇒
+    一格实线都发不出来 ⇒ 什么都不画。
+
+    ⚠️ **可达性是这次改动带来的**：在那之前唯一的调用方是图表十字线，dashLength 由
+    `ChartInteractionConfig` 强制为正 ⇒ 这一支**不可达**；`Gc.dashPattern` 一公开，
+    `gc.dashPattern = floatArrayOf(6e-7f, 6e-7f)` 就够得着它了。
+    **这正是"接一根线"类改动的典型风险：被绕过去的守卫会跟着一起失效。**
+    demo 那份 `isUsableDashPattern` / `MAX_DASH_SEGMENTS` 当初就是为同一件事写的
+    ——绕法自带守卫，而接到公开 API 之后守卫没了。
+
+    判据：`StrokeDashTest.每一项都低于阈值的模式不产生三角形而不是死循环`，
+    **带 `@Timeout(5)`**——因为它在修复前的行为是**挂死**而不是失败，不带超时会把
+    `mvn test` 整个吊住（"测试挂住"比"测试失败"难查得多：没有栈、没有读数）。
+    变异（去掉 `longestDash` 那一半）⇒ 该条报错，其余 5 条照过。
   - **`jfgl-javafx` 跑不了单测**：pom 里没有 junit、没有 surefire，kotlin 插件也只配了
     `src/main/kotlin`。所以本模块的纯计算只能靠"启动自检 + 非 0 退出"
     （`ClickDslExample` 与 `JfglDemo` 都是这个模式）。

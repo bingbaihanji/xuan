@@ -70,6 +70,93 @@ class Gc constructor(private val batch: RenderBatch) {
     /** 当前线宽（用户坐标单位）。 */
     var lineWidth: Float = 1f
 
+    /** [dashPattern] 的后备字段。**内部读写一律走它**，理由见 [save] / [restore]。 */
+    private var dashPatternValue: FloatArray? = null
+
+    /**
+     * 虚线模式：**偶数下标是实线长度、奇数下标是空白长度**（用户坐标单位），
+     * `null` 表示实线（默认）。任意长度，`StrokeGenerator` 本来就支持。
+     *
+     * <pre>
+     * gc.dashPattern = floatArrayOf(6f, 4f)          // 6 实 4 空
+     * gc.dashPattern = floatArrayOf(8f, 3f, 2f, 3f)  // 长划-点
+     * gc.dashPattern = null                          // 回到实线
+     * </pre>
+     *
+     * <h2>它是状态字段，进 save/restore 栈</h2>
+     * <p>与 [lineWidth] / [antialias] / [fontSize] 并列。**做成字段而不是给每个形状加一个
+     * `strokeXxxDashed` 重载**，是因为本类所有描边入口
+     * （[strokePath] / [strokePolyline] / [strokeRect] / [strokeCircle] / [strokeEllipse] /
+     * [drawLine]）**都汇进同一个 `strokeOutline`** ⇒ 一个字段就让它们**全部**支持虚线，
+     * 而重载要加六份、还会漏（漏掉的那个不会报错，只是一条实线）。
+     * 这也与 HTML Canvas 的 `setLineDash` 同一个形状。
+     *
+     * <h2>setter 会**拷贝**，这不是防御性编程</h2>
+     * <p>不拷的话，调用方在设置之后改自己的那个数组，会**静默改掉已经压进
+     * save/restore 栈里的历史状态**——`restore()` 恢复出来的就不是当时那个模式了，
+     * 而画面只是"虚线看起来不太对"。拷贝之后栈里那个数组再无写者。
+     *
+     * <h2>校验：非空、每项有限且 ≥ 0、总和 &gt; 0</h2>
+     * <p>与 `AxisStyle` 同一条口径。全零模式在 `StrokeGenerator` 那里是"没有任何实线段"
+     * ——画面上**什么都没画**，而那与"用户把描边关掉了"逐像素相同，属于本仓库最防的
+     * 静默错误输出，所以在入口就拒掉而不是让它静默消失。
+     *
+     * @throws IllegalArgumentException 空数组、含 NaN/±Infinity、含负数、或总和为 0 时
+     */
+    var dashPattern: FloatArray?
+        get() = dashPatternValue
+        set(value) {
+            if (value == null) {
+                dashPatternValue = null
+                return
+            }
+            if (value.isEmpty()) {
+                throw IllegalArgumentException(
+                    "虚线模式不能是空数组（要实线请设 null，要隐藏整条线请别画它）")
+            }
+            var total = 0f
+            for (i in value.indices) {
+                val v = value[i]
+                if (!v.isFinite() || v < 0f) {
+                    throw IllegalArgumentException(
+                        "虚线模式的第 $i 项必须是有限的非负数（单位是用户坐标长度），实际为 $v。" +
+                                "负数会让 StrokeGenerator 沿弧长往回走，" +
+                                "而 NaN 会让整条虚线静默消失。")
+                }
+                total += v
+            }
+            if (!(total > 0f)) {
+                throw IllegalArgumentException(
+                    "虚线模式的总长必须 > 0：全零模式在渲染侧是「没有任何实线段」⇒ " +
+                            "画面上什么都不出现，而那与「这条线不存在」逐像素相同。")
+            }
+            dashPatternValue = value.copyOf()
+        }
+
+    /**
+     * 虚线模式的**起始相位**（弧长，用户坐标单位），默认 0。
+     *
+     * <p>它决定"从模式的第几个位置开始画"，用来做**流动的虚线**——每帧把它加上一点，
+     * 看上去就是虚线在沿着线跑（这是它唯一的用途，也是它必须能被逐帧改动的原因）。
+     * 值会自动归一到 `[0, 模式总长)`，所以负相位与超过一圈的相位都是合法的。
+     *
+     * <p>没有设 [dashPattern] 时它**完全不起作用**（实线没有相位可言），
+     * 但那不是错误配置——先设相位再设模式是自然的写法。
+     *
+     * @throws IllegalArgumentException 非有限数时。**NaN 必须挡在入口**：
+     *         它会一路传成 NaN 的顶点坐标（`consumed` 也被污染），
+     *         而 NaN 顶点在光栅化阶段让整个图元**静默消失**——
+     *         与"用户把这条线设成不画"在画面上逐像素相同。
+     */
+    var dashPhase: Float = 0f
+        set(value) {
+            if (!value.isFinite()) {
+                throw IllegalArgumentException(
+                    "虚线相位必须是有限数（NaN 会传成 NaN 顶点 ⇒ 整条线静默消失），实际为 $value")
+            }
+            field = value
+        }
+
     /**
      * 是否为后续**描边**开启解析式抗锯齿。**默认关。**
      *
@@ -398,8 +485,23 @@ class Gc constructor(private val batch: RenderBatch) {
     /** 样式栈的整数部分：每层 [INTS_PER_STYLE_LEVEL] 个值（fill、stroke、pickId、antialias）。 */
     private var styleInts = IntArray(INITIAL_STACK_LEVELS * INTS_PER_STYLE_LEVEL)
 
-    /** 样式栈的浮点部分：每层 [FLOATS_PER_STYLE_LEVEL] 个值（lineWidth、globalAlpha、fontSize）。 */
+    /** 样式栈的浮点部分：每层 [FLOATS_PER_STYLE_LEVEL] 个值
+     * （lineWidth、globalAlpha、fontSize、dashPhase）。 */
     private var styleFloats = FloatArray(INITIAL_STACK_LEVELS * FLOATS_PER_STYLE_LEVEL)
+
+    /**
+     * 样式栈里**引用**那一部分：每层一个虚线模式（`null` = 实线）。
+     *
+     * <p><strong>为什么它不进 `styleFloats`</strong>：模式是**变长**的
+     * （`[实, 空]` 两格、`[实, 空, 实, 空]` 四格…），塞不进定长槽位。
+     * 而把它**摊平成固定长度**（比如只支持两格）会砍掉这个能力的一半——
+     * `StrokeGenerator` 本来就支持任意长度。
+     *
+     * <p>压栈压的是**引用**，不是拷贝：模式对象在 [dashPattern] 的 setter 里就已经
+     * 拷贝过一次（那是必需的，见那里的说明），此后不再有人能改到它。
+     * 于是 [save] 在稳态下**依旧零分配**——只多一次引用写。
+     */
+    private var styleDashPatterns = arrayOfNulls<FloatArray>(INITIAL_STACK_LEVELS)
 
     /**
      * 样式栈层数。
@@ -750,6 +852,8 @@ class Gc constructor(private val batch: RenderBatch) {
         styleFloats[floatBase] = lineWidth
         styleFloats[floatBase + 1] = globalAlpha
         styleFloats[floatBase + 2] = fontSize
+        styleFloats[floatBase + 3] = dashPhase
+        styleDashPatterns[styleDepth] = dashPatternValue
         styleDepth++
     }
 
@@ -771,6 +875,13 @@ class Gc constructor(private val batch: RenderBatch) {
         lineWidth = styleFloats[floatBase]
         globalAlpha = styleFloats[floatBase + 1]
         fontSize = styleFloats[floatBase + 2]
+        dashPhase = styleFloats[floatBase + 3]
+        // ★ **直接写后备字段，不走 `dashPattern` 的 setter**：那个 setter 会
+        //   `copyOf()` + 重新校验，而本函数每帧被调用的次数与 `save` 一样多
+        //   ——走 setter 就等于把"save/restore 稳态零分配"这条承诺作废。
+        //   栈里存的就是已经拷贝并校验过的那个数组，直接交回引用即可（没有人能改到它：
+        //   唯一的写入口就是那个 setter，而它每次都拷）。
+        dashPatternValue = styleDashPatterns[styleDepth]
     }
 
     // ------------------------------------------------------------------
@@ -1469,15 +1580,38 @@ class Gc constructor(private val batch: RenderBatch) {
         val realHalf = lineWidth * 0.5f
         val px = if (antialias) 1f / matrixScale().coerceAtLeast(1e-6f) else 0f
         val capExt = if (closed) 0f else px
-        strokeGenerator.stroke(
-            points, count, closed, lineWidth + 2f * px,
-            StrokeGenerator.Cap.BUTT,
-            StrokeGenerator.Join.MITER,
-            MITER_LIMIT,
-            ROUND_SEGMENTS,
-            capExt,                              // ← capExtension：只对开放路径有效
-            realHalf                             // ← joinHalf：接头不参与外扩
-        )
+        // ★ 虚线走同一套参数、只多两个（模式与相位），**其余逐项相同**：
+        //   `StrokeGenerator.strokeDashed` 内部就是"按弧长把折线切成若干段两点折线，
+        //   每段调一次 stroke"——所以外扩量、接头样式、边距归一化全部照旧，
+        //   下面那段 `edgeScale` 的后处理一个字都不用改。
+        //
+        //   ⚠️ `capExt` **必须一起传**：虚线每一格都是**独立的开放两点折线**，
+        //   它的两个端点各自就是端线 ⇒ 沿向在整格上是常量 0 ⇒ 不开 AA 时无所谓，
+        //   但开了 AA 之后，哪一段都拿不到"端帽之外"的沿向羽化，端头会退化成硬边。
+        //   实线那条路靠的是同名的 `capExtension`，两条路这里是**同一个参数**。
+        val pattern = dashPatternValue
+        if (pattern == null) {
+            strokeGenerator.stroke(
+                points, count, closed, lineWidth + 2f * px,
+                StrokeGenerator.Cap.BUTT,
+                StrokeGenerator.Join.MITER,
+                MITER_LIMIT,
+                ROUND_SEGMENTS,
+                capExt,                          // ← capExtension：只对开放路径有效
+                realHalf                         // ← joinHalf：接头不参与外扩
+            )
+        } else {
+            strokeGenerator.strokeDashed(
+                points, count, closed, lineWidth + 2f * px,
+                StrokeGenerator.Cap.BUTT,
+                StrokeGenerator.Join.MITER,
+                MITER_LIMIT,
+                pattern,
+                dashPhase,
+                ROUND_SEGMENTS,
+                capExt
+            )
+        }
         val n = strokeGenerator.triangleCount() * 6
         // 生成器是按**它收到的那条线宽**的一半归一化边距的，而那条线宽已经被外扩过
         // ⇒ 这里要把横向分量换算回"真实半线宽"这个分母（推理与实测见 emitTriangles 的
@@ -1702,6 +1836,15 @@ class Gc constructor(private val batch: RenderBatch) {
             }
             styleFloats = styleFloats.copyOf(size)
         }
+        // 第三个数组也要跟着扩容——**漏掉它不会立刻出错**（只是 save 到第 8 层之后
+        // 越界抛异常），所以它最容易在改动里被忘记。加这一个数组时同步加这一句。
+        if (capacityLevels > styleDashPatterns.size) {
+            var size = styleDashPatterns.size * 2
+            while (size < capacityLevels) {
+                size *= 2
+            }
+            styleDashPatterns = styleDashPatterns.copyOf(size)
+        }
     }
 
     companion object {
@@ -1744,6 +1887,6 @@ class Gc constructor(private val batch: RenderBatch) {
         private const val INTS_PER_STYLE_LEVEL = 4
 
         /** 样式栈每层占用的 float 个数：lineWidth、globalAlpha、fontSize。 */
-        private const val FLOATS_PER_STYLE_LEVEL = 3
+        private const val FLOATS_PER_STYLE_LEVEL = 4
     }
 }

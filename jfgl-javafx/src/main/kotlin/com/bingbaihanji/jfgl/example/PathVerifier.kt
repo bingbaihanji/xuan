@@ -82,7 +82,31 @@ private const val FIRST_ASSERT_FRAME = 6
  * / ⑤**开放**的直角折线（走 [Gc.strokePath]）/ ⑥带孔填充（[Gc.fillPath]）
  * / ⑦**半透明**描边的退化接头（见 [PathVerifierApp.drawTranslucentJointCase]）。
  */
-private const val ASSERT_FRAME_COUNT = 7
+private const val ASSERT_FRAME_COUNT = 8
+
+// ---------------------------------------------------------------------------
+// 变体 7：虚线描边（`Gc.dashPattern`）。
+//
+// 几何取得让**每一条断言都能精确算出来**，不留容差：
+//   · 线从 x=100 到 x=500（长 400），模式 [10 实, 10 空] ⇒ 周期 20
+//   · 400 / 20 = **20 整除** ⇒ 恰好 20 段实线、每段 10 px，末尾不会被截
+//   · 线宽 4、中心 y=200 ⇒ 覆盖第 198..201 行，扫第 200 行拿到完整剖面
+// 于是"扫一行数墨迹"的两个读数都有精确期望：**段数 20、墨迹总宽 200**。
+// 实线（对照）则是 1 段、400 px——两者在段数上差了 20 倍。
+// ---------------------------------------------------------------------------
+
+/** 虚线的实段长度（用户坐标）。 */
+private const val DASH_ON = 10f
+
+/** 虚线的空段长度。与 [DASH_ON] 相等，于是周期是 20、能整除线段长度 400。 */
+private const val DASH_OFF = 10f
+
+private const val DASH_X0 = 100f
+private const val DASH_X1 = 500f
+private const val DASH_Y = 200f
+
+/** 扫这一行（线段中心）去数墨迹。 */
+private const val DASH_SCAN_ROW = 200
 
 /** 最后一次断言的帧号。 */
 private const val LAST_ASSERT_FRAME = FIRST_ASSERT_FRAME + ASSERT_FRAME_COUNT - 1
@@ -312,7 +336,8 @@ class PathVerifierApp : Application() {
                 3 -> drawClosedJoinCase(gc, closed = false)
                 4 -> drawOpenPolylineCase(gc)
                 5 -> drawHoleFillCase(gc)
-                else -> drawTranslucentJointCase(gc)
+                6 -> drawTranslucentJointCase(gc)
+                else -> drawDashedCase(gc)
             }
         } catch (t: Throwable) {
             println("\n=== 绘制过程抛出异常，判为失败 ===")
@@ -520,6 +545,22 @@ class PathVerifierApp : Application() {
         // 单层参考：同一块背景上的一次填充，颜色与描边完全相同
         gc.fillRect(REF_X, REF_Y, 24f, 24f)
         gc.restore()
+    }
+
+    /**
+     * 变体 7：虚线描边。一条水平线，模式 `[10 实, 10 空]`、相位 0。
+     *
+     * <p>几何参数见文件头那组 `DASH_*` 常量的说明——**取它们就是为了让期望值能整除**。
+     */
+    private fun drawDashedCase(gc: Gc) {
+        gc.dashPattern = floatArrayOf(DASH_ON, DASH_OFF)
+        gc.dashPhase = 0f
+        gc.stroke = SUB_PATH_RGB or (0xFF shl 24)
+        gc.lineWidth = 4f
+        gc.strokePolyline(floatArrayOf(DASH_X0, DASH_Y, DASH_X1, DASH_Y))
+        // 画完复位：**本类的每个变体共用同一个 Gc**，而这个字段是状态栈里的一员。
+        // 不复位的话它只影响后面变体——而变体是轮转的，症状会变成"某些帧莫名其妙是虚线"。
+        gc.dashPattern = null
     }
 
     /**
@@ -790,7 +831,7 @@ class PathVerifierApp : Application() {
             approx("填充色像素总数 = 两个正方形 + 环带", counts[HOLE_FILL_RGB] ?: 0,
                 2.0 * side * side + Math.PI * (RING_R_OUTER.toDouble() * RING_R_OUTER
                         - RING_R_INNER.toDouble() * RING_R_INNER), 0.02)
-        } else {
+        } else if (drawnVariant < 7) {
             println("\n-- 半透明描边：退化接头处不该被画两遍 --")
             val opaque = TRANSLUCENT_RGB or (0xFF shl 24)
             val refColor = pixelAt(REF_X.toInt() + 5, REF_Y.toInt() + 5)
@@ -823,6 +864,42 @@ class PathVerifierApp : Application() {
             println("\n-- 无杂散像素（覆盖整幅画面）--")
             // 本变体应当恰好 3 种颜色：背景、单层、以及两段带自相交处的双层 —— 由文件
             // 末尾那条统一的"画面只有 N 种颜色"断言按变体取 N 来钉（这里不重复断言）。
+        } else {
+            println("\n-- 虚线描边：实段与空段真的交替 --")
+
+            // ★ 判据选"**段数 + 墨迹总宽**"这一对，而不是只看其中一个。
+            //
+            //   只看墨迹总宽（200）拦不住"两段各 20px、中间空 20px"这种错法，
+            //   也拦不住"前半段实、后半段虚"——它们的总宽可以调成一样。
+            //   只看段数（20）拦不住"每段 1px、空 19px"。
+            //   两个一起看，才钉住"周期 20、实段占一半"这件事本身。
+            //
+            //   **对照组是实线**：同一段几何不设 `dashPattern` 时是 1 段 400px——
+            //   于是"段数"这个读数上的差别是 20 倍。变异（让 `strokeOutline` 忽略模式）
+            //   会让它同时退化成 1 段 400px，两条都倒。
+            var ink = 0
+            var runs = 0
+            var prevInk = false
+            for (x in DASH_X0.toInt() until DASH_X1.toInt()) {
+                val isInk = pixelAt(x, DASH_SCAN_ROW) == SUB_PATH_RGB
+                if (isInk) {
+                    ink++
+                    if (!prevInk) runs++
+                }
+                prevInk = isInk
+            }
+            report("★ 虚线被切成 20 段（同一段几何的实线只有 1 段）", runs == 20,
+                "扫第 $DASH_SCAN_ROW 行、x∈[${DASH_X0.toInt()}, ${DASH_X1.toInt()})：实测 $runs 段")
+            report("★ 墨迹总宽 = 20 段 × 10 px = 200（实线会是 400）", ink == 200,
+                "实测 $ink px")
+
+            // 前提：这条线**确实**落在扫描行上。不钉它的话，上面两条在"线画歪了 /
+            // 一行都没扫到"时会双双报 0 段 0 px——两个都倒，读起来像"虚线整个没画"，
+            // 而真因可能是几何错了。这一条把"扫描位置有效"与"虚线生效"分开。
+            val band = countIn(DASH_X0.toInt(), DASH_Y.toInt() - 3,
+                DASH_X1.toInt() - 1, DASH_Y.toInt() + 3, SUB_PATH_RGB)
+            report("前提：这条线确实落在扫描行附近（宽度 4）", band > 0,
+                "线周围 400x7 的盒子里有 $band px 墨迹")
         }
 
         // 半透明变体（最后一个）是唯一的例外：它必然多出一种"两层"颜色

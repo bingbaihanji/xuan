@@ -243,6 +243,25 @@ fillPolygon(points: FloatArray)                          // [x1,y1,x2,y2,...]，
 strokePolyline(points: FloatArray, closed = false)
 ```
 
+### 虚线
+
+虚线是**状态字段**，不是每个形状各一个方法——与 `lineWidth` 并列，进 `save`/`restore` 栈：
+
+```kotlin
+gc.dashPattern = floatArrayOf(6f, 4f)          // 6 实 4 空
+gc.strokeCircle(400f, 300f, 120f)              // 所有描边方法都吃它
+gc.dashPattern = floatArrayOf(8f, 3f, 2f, 3f)  // 长划-点 也支持（任意长度）
+gc.dashPhase = 10f                             // 起始相位：逐帧加一点就是"流动的虚线"
+gc.dashPattern = null                          // 回到实线
+```
+
+- **一个字段管全部**：`strokePath` / `strokePolyline` / `strokeRect` / `strokeCircle` /
+  `strokeEllipse` / `drawLine` 都汇进同一条描边路径，所以没有"某个形状不支持虚线"这回事。
+- 偶数下标是实线、奇数下标是空白，单位与 `lineWidth` 一样是用户坐标。
+- **setter 会拷贝数组**：不拷的话你改自己那个数组会静默改掉已压进状态栈的历史值。
+- 空数组、含 `NaN`/`Infinity`/负数的项、总和为 0 的模式都会被拒绝——
+  全零模式在渲染侧是"什么都不画"，而那与"这条线不存在"逐像素相同。
+
 ### 路径
 
 ```kotlin
@@ -587,8 +606,8 @@ mvn -pl jfgl-core -Dtest=PathTest test  # 单个 core 测试类
 mvn -pl jfgl-render-gl -Dtest=PickBufferTest test
 ```
 
-当前 **411 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
-`@Disabled` 的已知缺陷）。分布：`geom/` 91、`renderer/` 107、`gl/` 13、`text/` 32、
+当前 **412 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
+`@Disabled` 的已知缺陷）。分布：`geom/` 92、`renderer/` 107、`gl/` 13、`text/` 32、
 `chart/` 85、`chartrender/` 69、`gpu/` 14。
 
 > 这几个数请从 surefire 报告里数（`*/target/surefire-reports/TEST-*.xml` 的 `tests=` 求和），

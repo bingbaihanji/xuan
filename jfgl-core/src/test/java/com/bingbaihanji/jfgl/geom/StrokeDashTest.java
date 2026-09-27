@@ -1,9 +1,39 @@
 package com.bingbaihanji.jfgl.geom;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import static org.junit.jupiter.api.Assertions.*;
 
 class StrokeDashTest {
+
+    /**
+     * ★ **每一项都小于那个阈值**的模式（而总和恰好大于它）必须"什么都不画"，
+     * 而**不是死循环**。
+     *
+     * <h2>为什么这条测试带 {@link Timeout}</h2>
+     * <p>它在修复之前的行为是**挂死**，不是失败——`strokeDashed` 内层那条
+     * "本格太短、只推进 patternIndex"的分支会永远转下去，`cursor` 一步不动。
+     * 不带超时的话它会把整个 `mvn test` 吊住（而"测试挂住"比"测试失败"难查得多：
+     * 没有栈、没有读数、只有一个不动的进程）。**5 秒足够**——正常路径是微秒级的。
+     *
+     * <h2>为什么这个输入是可达的</h2>
+     * <p>模式总和 `1.2e-6 > 1e-6`，所以那条"全零模式"的早退**不触发**；
+     * 而每一项都 `<= 1e-6`，于是循环里每一格都走"太短"那条分支。
+     * 2026-09-28 之前 `Gc` 不暴露虚线，唯一的调用方是图表的十字虚线、dashLength
+     * 由配置层强制为正 ⇒ 这一支**不可达**；接上公开 API 之后它就可达了
+     * （`gc.dashPattern = floatArrayOf(6e-7f, 6e-7f)`）。
+     */
+    @Test
+    @Timeout(5)
+    void 每一项都低于阈值的模式不产生三角形而不是死循环() {
+        StrokeGenerator g = new StrokeGenerator();
+        g.strokeDashed(new float[]{0f, 0f, 100f, 0f}, 2, false, 4f,
+                StrokeGenerator.Cap.BUTT, StrokeGenerator.Join.MITER, 4f,
+                new float[]{6e-7f, 6e-7f}, 0f, 8);
+
+        assertEquals(0, g.triangleCount(),
+                "一格实线都发不出来 ⇒ 应当是空的，而不是卡在那儿");
+    }
 
     private static float area(float[] tris) {
         float sum = 0f;
