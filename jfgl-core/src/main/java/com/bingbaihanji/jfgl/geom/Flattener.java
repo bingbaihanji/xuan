@@ -202,7 +202,7 @@ public final class Flattener {
                     currentY = path.commandY(i, 0);
                     appendPoint(currentX, currentY);
                 }
-                case QUAD_TO -> {
+                case QUADRATIC_CURVE_TO -> {
                     float cx = path.commandX(i, 0), cy = path.commandY(i, 0);
                     float ex = path.commandX(i, 1), ey = path.commandY(i, 1);
                     int segs = quadSegments(currentX, currentY, cx, cy, ex, ey, scale, tolerance);
@@ -215,7 +215,7 @@ public final class Flattener {
                     currentX = ex;
                     currentY = ey;
                 }
-                case CUBIC_TO -> {
+                case BEZIER_CURVE_TO -> {
                     float c1x = path.commandX(i, 0), c1y = path.commandY(i, 0);
                     float c2x = path.commandX(i, 1), c2y = path.commandY(i, 1);
                     float ex = path.commandX(i, 2), ey = path.commandY(i, 2);

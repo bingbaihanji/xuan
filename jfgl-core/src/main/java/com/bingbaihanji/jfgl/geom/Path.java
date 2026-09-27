@@ -158,7 +158,7 @@ public final class Path {
      * @return 此对象，便于链式调用
      */
     public Path quadraticCurveTo(float cx, float cy, float x, float y) {
-        return add(Type.QUAD_TO, 2, cx, cy, x, y, 0f, 0f);
+        return add(Type.QUADRATIC_CURVE_TO, 2, cx, cy, x, y, 0f, 0f);
     }
 
     /**
@@ -174,7 +174,7 @@ public final class Path {
      * @return 此对象，便于链式调用
      */
     public Path bezierCurveTo(float c1x, float c1y, float c2x, float c2y, float x, float y) {
-        return add(Type.CUBIC_TO, 3, c1x, c1y, c2x, c2y, x, y);
+        return add(Type.BEZIER_CURVE_TO, 3, c1x, c1y, c2x, c2y, x, y);
     }
 
     /**
@@ -253,10 +253,10 @@ public final class Path {
         LINE_TO,
 
         /** 绘制二次贝塞尔曲线。 */
-        QUAD_TO,
+        QUADRATIC_CURVE_TO,
 
         /** 绘制三次贝塞尔曲线。 */
-        CUBIC_TO,
+        BEZIER_CURVE_TO,
 
         /** 通过绘制直线回到子路径起点来关闭当前子路径。 */
         CLOSE

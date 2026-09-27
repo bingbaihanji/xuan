@@ -44,7 +44,7 @@ class PathTest {
         Path p = new Path();
         p.moveTo(0f, 0f);
         p.quadraticCurveTo(1f, 2f, 3f, 4f);
-        assertEquals(Path.Type.QUAD_TO, p.commandType(1));
+        assertEquals(Path.Type.QUADRATIC_CURVE_TO, p.commandType(1));
         assertEquals(1f, p.commandX(1, 0), 1e-4f);
         assertEquals(2f, p.commandY(1, 0), 1e-4f);
         assertEquals(3f, p.commandX(1, 1), 1e-4f);
@@ -56,7 +56,7 @@ class PathTest {
         Path p = new Path();
         p.moveTo(0f, 0f);
         p.bezierCurveTo(1f, 2f, 3f, 4f, 5f, 6f);
-        assertEquals(Path.Type.CUBIC_TO, p.commandType(1));
+        assertEquals(Path.Type.BEZIER_CURVE_TO, p.commandType(1));
         assertEquals(3, p.pointCount(1));
         assertEquals(1f, p.commandX(1, 0), 1e-4f);
         assertEquals(2f, p.commandY(1, 0), 1e-4f);
@@ -108,7 +108,7 @@ class PathTest {
         assertEquals(202f, p.commandY(20, 0), 1e-4f);
 
         // 末条命令 39：三次贝塞尔，六个坐标全部核对（base+4/base+5 是唯一在此被校验的写入路径）
-        assertEquals(Path.Type.CUBIC_TO, p.commandType(39));
+        assertEquals(Path.Type.BEZIER_CURVE_TO, p.commandType(39));
         assertEquals(3, p.pointCount(39));
         assertEquals(391f, p.commandX(39, 0), 1e-4f);
         assertEquals(392f, p.commandY(39, 0), 1e-4f);
@@ -131,7 +131,7 @@ class PathTest {
         p.bezierCurveTo(21f, 22f, 23f, 24f, 25f, 26f);
 
         assertEquals(1, p.commandCount());
-        assertEquals(Path.Type.CUBIC_TO, p.commandType(0));
+        assertEquals(Path.Type.BEZIER_CURVE_TO, p.commandType(0));
         assertEquals(3, p.pointCount(0));
         assertEquals(21f, p.commandX(0, 0), 1e-4f);
         assertEquals(22f, p.commandY(0, 0), 1e-4f);
