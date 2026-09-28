@@ -4,14 +4,14 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.bingbaihanji</groupId>
-    <artifactId>jfgl-parent</artifactId>
+    <artifactId>xuan-parent</artifactId>
     <version>0.1.0</version>
     <packaging>pom</packaging>
 
     <modules>
-        <module>jfgl-core</module>
-        <module>jfgl-render-gl</module>
-        <module>jfgl-javafx</module>
+        <module>xuan-core</module>
+        <module>xuan-render-gl</module>
+        <module>xuan-javafx</module>
     </modules>
 
     <properties>

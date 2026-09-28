@@ -1,6 +1,6 @@
-# JFGL - JavaFX OpenGL 2D 绘图框架
+# Xuan - JavaFX OpenGL 2D 绘图框架
 
-开发者设计、模块边界和扩展说明见 [JFGL 开发者手册](docs/JFGL-DEVELOPER-GUIDE.md)。
+开发者设计、模块边界和扩展说明见 [Xuan 开发者手册](docs/Xuan-DEVELOPER-GUIDE.md)。
 
 一个基于 JavaFX + OpenGL 的 2D 绘图框架。API 手感类似 HTML Canvas（立即模式、像素坐标、
 `fillRect` / `strokePath` 这类方法形状），内部走 **GPU 批处理管线**：绘制调用只往顶点缓冲里
@@ -8,7 +8,7 @@
 
 ## ⚠️ 公开分发前必须先做这一件事：换掉自带字体
 
-本仓库自带 `jfgl-render-gl/src/main/resources/fonts/simhei.ttf`，它是
+本仓库自带 `xuan-render-gl/src/main/resources/fonts/simhei.ttf`，它是
 **微软 / 中易的专有字体**（Windows 系统自带的「黑体」SimHei）——**不是自由字体，
 不在本项目的 MIT 授权范围内**（见 [LICENSE](LICENSE) 末尾的例外条款）。
 
@@ -19,7 +19,7 @@
 替代品要用 **OFL 授权的静态（非可变）** 中文字体，如 **Noto Sans SC / 思源黑体**。
 换完**必须重跑 `TextVerifier`**：不同字体的度量不同，那里与字体相关的期望值要重新核对。
 完整约束（为什么不能用 OTF/CFF、为什么不能用可变字体、怎么核对）见
-[`jfgl-render-gl/src/main/resources/fonts/README.md`](jfgl-render-gl/src/main/resources/fonts/README.md)。
+[`xuan-render-gl/src/main/resources/fonts/README.md`](xuan-render-gl/src/main/resources/fonts/README.md)。
 
 ## 特性
 
@@ -37,10 +37,10 @@
 ## 快速开始
 
 ```kotlin
-import com.bingbaihanji.jfgl.dsl.jfgl
+import com.bingbaihanji.xuan.dsl.xuan
 
 fun main() {
-    jfgl {
+    xuan {
         title = "我的应用"
         width = 800.0
         height = 600.0
@@ -76,7 +76,7 @@ fun main() {
 要放 `Label` / `Button` 这类 JavaFX 控件，用 `onScene` + `overlay`（一个叠在画布**之上**的透明容器）：
 
 ```kotlin
-jfgl {
+xuan {
     onScene {                                  // JavaFX 线程，窗口显示之前调一次
         val label = Label("在图形上点一下")
         overlay.children.add(label)            // 控件浮在画面上
@@ -97,7 +97,7 @@ jfgl {
 给图形接点击只要加两处：`onRender` 里用 `pickable(id) { }` 打标，`onClick` 里拿回对象。
 
 ```kotlin
-jfgl {
+xuan {
     title = "点一下"
     width = 800.0
     height = 600.0
@@ -138,40 +138,40 @@ jfgl {
 mvn compile
 
 # 只编译 JavaFX 集成层及其依赖
-mvn -pl jfgl-javafx -am compile
+mvn -pl xuan-javafx -am compile
 
-# 以下运行命令在 jfgl-javafx 模块目录执行；先从根目录构建并安装一次三个模块
+# 以下运行命令在 xuan-javafx 模块目录执行；先从根目录构建并安装一次三个模块
 mvn -o install -DskipTests
-cd jfgl-javafx
+cd xuan-javafx
 
 # 运行示例窗口
 mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
-    -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.MainKt"
+    -Dexec.args="-cp %classpath com.bingbaihanji.xuan.MainKt"
 
 # 跑像素级端到端校验（自动关窗，退出码 0=通过 / 1=断言失败）
 # 渲染管线
 mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
-    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.PipelineVerifierKt"
+    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.xuan.example.PipelineVerifierKt"
 
 # 拾取
 mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
-    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.PickVerifierKt"
+    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.xuan.example.PickVerifierKt"
 
 # 文本
 mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
-    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.TextVerifierKt"
+    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.xuan.example.TextVerifierKt"
 
 # 图表
 mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
-    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.ChartVerifierKt"
+    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.xuan.example.ChartVerifierKt"
 
 # FFT / 频谱（不画任何东西，只测数值）
 mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
-    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.FftVerifierKt"
+    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.xuan.example.FftVerifierKt"
 
 # 点击闭环（合成鼠标事件走真实事件路径 + 一次 Robot 真实点击）
 mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
-    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.ClickVerifierKt"
+    "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.xuan.example.ClickVerifierKt"
 ```
 
 **改哪条路径就跑哪个校验器**：动了顶点/几何/描边跑 `PipelineVerifier`，
@@ -291,7 +291,7 @@ gc.isPointInStroke(x, y)    // 在描边上？
   一处反直觉：**点不受变换影响，而路径受**。与 GPU 拾取同一口径。
 - 针对**当前路径**（`fillPath` 之后路径仍在，`beginPath` 才清空），
   **不需要 `pickId`、不走 GPU、任意线程可调**。
-- **`isPointInPath` 用奇偶规则**，与 JFGL 的填充（按包含关系定洞）在良构路径上**恒等**。
+- **`isPointInPath` 用奇偶规则**，与 Xuan 的填充（按包含关系定洞）在良构路径上**恒等**。
 - **`isPointInStroke` 与画面同源**：它复用同一个描边生成器、同一组参数，
   所以含 miter 尖角、含超限回退 bevel，当前 `dashPattern` 也被遵守。
   ⚠️ 唯一不含的是 **AA 的 1 设备像素外扩**（那是渲染期的事）——所以开着 AA 时
@@ -594,23 +594,23 @@ gc.charts.draw(spectrum, Rect(100f, 100f, 600f, 400f), gc.width, gc.height)
 声明的逻辑尺寸。125% 缩放下，`width = 800` 的窗口实际帧缓冲是 **988×738** 设备像素，
 画到 `x = 800` 只覆盖约 81% 宽度。
 
-需要铺满整屏时请用 `Gc.width` / `Gc.height`，不要用 `jfgl { width = ... }` 里配的逻辑尺寸。
+需要铺满整屏时请用 `Gc.width` / `Gc.height`，不要用 `xuan { width = ... }` 里配的逻辑尺寸。
 
 ## 项目结构
 
 ```
-jfgl-core/                 # 零 GL / JavaFX 依赖的计算层
+xuan-core/                 # 零 GL / JavaFX 依赖的计算层
 ├── chart/                 # ChartData、Axis、Tick、ColorMapping
 ├── geom/                  # Path、Flattener、Tessellator、StrokeGenerator
 ├── math/                  # Vec2、Mat3、Transform
 └── util/                  # Color、Rect、Disposable
 
-jfgl-render-gl/            # OpenGL 资源、渲染管线与 GPU 后端
+xuan-render-gl/            # OpenGL 资源、渲染管线与 GPU 后端
 ├── gl/ renderer/ text/    # GL 抽象、批处理、GPU 拾取、SDF 文本
 ├── chartrender/ gpu/      # 图表绘制后端、FFT
 └── renderer/              # Kotlin Gc、ViewTransform
 
-jfgl-javafx/               # JavaFX 场景图集成与应用层
+xuan-javafx/               # JavaFX 场景图集成与应用层
 ├── glview/ dsl/ view/     # FXGLTransfer、DSL、布局
 └── example/                # 示例和端到端像素校验器
 ```
@@ -622,14 +622,14 @@ jfgl-javafx/               # JavaFX 场景图集成与应用层
 绘制后端单独一个包，也是同样的理由（`ChartPackageIsolationTest` 递归遍历 `chart/`
 整棵子树，按包名白名单守卫）。
 
-`jfgl-render-gl/src/main/resources/fonts/` 放着字体文件与它的授权/换字体说明（见该目录的 README）。
+`xuan-render-gl/src/main/resources/fonts/` 放着字体文件与它的授权/换字体说明（见该目录的 README）。
 
 ## 测试
 
 ```bash
 mvn test                                # 全部模块测试
-mvn -pl jfgl-core -Dtest=PathTest test  # 单个 core 测试类
-mvn -pl jfgl-render-gl -Dtest=PickBufferTest test
+mvn -pl xuan-core -Dtest=PathTest test  # 单个 core 测试类
+mvn -pl xuan-render-gl -Dtest=PickBufferTest test
 ```
 
 当前 **422 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条

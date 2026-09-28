@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-JFGL 是一个基于 **JavaFX + OpenGL** 的 2D 绘图框架。OpenGL 上下文由
+Xuan 是一个基于 **JavaFX + OpenGL** 的 2D 绘图框架。OpenGL 上下文由
 [openglfx-lwjgl](https://github.com/husker-dev/openglfx) 的 `GLCanvas` 承载，`GLCanvas`
 本身是 JavaFX 场景图中的一个 `Node`，因此 OpenGL 渲染结果直接嵌入 JavaFX 布局。
 
@@ -16,14 +16,14 @@ JFGL 是一个基于 **JavaFX + OpenGL** 的 2D 绘图框架。OpenGL 上下文�
 JavaFX 胶水层**（`Gc`、`ViewTransform`、`FXGLTransfer`、DSL、示例）。代码注释和 Javadoc
 一律使用中文。
 
-模块依赖只允许向上：`jfgl-core`（纯计算）→ `jfgl-render-gl`（OpenGL 后端）→
-`jfgl-javafx`（场景图桥接与示例）。禁止将 JavaFX、LWJGL 或 OpenGL 依赖带回 `jfgl-core`。
+模块依赖只允许向上：`xuan-core`（纯计算）→ `xuan-render-gl`（OpenGL 后端）→
+`xuan-javafx`（场景图桥接与示例）。禁止将 JavaFX、LWJGL 或 OpenGL 依赖带回 `xuan-core`。
 
 ## 常用命令
 
 ```bash
 mvn compile                      # 编译全部三个模块（Java 21 + Kotlin 21）
-mvn -pl jfgl-javafx -am compile  # 编译 JavaFX 模块及其依赖
+mvn -pl xuan-javafx -am compile  # 编译 JavaFX 模块及其依赖
 mvn -o compile                   # 离线编译（依赖已缓存时可用）
 mvn test                         # 运行测试
 mvn -o clean test                # 干净重建 + 全量测试
@@ -39,14 +39,14 @@ mvn package                      # 构建全部模块
 ```bash
 # 运行示例（打开窗口，需手动关闭）
 # 先从仓库根执行：mvn -o install -DskipTests
-# 然后进入 jfgl-javafx 目录执行：
+# 然后进入 xuan-javafx 目录执行：
 mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
-    -Dexec.args="-cp %classpath com.bingbaihanji.jfgl.MainKt"
+    -Dexec.args="-cp %classpath com.bingbaihanji.xuan.MainKt"
 
 # 运行像素校验器（自动关窗，退出码 0=通过 / 1=有断言失败）
 # ★ -Dstdout.encoding=UTF-8 放在 -cp **之前**：不加的话中文断言全是乱码，见下。
 mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
-    -Dexec.args="-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.PipelineVerifierKt"
+    -Dexec.args="-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.xuan.example.PipelineVerifierKt"
 ```
 
 > **⚠️ Windows 下必须带 `-Dstdout.encoding=UTF-8`。**
@@ -60,7 +60,7 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
 > 上面那条讲的是 `stdout.encoding`（默认 GBK，会让八个校验器的中文断言全乱）。
 > 但 `stderr.encoding` 是**独立的**系统属性，默认同样是 GBK——而**诊断信息走的是 stderr**。
 > 典型受害者是本仓库现有的自检：`ClickDslExample.kt` 的两处
-> `System.err.println("[叠加层] 自检失败：…")`（中文），`JfglDemo.kt` 的四条
+> `System.err.println("[叠加层] 自检失败：…")`（中文），`XuanDemo.kt` 的四条
 > ——「属性 … 不是能识别的真值」「两份自检开关的值不一致」「[自检] 失败 N 项，demo
 > 不可信，退出」「★ 警告：Platform.exit() 之后 … 没跑完」——以及
 > **`DemoShapeMath.kt` 的异常定位信息**
@@ -74,15 +74,15 @@ mvn -o compile exec:exec -Dexec.executable=java -Dexec.classpathScope=runtime \
 > 两个都带上之后逐字可读。所以跑法统一写成
 > `-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8`。
 
-### 交互式 demo 的自检模式（`-Djfgl.demo.selftest=1`）
+### 交互式 demo 的自检模式（`-Dxuan.demo.selftest=1`）
 
 `example/demo/` 那个交互式 demo **没有像素校验器**（画面取决于用户点了哪儿，没有可断言的
 判据），所以它自带一支**合成事件自检**——驱动窗口的是真事件处理器，但事件由程序合成：
 
 ```bash
-cd jfgl-javafx
+cd xuan-javafx
 mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
-    "-Dexec.args=-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -Djfgl.demo.selftest=1 -cp %classpath com.bingbaihanji.jfgl.example.demo.JfglDemoKt"
+    "-Dexec.args=-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -Dxuan.demo.selftest=1 -cp %classpath com.bingbaihanji.xuan.example.demo.XuanDemoKt"
 ```
 
 **退出码 0 要过两道闸门，两道都不可省**（一条命令里跑完）：
@@ -109,7 +109,7 @@ mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime
 > 自检因此从 11 条改写成 **14 条**（①②③④ 由 `clickAt`/`clickRight` 驱动，
 > 新增 ⑤ 圆的尺规 / ⑥ `Esc` / ⑦ 两点式上拖拽什么都不做）。
 > `dragFromTo` 现在只剩一处用途：⑦ 那条**反面**断言。
-> 术语与取舍理由见 `docs/superpowers/specs/2026-09-24-jfgl-demo-design.md` §4.2。
+> 术语与取舍理由见 `docs/superpowers/specs/2026-09-24-xuan-demo-design.md` §4.2。
 
 > **★ JavaFX + GL 应用的退出路径：`exitProcess` 会跑关闭钩子，而钩子会与 JavaFX 自己的
 > 关停并发碰 GL/D3D——实测撞出过原生崩溃。** 任何人写这类应用都会踩，与自检无关。
@@ -126,7 +126,7 @@ mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime
 > 机制是从"钩子 + 关停并发"推出来的，不是从栈里读出来的。样本也不大（1/5 vs 0/8）。
 > **做法**：退出前先把要自己释放的东西释放掉（这里等 `stop()` → `dispose()` 跑完），
 > **然后用 `halt(code)` 落退出码**——退出码一样，但不跑钩子、也不引入新的并发。
-> 本文件里 `JfglDemo` 的看门狗早就写着同一条理由（"`exitProcess` 会跑关闭钩子，
+> 本文件里 `XuanDemo` 的看门狗早就写着同一条理由（"`exitProcess` 会跑关闭钩子，
 > 而钩子里再去碰 GL/JavaFX，就是把一次有报告的失败换成一个没报告的挂死"）；
 > 这条把那个局部经验推广成了退出路径的通用写法。
 > ⚠️ 若哪天要把它升级成"已证明"，取证的入口是**别让 `halt` 把现场抹掉**：
@@ -170,10 +170,10 @@ mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime
 > `fwidth`/`fwidth==0` 那类"画面上长得一样"的静默错误**仍然**只有校验器拦得住。
 
 > **★ 一次被推翻的"间歇性缺陷"值得记下来，因为它的真因是"同一属性名下两份解析"。**
-> 现象：`-Djfgl.demo.selftest=true` 时 ⑩⑪ 全倒（末尾探针恒 +0、身份恒 0），
+> 现象：`-Dxuan.demo.selftest=true` 时 ⑩⑪ 全倒（末尾探针恒 +0、身份恒 0），
 > 而绘制与拾取号完全正常；一批运行里约 **1/17** 复发，一度被推断成
 > "帧在文字那段抛异常被 openglfx 静默吞掉"。
-> **真因**：`JfglDemo` 那一侧的判据被放宽成认 `1` **与** `true`，而 `DemoChart` 那一侧
+> **真因**：`XuanDemo` 那一侧的判据被放宽成认 `1` **与** `true`，而 `DemoChart` 那一侧
 > **没跟着改**（仍是 `== "1"`）——于是 `=true` 下**脚本照跑，而图表那三个观测一个都不写**。
 > 那一批运行里**只有一个**是 `=true` 跑的，所以"1/17"是这么来的，**不是随机性**。
 > **判据**：那次失败的日志里有 **6 行「等待超预算」**（⑩ 1 行 + ⑪ 5 行）——
@@ -194,39 +194,39 @@ mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime
 ### 测试
 
 ```
-jfgl-core/src/test/.../geom/       PathTest、FlattenerTest、TessellatorTest、
+xuan-core/src/test/.../geom/       PathTest、FlattenerTest、TessellatorTest、
                                                 TessellatorHoleTest、TessellatorRegressionTest、
                                                 StrokeGeneratorTest、StrokeDashTest、
                                                 GeomPackageIsolationTest
-jfgl-core/src/test/.../chart/      TickGeneratorTest、AxisTest、ArrayChartDataTest、
+xuan-core/src/test/.../chart/      TickGeneratorTest、AxisTest、ArrayChartDataTest、
                                                 RingChartDataTest、ChartDataConcurrencyTest、
                                                 ColorMappingTest、ChartTest、
                                                 ChartLayoutTest、ChartPackageIsolationTest
-jfgl-render-gl/src/test/.../renderer/   VertexFormatTest、VertexWriterTest、ViewTransformTest、
+xuan-render-gl/src/test/.../renderer/   VertexFormatTest、VertexWriterTest、ViewTransformTest、
                                                 PickRegistryTest、PickBufferTest
-jfgl-render-gl/src/test/.../gl/         FramebufferTest、LwjglGLAbstractionTest、
+xuan-render-gl/src/test/.../gl/         FramebufferTest、LwjglGLAbstractionTest、
                                                 FakeGLAbstractionGuardTest
-jfgl-render-gl/src/test/.../text/       SdfGeneratorTest、GlyphAtlasTest、FontFileTest、
+xuan-render-gl/src/test/.../text/       SdfGeneratorTest、GlyphAtlasTest、FontFileTest、
                                                 GlyphRasterizerTest、TextLayoutTest
-jfgl-render-gl/src/test/.../chartrender/ ChartRenderLayoutTest、SeriesBufferTest、
+xuan-render-gl/src/test/.../chartrender/ ChartRenderLayoutTest、SeriesBufferTest、
                                                 SeriesUploadPlanTest、WindowRangeTest、
                                                 BarLayoutTest
                                                 （夹具类 ChartDataFixtures 本身没有测试）
-jfgl-render-gl/src/test/.../gpu/        FftWindowTest、FftKernelTest
+xuan-render-gl/src/test/.../gpu/        FftWindowTest、FftKernelTest
 ```
 
-（`...` 是 `java/com/bingbaihanji/jfgl`。`jfgl-javafx` 没有 surefire 测试——它的
+（`...` 是 `java/com/bingbaihanji/xuan`。`xuan-javafx` 没有 surefire 测试——它的
 `example/` 里那**九个**校验器是**手动跑的 main**，不是单测：
 **七个像素校验器**（`Pipeline` / `Path` / `Pick` / `Click` / `Text` / `Chart` / `Axis`
 ——靠 `glReadPixels` 从**画布 FBO** 回读；`Axis` 是 2026-09-28 坐标系入库时加的）
 + `FftVerifier`（**不画任何东西**，读的是 SSBO，不是像素校验器）
-+ `MsaaVerifier`（**要跑三次**：`msaa=0` / `4` / `-1`，由 `jfgl-javafx/scripts/msaa-verify.sh` 比对）。
++ `MsaaVerifier`（**要跑三次**：`msaa=0` / `4` / `-1`，由 `xuan-javafx/scripts/msaa-verify.sh` 比对）。
 后两者的处境与那七个的区别见「抗锯齿」一节。）
 
 当前 **422 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
 `@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`（跨模块加 `-pl 模块名`）。
 分布：`geom/` 102、`renderer/` 107、`gl/` 13、`text/` 32、`chart/` 85、`chartrender/` 69、
-`gpu/` 14（合计 422 = `jfgl-core` 187 + `jfgl-render-gl` 235；
+`gpu/` 14（合计 422 = `xuan-core` 187 + `xuan-render-gl` 235；
 路径命中那一步给 `geom/` 加了 10 条——`PathHitTest`，理由见「已实现 vs 未实现」里那一条；
 虚线那一步又给 `geom/` 加了 1 条——`StrokeDashTest`
 「每一项都低于阈值的模式不产生三角形而不是死循环」，理由见「已实现 vs 未实现」里那条；
@@ -303,7 +303,7 @@ Cooley-Tukey radix-2 + SSBO，版本与上下文能力其实都够）。
 ### 单一批处理管线
 
 ```
-L3  DSL / 门面      com.bingbaihanji.jfgl.dsl.JFGL、renderer.Gc      用户 API
+L3  DSL / 门面      com.bingbaihanji.xuan.dsl.Xuan、renderer.Gc      用户 API
 L2  提交            renderer.RenderBatch                              着色器 / VAO / draw call
 L1  CPU 顶点侧      renderer.VertexWriter / VertexFormat / DrawCommand
                     renderer.ViewTransform                            变换与裁剪（无 GL）
@@ -325,8 +325,8 @@ L0  几何            geom.Path / Flattener / Tessellator / StrokeGenerator   �
 
 ```
 Main.kt                     设置 prism.* 系统属性
-  └─ PipelineExample.main   jfgl { ... }
-       └─ JFGLApplication   JavaFX Application，搭窗口
+  └─ PipelineExample.main   xuan { ... }
+       └─ XuanApplication   JavaFX Application，搭窗口
             └─ FXGLTransfer GLCanvas 的 GL 回调里创建 RenderBatch + Gc
                  └─ onFrame { gc -> ... }   每帧绘制回调
 ```
@@ -462,7 +462,7 @@ Tick[] ticks = x.ticks();          // 主/中/次三级刻度，位置已经装�
 
 ```kotlin
 // ② 画出来：每帧在 GL 线程上，z 序是「网格 → 数据 → 标注」（与 Gc.charts 的文档一致）
-gc.beginFrame(gc.width, gc.height)                     // jfgl { } 的 onRender 已代为调用
+gc.beginFrame(gc.width, gc.height)                     // xuan { } 的 onRender 已代为调用
 gc.fillRect(plot.x, plot.y, plot.width, plot.height)   // 绘图区底色（普通 Gc 图元）
 // ……网格与坐标轴……
 gc.flush()                                             // ★ 网格落定
@@ -498,7 +498,7 @@ gc.endFrame()
 
 **网格、坐标轴、箭头、刻度线、刻度文字现在由库画**，配置在 `chart/AxisStyle`
 （record + 逐字段 wither），经 `Chart.axisStyle(...)` 装配。在这之前，
-每一个用图表的应用都要自己抄一遍这段（`Main.java` 一份约 70 行、`JfglDemo` 另一份
+每一个用图表的应用都要自己抄一遍这段（`Main.java` 一份约 70 行、`XuanDemo` 另一份
 约 40 行，写法还不一样），而且**已经抄错过**：`Main.java` 从没声明过
 `tickLabelReserve`，于是它的刻度文字一直画在没留过位置的绘图区之外。
 
@@ -543,7 +543,7 @@ gc.endFrame()
 #### 路径命中判定（`isPointInPath` / `isPointInStroke`，2026-09-28）
 
 `Gc` 上加了两个 CPU 侧的命中判定，规格在
-`docs/superpowers/specs/2026-09-28-jfgl-path-hit-design.md`：
+`docs/superpowers/specs/2026-09-28-xuan-path-hit-design.md`：
 
 ```kotlin
 gc.beginPath(); gc.moveTo(…); gc.fillPath()
@@ -553,7 +553,7 @@ gc.isPointInStroke(x, y)    // 在描边上？
 
 - **(x, y) 是设备像素**（**Canvas 语义**：点不受变换影响、路径受）。与拾取同口径。
 - 针对**当前路径**，无需 `pickId`、不走 GPU、**任意线程**可调。`fillPath` 之后路径仍在。
-- **`isPointInPath` 用交叉计数（奇偶规则）**，不是复用 `Tessellator`。理由：JFGL 的填充
+- **`isPointInPath` 用交叉计数（奇偶规则）**，不是复用 `Tessellator`。理由：Xuan 的填充
   是"按包含关系定洞"，而对良构路径（`Tessellator` 写明的前提：各轮廓是简单多边形）
   **嵌套深度奇偶 ≡ 交叉计数奇偶**，两者恒等；而走三角化有前提耦合、每次查询还要跑一遍耳切。
 - ★ **`isPointInStroke` 复用 `StrokeGenerator` 本身**，不抄接头几何：把平坦化后的点按
@@ -710,7 +710,7 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
 |---|---|---|
 | `chart/` | `Chart.interaction()` | 持有指针与配置；`probe(chart, plot)` 算出命中的点与提示框文本行 |
 | `chartrender/` | `ChartRenderer.drawChart` 末尾调 `drawInteraction` | 画虚线十字、命中点方块、提示框 |
-| `jfgl-javafx` | `FXGLTransfer.trackChartHover(node, chart)` | 把 `MOUSE_MOVED`（乘缩放）与 `MOUSE_EXITED` 接到 `updatePointer` / `clearPointer` |
+| `xuan-javafx` | `FXGLTransfer.trackChartHover(node, chart)` | 把 `MOUSE_MOVED`（乘缩放）与 `MOUSE_EXITED` 接到 `updatePointer` / `clearPointer` |
 
 - **`probe` 是逐样本线性扫描**（`chart.allSeries()` × `itemCount()`，每帧一次），
   **已限定在可见窗口内的样本**（见下一条）。它的 KDoc 明说大数据量该在这里换
@@ -793,7 +793,7 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
 | 开关 | 时机 | 住哪 | 管哪些图元 |
 |------|------|------|-----------|
 | `Gc.antialias: Boolean` | **运行期**，进 `save`/`restore` 栈 | `Gc` 的样式栈（与 `lineWidth` 并列） | 一切**描边** + **六个图表渲染器** |
-| `FXGLTransfer(msaa = N)`／DSL `jfgl { antialias { msaa = 4 } }` | **构造时** | `GLCanvas` 的帧缓冲 | **填充**的边缘 |
+| `FXGLTransfer(msaa = N)`／DSL `xuan { antialias { msaa = 4 } }` | **构造时** | `GLCanvas` 的帧缓冲 | **填充**的边缘 |
 
 - **分工判据是「几何知不知道自己的中心线在哪」**，不是"解析 vs 非解析"。
   描边是**一条带**：`StrokeGenerator` 从中心线向两侧偏移，每个顶点到中心线的距离是
@@ -810,7 +810,7 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
   （"画面只有这 7 种颜色"、图例/标题/外边距那几组的数据线行号）——那些期望本来就
   建立在"默认关"上。**改这两个默认值等于重立那批断言。**
 - **`msaa` 只能在建窗口时给**：采样数是**帧缓冲**的属性，`GLCanvas` 只有 `getMsaa()`、
-  没有 setter（实测 jar 的公开签名）。`jfgl { }` 的配置块跑在 `Application.launch`
+  没有 setter（实测 jar 的公开签名）。`xuan { }` 的配置块跑在 `Application.launch`
   **之前**，正好是这个时机；**运行期改它没有任何效果**（API 上拦不住，所以写在文档里）。
 - ★ **`msaa` 非 0 时像素回读失效，拾取不受影响**——两件事，别混：
   （**"非 0"包含负数**：openglfx 的约定是 `-1 = 最大采样数`，**不是"关"**——
@@ -917,7 +917,7 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
   实测：两处 `if (antialias)` → `if (false)` ⇒ **15 条倒**，且 **`C ≠ A` 倒而 `A ≡ B`
   照常通过**——反证的有效性被独立证实（正是要的那个方向）。
 - **六个图表渲染器逐个被独立覆盖**。变异一律是"把该渲染器的 `uAntialias` 恒传 `0f`"
-  （等价于删掉那一行），**逐个重测过**（`mvn -o install -pl jfgl-render-gl -am` + `ChartVerifier`）：
+  （等价于删掉那一行），**逐个重测过**（`mvn -o install -pl xuan-render-gl -am` + `ChartVerifier`）：
 
   | 注入到哪个渲染器 | 倒几条 | 倒的是哪些 |
   |---|---|---|
@@ -974,12 +974,12 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
   `fringe=$coreWhite core=$coreWhite`），脚本的跨进程比较照样成立、**两边都看不见**；
   字段互换只因两次运行的读数不同才被偶然抓住。要真钉住得让脚本之外的**一条进程内断言**
   比对"读数行里的值与被断言的变量"，或把读数行改成由同一份数据生成。
-- **DSL 的 `jfgl { antialias { msaa = N } }` 没有端到端证据**：接线读码正确
-  （`JFGL.antialiasConfig.msaa` → `JFGLApplication.start` 里那次 `FXGLTransfer(...)`，
+- **DSL 的 `xuan { antialias { msaa = N } }` 没有端到端证据**：接线读码正确
+  （`Xuan.antialiasConfig.msaa` → `XuanApplication.start` 里那次 `FXGLTransfer(...)`，
   它是**唯一**经 DSL 构造桥接对象的入口），但**没有任何校验器或 demo 走这条路径**
   （八个校验器与 `MsaaVerifier` 都直接 `new FXGLTransfer(...)`）。
   ⇒ "DSL 里设的 msaa 真的会生效"是**已声明、未验证**——要验它得写一个
-  `jfgl { antialias { msaa = 4 } }` 的探针应用（或让 demo 支持该配置）。
+  `xuan { antialias { msaa = 4 } }` 的探针应用（或让 demo 支持该配置）。
 - ⚠️ **上面这批实测都在本机（NVIDIA 4.6）**：MSAA 的样本位置、`fwidth` 的行为都是
   **驱动/硬件相关**的量，换机器要把那几条"精确相等"的期望重新量一遍。
 
@@ -1020,17 +1020,17 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
 
 所有 `gl*` 调用与 GL 资源生命周期**必须**发生在 `GLCanvas` 的 GL 线程上，即
 `onInit` / `onRender` / `onReshape` / `onDispose` 回调内部。JavaFX 应用线程上只能做布局和
-事件注册。`jfgl {}` 的 `onInit` / `onRender` 都在 GL 线程上调用，可以直接用 `Gc`，
+事件注册。`xuan {}` 的 `onInit` / `onRender` 都在 GL 线程上调用，可以直接用 `Gc`，
 但**不要**在其中操作 JavaFX 场景图。
 
 不要在 JavaFX 的 `stop()` 里清理 GL 资源——那时上下文可能已失效。
 
 ### 资源释放
 
-带 GL 资源的类统一实现 `com.bingbaihanji.jfgl.util.Disposable`。
+带 GL 资源的类统一实现 `com.bingbaihanji.xuan.util.Disposable`。
 所有权：`FXGLTransfer.onDispose` → `RenderBatch.dispose()`。
 
-**`Disposable` 的四条契约**（`docs/JFGL-DEVELOPER-GUIDE.md` §5.3；本轮在
+**`Disposable` 的四条契约**（`docs/Xuan-DEVELOPER-GUIDE.md` §5.3；本轮在
 `ShaderProgram` 与 `Texture` 上落地，两者此前**一条都不满足**）：
 
 1. **`dispose()` 幂等**——都加了一个 `disposed` 标志，第二次数直接返回
@@ -1052,7 +1052,7 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
 不是为了复用，是为了**能被验证**。
 
 > ⚠️ **但那个类本身是死的，两份拷贝也没收敛。** 全仓（含测试）grep 不到任何
-> `new Texture(...)` 或 `import com.bingbaihanji.jfgl.gl.Texture` —— **`gl/Texture` 零引用**，
+> `new Texture(...)` 或 `import com.bingbaihanji.xuan.gl.Texture` —— **`gl/Texture` 零引用**，
 > 真正在用的是 `GLAbstraction` 那条路（`createTexture` / `createR8Texture` /
 > `createIntegerTexture`）。也就是说这份契约现在有**两份实现**，
 > 而它们**已经漂移过一次**：`Texture` 里原先那段写的是 `[B,G,R,A]`（蓝红互换，
@@ -1121,14 +1121,14 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
 
    ```bash
    mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
-       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.PathVerifierKt"
+       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.xuan.example.PathVerifierKt"
    ```
 
    改**拾取**路径后跑 `PickVerifier`（同样回读像素、断言精确 ID，退出码 0/1）：
 
    ```bash
    mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
-       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.PickVerifierKt"
+       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.xuan.example.PickVerifierKt"
    ```
 
    拾取尤其危险：**错误的拾取不会让任何画面变坏**，只会让点击落在错误的对象上。
@@ -1157,7 +1157,7 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
 
    ```bash
    mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
-       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.ClickVerifierKt"
+       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.xuan.example.ClickVerifierKt"
    ```
 
    它守的核心是**坐标换算**：`MouseEvent.getX()/getY()` 给的是画布节点的**逻辑**局部坐标，
@@ -1199,9 +1199,9 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
    而"点得比帧率快"是正常压力不是程序错误，所以不抛异常——但绝不静默。
 
    `ClickExample.kt`（`FXGLTransfer` 版，JavaFX Label 反馈）与 `ClickDslExample.kt`
-   （`jfgl { onClick { } }` 版）是两个可跑的示例。后者的存在是为了证明**从 DSL 那个入口
+   （`xuan { onClick { } }` 版）是两个可跑的示例。后者的存在是为了证明**从 DSL 那个入口
    也能接上点击**：它没有一处手工搭 `Scene`/`Stage`，也没有一处手写坐标换算。
-   它另外钉住 DSL 的**叠加层**（`jfgl { onScene { overlay.children.add(label) } }`）：
+   它另外钉住 DSL 的**叠加层**（`xuan { onScene { overlay.children.add(label) } }`）：
    命中结果既画在画布上、也写进一个真的 `Label`，启动时做一次结构自检
    （控件在场景图里、叠加层在画布之上），失败就 `exitProcess(1)`——
    "窗口看起来正常"与"控件没接上"在截图里分不出来（控件本来就是空的）。
@@ -1215,14 +1215,14 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
 
    ```bash
    mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
-       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.TextVerifierKt"
+       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.xuan.example.TextVerifierKt"
    ```
 
    改**图表绘制**路径后跑 `ChartVerifier`（同样回读像素、退出码 0/1）。
 
    ```bash
    mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
-       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.ChartVerifierKt"
+       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.xuan.example.ChartVerifierKt"
    ```
 
    它守的核心是那一组**与像素无关**的：整个 ② 的性能主张是「每帧只上传新增的点」，
@@ -1268,12 +1268,12 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
      与 **★ 非等比缩放一节**（帧号 `ANISO_FRAME`，钉降级的方向）；
    - `ChartVerifier` 的 **★ 图表系列的解析式抗锯齿一节**（六个图型的 `uAntialias`
      + 折线的四条判据 + 交叉验证）；
-   - `MsaaVerifier`——它**要跑三次**（`-Djfgl.probe.msaa=0`、`4`、**`-1`**）
+   - `MsaaVerifier`——它**要跑三次**（`-Dxuan.probe.msaa=0`、`4`、**`-1`**）
      ，**由脚本比对**（`-1` 那一档见脚本顶部：按 openglfx 的约定负数 = 最大采样数，
      所以它又是一条多采样路径，也是**守卫最容易判错**的一档）：
 
    ```bash
-   bash jfgl-javafx/scripts/msaa-verify.sh        # 退出码 0/1；内部用 trap ... EXIT 清理
+   bash xuan-javafx/scripts/msaa-verify.sh        # 退出码 0/1；内部用 trap ... EXIT 清理
    ```
 
    `MsaaVerifier` 守的是**另外三件事**：① 快照路径与 `glReadPixels` 路径的交叉印证
@@ -1290,9 +1290,9 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
    ⚠️ **四个数都得带条件**：写成"正确版是 3 种"而不写 `msaa=0`，就是把两次读数混成了一句
    （本条的上一版正是这么写的：限定词只加在了后一半上）。
 
-   ★ 八个校验器的采样数都从**同一个系统属性** `-Djfgl.probe.msaa` 读（解析与
+   ★ 八个校验器的采样数都从**同一个系统属性** `-Dxuan.probe.msaa` 读（解析与
    `MsaaVerifier` **共用一份**，见 `example/MsaaVerifier.kt` 的 `readRequestedMsaa`）
-   ⇒ **`-Djfgl.probe.msaa=4` 会让它们在那道守卫上明确拒绝并以 1 退出**。
+   ⇒ **`-Dxuan.probe.msaa=4` 会让它们在那道守卫上明确拒绝并以 1 退出**。
    这一条是刻意的：在那之前八个入口全写 `FXGLTransfer()`，`msaa` 恒为默认 0，
    于是"明确拒绝"**只在有人改源码时才可能触发**——守卫是**死代码**。
 
@@ -1301,7 +1301,7 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
 
    ```bash
    mvn -o compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=runtime" \
-       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.jfgl.example.FftVerifierKt"
+       "-Dexec.args=-Dstdout.encoding=UTF-8 -cp %classpath com.bingbaihanji.xuan.example.FftVerifierKt"
    ```
 
    它守的是"**FFT 算对了**"（**50 条**断言）：已知频率的纯正弦峰值落在正确的 bin、
@@ -1316,12 +1316,12 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
    **像素那一半不在它这里**——频谱画出来的位置由 `ChartVerifier` 钉（见上）。
 2. **改了断言或修了 bug，做变异验证**：把 bug 重新注入，确认校验器真的失败。
    （校验器里那条"反证"断言就是这么来的——避免覆盖性检查恒真、变成橡皮图章。）
-3. **⚠️ 变异注入在 `jfgl-render-gl` 上时，还原之后必须 `mvn -o install -DskipTests -pl jfgl-render-gl`。**
-   校验器是用 `-f jfgl-javafx/pom.xml` 跑的，`jfgl-render-gl` 从**本地仓库**解析；
+3. **⚠️ 变异注入在 `xuan-render-gl` 上时，还原之后必须 `mvn -o install -DskipTests -pl xuan-render-gl`。**
+   校验器是用 `-f xuan-javafx/pom.xml` 跑的，`xuan-render-gl` 从**本地仓库**解析；
    注入时 install 过，**还原时不 install 就还在跑变异版本**。实测踩过：还原源码后连跑
    三次全红、且三次输出**逐字符相同**，看起来像校验器"飘"，其实是本地仓库里的
    残留变异。判据：输出完全一致地失败 ⇒ 先怀疑产物，不是怀疑随机性。
-   （`jfgl-javafx` 自己的改动不必 install——那是当场编译的。）
+   （`xuan-javafx` 自己的改动不必 install——那是当场编译的。）
 4. 校验器依赖"用户坐标 1:1 映射到设备像素"这一前提。若将来引入真正的 DPI 缩放，
    它的期望值需要乘以缩放系数——那时它会失败，正是它该提醒的。
 5. **做性能测量时，绝对毫秒数在这台机器上单独拿出来不可比。** 笔记本 GPU 是负载驱动
@@ -1329,7 +1329,7 @@ record）、`ChartInteractionConfig`（外观与行为，13 个字段的 record 
    能差 1.5 倍以上**，而它制造的最典型的假象是"实例数翻 3 倍、时间只涨 4%"这样一个
    **看起来像物理饱和的平顶**——实测第一轮就被它骗过一次。要比就比**同一轮内**的相对
    关系，或同时记录 `nvidia-smi` 的 SM 时钟；`example/ChartPerfProbe.kt` 支持
-   `-Djfgl.probe.rounds=2` 做倒序第二轮，专门用来把"N 越大"与"跑得越晚"拆开。
+   `-Dxuan.probe.rounds=2` 做倒序第二轮，专门用来把"N 越大"与"跑得越晚"拆开。
 
 ## 已实现 vs 未实现
 
@@ -1353,7 +1353,7 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
 `log2(N)` 级蝶形 → 幅度，单 workgroup 全在 shared memory 里做；输出是 `N/2+1` 个 bin 的
 半谱）、
 `chartrender/` 的装饰（`ChartLayout` 的轴标题带与刻度预留、`ChartPainter.begin(Rect)` 的
-带子裁剪）、`dsl/JFGL` 的 `overlay` / `onScene`（把 JavaFX 控件放进 DSL 应用）、
+带子裁剪）、`dsl/Xuan` 的 `overlay` / `onScene`（把 JavaFX 控件放进 DSL 应用）、
 **路径命中判定**：`Gc.isPointInPath` / `Gc.isPointInStroke`（CPU、任意线程、无需 `pickId`）
 + `geom/PathHit`（纯计算，见「路径命中判定」一节）、
 `renderer/PickRegistry`（ID 分配与 `id→对象` 映射，纯内存可单测）、
@@ -1374,7 +1374,7 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
 **抗锯齿**：`Gc.antialias`（描边 + 六个图表渲染器，默认关）、顶点属性 `aEdge`
 （横向/沿向，`VertexFormat.OFFSET_EDGE` = 24）、图表侧的 `vEdge` + `uAntialias`、
 `FXGLTransfer(msaa = N)` 与 `FXGLTransfer.canReadPixels`（回读拒绝守卫）、
-DSL 的 `jfgl { antialias { msaa = 4 } }`——见「抗锯齿」一节
+DSL 的 `xuan { antialias { msaa = 4 } }`——见「抗锯齿」一节
 
 **未实现 / 待办**
 - **其余图型的渲染器**：`HEATMAP` / `WATERFALL` 目前一律**抛异常**
@@ -1395,10 +1395,10 @@ DSL 的 `jfgl { antialias { msaa = 4 } }`——见「抗锯齿」一节
   这类**填充**没有解析式抗锯齿（`Gc.antialias` 对它们**无效**），它们的手段是 `msaa`；
   判据是"几何知不知道自己的中心线"（三角形汤里没有中心线，见「抗锯齿」一节）。
   **★ 一条从未验证过的推断，现在被实测取代了**——记在这里因为它是这条待办的立项理由：
-  `docs/superpowers/specs/2026-09-11-jfgl-render-pipeline-design.md` §9 写着
+  `docs/superpowers/specs/2026-09-11-xuan-render-pipeline-design.md` §9 写着
   "抗锯齿：MSAA。`GLCanvas` 构造函数已提供 `msaa` 参数，**零额外实现成本**"。
   **那是推断，不是实测**：`GLCanvas.Defaults.MSAA` 是 0，分支起点（`18bcf33`）全仓
-  **11 处构造点**（10 个示例/校验器各一处 + `JFGL.kt` 一处）**没有一处传过 `msaa`**，
+  **11 处构造点**（10 个示例/校验器各一处 + `Xuan.kt` 一处）**没有一处传过 `msaa`**，
   这条路**一次都没跑起来过**（本仓库有前科：`GPUFFT.java`
   当年也是"能编译"被当成"现成可用"）。实测结论（`example/MsaaVerifier.kt` 钉着）：
   - ✅ **"开启"那一侧成立**：`msaa=4` 真的建出多采样 FBO（`GL_SAMPLE_BUFFERS=1` /
@@ -1475,7 +1475,7 @@ DSL 的 `jfgl { antialias { msaa = 4 } }`——见「抗锯齿」一节
       即"折线读均值"成立，"所以尖峰看不见"这条**未证、且已有反证**。
     - **结论里不变的部分**：它的降采样**是有损的**（几何 = 均值），
       "照它做"确实会把均值化抄进来。要改的是证据强度，不是结论。
-      出处：`docs/superpowers/specs/2026-09-24-jfgl-architecture-review.md`
+      出处：`docs/superpowers/specs/2026-09-24-xuan-architecture-review.md`
       §4.5.1、§4.5.5。
 
     **什么时候该重新考虑**：可见点到 **3M 就是 7.09 ms**（吃掉近一半预算），那才是
@@ -1489,7 +1489,7 @@ DSL 的 `jfgl { antialias { msaa = 4 } }`——见「抗锯齿」一节
     这种平顶正是它造出来的假象——**不要把它读成物理饱和**。实测第一轮就撞上过这个坑。
     所以：**这台机器上，绝对毫秒数单独拿出来不可比**；要比就比**同一轮内**的相对关系，
     或者同时记录 `nvidia-smi` 的 SM 时钟。探针跑法见文件头，三种模式（像素斜坡 /
-    冷热对照 / 全量扫描）都支持 `-Djfgl.probe.rounds=2` 做倒序第二轮。
+    冷热对照 / 全量扫描）都支持 `-Dxuan.probe.rounds=2` 做倒序第二轮。
 
     **顺带一个与图形管线有关的结论**：瓶颈在**前端**（图元装配/光栅化），不在 SM
     ——同一轮里 SM 时钟差 1.76 倍而时间只差 1.25 倍。**加着色器工作量便宜，加实例数贵。**
@@ -1546,8 +1546,8 @@ DSL 的 `jfgl { antialias { msaa = 4 } }`——见「抗锯齿」一节
   变异实测：①按位置约定分类 ⇒ 4 条单测 + 4 条像素断言倒下（两个正方形整块消失）；
   ②忽略嵌套（每个轮廓各自成块、不收洞）⇒ 4 条单测 + 3 条像素断言倒下（环心被填实）。
 - 没有黄金图像测试。
-- **`example/demo/` 的交互式 demo 暴露、但本期只记录的缺口**（`JfglDemo.kt` 是它们的绕法样板）：
-  - **`jfgl { }` 只暴露 `overlay`，不暴露画布节点**：菜单栏**能**加
+- **`example/demo/` 的交互式 demo 暴露、但本期只记录的缺口**（`XuanDemo.kt` 是它们的绕法样板）：
+  - **`xuan { }` 只暴露 `overlay`，不暴露画布节点**：菜单栏**能**加
     （`onScene { (it.root as BorderPane).top = menuBar }`——`createMainView()` 返回的正是
     `Scene` 的根 `BorderPane`），但画布是 `StackPane(view, overlay)` 的第一个孩子，
     只能从 `overlay.parent` 掏。拖拽 / hover / 滚轮都要接在它上面。
@@ -1560,7 +1560,7 @@ DSL 的 `jfgl { antialias { msaa = 4 } }`——见「抗锯齿」一节
     `pickBufferValid` 置回 `false`，所以 `onFrame` 里调 `pickRect` / `pick` 是**恒返回空**
     ——框选会永远选不中任何东西且不报错。正确位置是 `FXGLTransfer.onRender`
     （跑在 `endFrame()` **之后**、`pickBufferValid` 为 `true`）。
-    **★ 顺带一条命名陷阱（比缺口本身更值得记）**：`JFGL.onRender` 转发到的是
+    **★ 顺带一条命名陷阱（比缺口本身更值得记）**：`Xuan.onRender` 转发到的是
     `bridge.onFrame`，即 `endFrame()` **之前**那个——与 `FXGLTransfer.onRender`
     **同名不同时机**。照名字找"帧末回调"的 DSL 用户会拿到早一步的那个，
     于是**区域拾取在 DSL 路径上恒返回空**（单像素有 `pickAsync` / `clickAsync` 兜着，区域没有）。
@@ -1641,21 +1641,21 @@ DSL 的 `jfgl { antialias { msaa = 4 } }`——见「抗锯齿」一节
     **带 `@Timeout(5)`**——因为它在修复前的行为是**挂死**而不是失败，不带超时会把
     `mvn test` 整个吊住（"测试挂住"比"测试失败"难查得多：没有栈、没有读数）。
     变异（去掉 `longestDash` 那一半）⇒ 该条报错，其余 5 条照过。
-  - **`jfgl-javafx` 跑不了单测**：pom 里没有 junit、没有 surefire，kotlin 插件也只配了
+  - **`xuan-javafx` 跑不了单测**：pom 里没有 junit、没有 surefire，kotlin 插件也只配了
     `src/main/kotlin`。所以本模块的纯计算只能靠"启动自检 + 非 0 退出"
-    （`ClickDslExample` 与 `JfglDemo` 都是这个模式）。
+    （`ClickDslExample` 与 `XuanDemo` 都是这个模式）。
     ⚠️ **`src/test` 不再是空的，但那不是单测**：`src/test/java/com/bingbaihanji/gl/Main.java`
     是一个**手动跑的 Java 示例**（顶栏 `ComboBox` 切几何/文字/图表；几何档是
     **两点式画圆 + 右键拾取**，见它自己的类文档），surefire **不会**碰它——
     本模块仍然只有 `src/main/kotlin` 一处源码根。
     **它的跑法与上面那些示例不同，照抄会 `ClassNotFoundException`**：
     ```bash
-    cd jfgl-javafx
+    cd xuan-javafx
     mvn -o test-compile exec:exec "-Dexec.executable=java" "-Dexec.classpathScope=test" \
         "-Dexec.args=-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -cp %classpath com.bingbaihanji.gl.Main"
     ```
     两处差别都是必需的：`compile` **不编译** test 源码（那是 `test-compile` 的事），
-    而 `classpathScope` 必须是 **`test`**——`runtime` 的 classpath 里没有 `target/test-classes`。`jfgl-javafx/pom.xml` 与根 `pom.xml` 在本轮都**只是
+    而 `classpathScope` 必须是 **`test`**——`runtime` 的 classpath 里没有 `target/test-classes`。`xuan-javafx/pom.xml` 与根 `pom.xml` 在本轮都**只是
     重排格式**（把一行挤在一起的 `<dependency>` 拆成多行），**没有任何依赖或插件变化**。
   - ✅ **已修（2026-09-26）：`ChartRenderer` 的系列资源现在自动回收**（设计文档 §6.6）。
     原先它用 `IdentityHashMap` 按 **`Series` 对象身份**缓存 GPU 缓冲与拾取号
@@ -1708,21 +1708,21 @@ app 的窗口完全由 JavaFX 管理，GLFW 不参与。
 - **JavaFX 依赖声明了两遍**：一次不带 classifier，一次带 `<classifier>win</classifier>`。
   带 classifier 的是 Windows 原生库，项目当前是 **Windows 专用**。
 - `openglfx-lwjgl` 显式排除了 `kotlin-stdlib-jdk8`，避免与 `kotlin-stdlib` 冲突。
-- `pom.xml` 的 manifest `<mainClass>` 是 `com.bingbaihanji.jfgl.MainKt`。
-  但 `java -jar bin/jfgl-0.1.0.jar` 仍可能因 JavaFX/openglfx 的原生库路径问题失败，
+- `pom.xml` 的 manifest `<mainClass>` 是 `com.bingbaihanji.xuan.MainKt`。
+  但 `java -jar bin/xuan-0.1.0.jar` 仍可能因 JavaFX/openglfx 的原生库路径问题失败，
   优先用上面的 `exec:exec` 或 IDE 运行配置。
 
 ## 发布（里程碑 0.1.0）
 
 **版本号**：三个模块统一 `0.1.0`（原为 `1.0-SNAPSHOT`）。Bump 时**四处都要改**——
 根 `pom.xml` 的 `<version>`，以及三个子模块 `<parent>` 里的 `<version>`
-（`jfgl-core` 那个写在一行里）。子模块之间用的是 `${project.version}`，不必单独改。
+（`xuan-core` 那个写在一行里）。子模块之间用的是 `${project.version}`，不必单独改。
 
 **发布范围**：**内部发布**（2026-09-27 定）。这一条决定了下面几件事的处置。
 
 ### ⚠️ 公开分发前必须先换掉自带字体（法务拦截项，不是技术债）
 
-`jfgl-render-gl/src/main/resources/fonts/simhei.ttf` 是**微软 / 中易的专有字体**，
+`xuan-render-gl/src/main/resources/fonts/simhei.ttf` 是**微软 / 中易的专有字体**，
 实测与 `C:\Windows\Fonts\simhei.ttf` **逐字节相同**（md5 `4093871a7f48e43b9ce7c38da0c34809`），
 也就是系统字体的直接拷贝。它与本项目的 MIT 声明**直接冲突**——
 把专有字体按 MIT 分发是不成立的。
@@ -1758,14 +1758,14 @@ mvn -o test                    # 411 / 0 失败 / 2 跳过
 再加**九个校验器**（`PipelineVerifier` / `PathVerifier` / `PickVerifier` /
 `ClickVerifier` / `TextVerifier` / `ChartVerifier` / `FftVerifier` / **`AxisVerifier`**，
 逐个退出码 0；`AxisVerifier` 是 2026-09-28 坐标系入库时新增的第九个，见「坐标系」一节）、
-**demo 合成事件自检**（`-Djfgl.demo.selftest=1`，21 + 14 条）、
-**MSAA 三档跨进程比对**（`bash jfgl-javafx/scripts/msaa-verify.sh`）。
+**demo 合成事件自检**（`-Dxuan.demo.selftest=1`，21 + 14 条）、
+**MSAA 三档跨进程比对**（`bash xuan-javafx/scripts/msaa-verify.sh`）。
 
-> **⚠️ 跨模块的未提交改动会让 `jfgl-javafx` 编译不过，报错却指向一个不存在的引用。**
-> 实测：`jfgl-core` 里新加了 `Chart.interaction()` 但没 install，
+> **⚠️ 跨模块的未提交改动会让 `xuan-javafx` 编译不过，报错却指向一个不存在的引用。**
+> 实测：`xuan-core` 里新加了 `Chart.interaction()` 但没 install，
 > 于是 `DemoChart.kt` 报 `Unresolved reference 'interaction'`——**看起来像代码写错了**。
 > 触发条件比这里原先记的更宽：**任何**跨模块的未提交改动都会撞它
-> （原先只记了 `jfgl-render-gl` 的变异残留那一种）。**判据：报错的符号明明存在 ⇒ 先 install。**
+> （原先只记了 `xuan-render-gl` 的变异残留那一种）。**判据：报错的符号明明存在 ⇒ 先 install。**
 
 ## 文档与生成物
 
@@ -1775,34 +1775,34 @@ mvn -o test                    # 411 / 0 失败 / 2 跳过
 
 ```
 specs/                                        plans/
-2026-09-09-jfgl-drawing-engine-design.md      2026-09-09-jfgl-drawing-engine.md
-2026-09-11-jfgl-render-pipeline-design.md     2026-09-11-jfgl-render-pipeline.md   （15 个任务）
-2026-09-17-jfgl-gpu-picking-design.md         2026-09-17-jfgl-gpu-picking.md
-2026-09-20-jfgl-chart-framework-design.md     2026-09-20-jfgl-chart-framework.md
-2026-09-20-jfgl-chart-render-backend-design.md 2026-09-20-jfgl-chart-render-backend.md
-2026-09-20-jfgl-sdf-text-design.md            2026-09-20-jfgl-sdf-text.md
-2026-09-23-jfgl-gpu-fft-design.md             2026-09-23-jfgl-gpu-fft.md
-2026-09-24-jfgl-architecture-review.md        （评审，无对应计划）
-2026-09-24-jfgl-demo-design.md                2026-09-24-jfgl-demo.md
-                                              2026-09-25-jfgl-demo-click-draw.md
-2026-09-26-jfgl-antialias-design.md           2026-09-26-jfgl-antialias.md
+2026-09-09-xuan-drawing-engine-design.md      2026-09-09-xuan-drawing-engine.md
+2026-09-11-xuan-render-pipeline-design.md     2026-09-11-xuan-render-pipeline.md   （15 个任务）
+2026-09-17-xuan-gpu-picking-design.md         2026-09-17-xuan-gpu-picking.md
+2026-09-20-xuan-chart-framework-design.md     2026-09-20-xuan-chart-framework.md
+2026-09-20-xuan-chart-render-backend-design.md 2026-09-20-xuan-chart-render-backend.md
+2026-09-20-xuan-sdf-text-design.md            2026-09-20-xuan-sdf-text.md
+2026-09-23-xuan-gpu-fft-design.md             2026-09-23-xuan-gpu-fft.md
+2026-09-24-xuan-architecture-review.md        （评审，无对应计划）
+2026-09-24-xuan-demo-design.md                2026-09-24-xuan-demo.md
+                                              2026-09-25-xuan-demo-click-draw.md
+2026-09-26-xuan-antialias-design.md           2026-09-26-xuan-antialias.md
 ```
 
-- **`2026-09-09-jfgl-drawing-engine-design.md` 已过时**：它描述的是被删除的保留模式
+- **`2026-09-09-xuan-drawing-engine-design.md` 已过时**：它描述的是被删除的保留模式
   场景图架构，仅作历史参考。**别照着它理解现状**。
-- **`2026-09-11-jfgl-render-pipeline.md` 里有若干已知缺陷**，执行前先核对；
+- **`2026-09-11-xuan-render-pipeline.md` 里有若干已知缺陷**，执行前先核对；
   文件内已就地标注了多处更正。
-- **`2026-09-24-jfgl-architecture-review.md` 是评审报告的出处**：本文件里的 `P1-6`
+- **`2026-09-24-xuan-architecture-review.md` 是评审报告的出处**：本文件里的 `P1-6`
   等编号、以及 §4.5.1 关于 chart-fx 降采样的那几段，都引它。
   ⚠️ 它的 §4.5.1 有一条**已被实测推翻**（"尖峰看不见"），**引它之前先读本文件里
   「③-2 降采样」那一段的更正**。
-- **`docs/JFGL-DEVELOPER-GUIDE.md`**（新，`README.md` 第 3 行指向它）是**面向使用者**的
+- **`docs/Xuan-DEVELOPER-GUIDE.md`**（新，`README.md` 第 3 行指向它）是**面向使用者**的
   手册——分层、设计模式、三大模块 API、`Disposable` 四条契约。它与本文件**受众不同**：
   本文件写给"要改这个库的人"（陷阱、变异验证、证据强度分级），手册写给"要用这个库的人"。
   **手册里没有的东西才是本文件存在的理由**，所以两边的重复不必去消除；
   但**手册里出现了本文件没有的断言时要当心**——它写着"回调异常会通过 `abortFrame`
   清理当前状态"（§1.5），而那条**没有断言盖着**（见「常用命令」里 P1-6 那段）。
-- `jfgl-workflow.js` — 生成此代码库的多智能体 Workflow 脚本。
+- `xuan-workflow.js` — 生成此代码库的多智能体 Workflow 脚本。
 - `.claude/` — 本机配置（`settings.local.json`、`skills/`、`worktrees/`、`runs/`、
   `gpuwatch.sh`）。**未纳入版本控制的意图不明，改它之前先问**。
 - `.xcodemap/` — xcodemap 插件配置。本项目**未**建立 codegraph 索引，codegraph 工具不可用。
