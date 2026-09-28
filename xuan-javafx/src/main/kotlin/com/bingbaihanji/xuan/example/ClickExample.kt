@@ -101,7 +101,7 @@ class ClickExampleApp : Application() {
     private val items: List<ClickItem> by lazy { createItems() }
 
     override fun start(stage: Stage) {
-        val bridge = FXGLTransfer()
+        val bridge = FXGLTransfer(font = textFont())
         bridge.onInit {
             bridge.gc()?.let { gc ->
                 // 注册发生在数据变化时而不是每帧。这里场景是静态的，所以只注册一次；

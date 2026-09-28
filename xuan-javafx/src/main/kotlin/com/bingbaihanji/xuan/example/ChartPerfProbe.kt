@@ -638,7 +638,7 @@ class ChartPerfProbeApp : Application() {
         require(mode == MODE_FULL || mode == MODE_RAMP || mode == MODE_THERMAL) {
             "$MODE_PROP 只认 $MODE_FULL / $MODE_RAMP / $MODE_THERMAL，实际是 «$mode»"
         }
-        val bridge = FXGLTransfer()
+        val bridge = FXGLTransfer(font = textFont())
         bridge.onFrame { gc -> runFrame(gc) }
         // **onRender 也必须包住**，理由与 runFrame 那里一字不差：
         // GL 线程上一个没接住的异常会让线程静默死掉，JVM 因为"最后一个非守护线程结束"

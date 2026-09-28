@@ -1,5 +1,6 @@
 package com.bingbaihanji.xuan.example.demo
 
+import com.bingbaihanji.xuan.example.textFont
 import com.bingbaihanji.xuan.glview.FXGLTransfer
 import com.bingbaihanji.xuan.renderer.Gc
 import com.bingbaihanji.xuan.renderer.PickHit
@@ -546,7 +547,7 @@ class XuanDemoApp : Application() {
         }
         // MSAA 只能在这里给（采样数是帧缓冲的属性、运行期改不了，见 [MSAA_PROPERTY]）。
         // 默认 0 = 单采样 ⇒ 与加这个参数之前逐位相同。
-        val bridge = FXGLTransfer(msaa = DEMO_MSAA)
+        val bridge = FXGLTransfer(msaa = DEMO_MSAA, font = textFont())
         bridge.onInit {
             // ★ 启动自检**放在 `gc()` 的 let 之外**——它只用 println / System.err，
             //   **根本不需要 `Gc`**。包在 `let` 里的话就多出一条"静默跳过"路径：

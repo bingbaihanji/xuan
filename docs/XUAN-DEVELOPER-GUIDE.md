@@ -393,8 +393,10 @@ gc.pickable(labelId) {
 }
 ```
 
-默认字体位于 xuan-render-gl/src/main/resources/fonts。生产项目必须确认字体授权；多字体 fallback 和复杂文本 shaping 应扩展 GlyphSource，不要把字体选择逻辑塞进 Gc.drawText。
-
+**本库不自带字体**（2026-09-28 移除；原先那份 `simhei.ttf` 是专有字体，
+与 MIT 声明冲突）。构造时指定：`xuan { font = File(…) }` 或
+`FXGLTransfer(font = FontFile.load(…))`。**没给时 `drawText` / `measureText`
+会抛异常**并说明怎么补，其余绘制照常。
 ## 4. 统计图表模块
 
 ### 4.1 分层

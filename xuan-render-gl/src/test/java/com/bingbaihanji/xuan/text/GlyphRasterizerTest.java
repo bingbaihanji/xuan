@@ -2,6 +2,7 @@ package com.bingbaihanji.xuan.text;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -21,8 +22,12 @@ class GlyphRasterizerTest {
 
     @BeforeAll
     static void 准备() {
-        font = FontFile.loadClasspath(FontFile.DEFAULT_RESOURCE);
-        rasterizer = new GlyphRasterizer(font);
+        font = TestFonts.loadOrNull();
+        // ★ 没设字体时 font 是 null，**这里不能再往下建**——`new GlyphRasterizer(null)` 会 NPE，
+        //   而 NPE 发生在 @BeforeAll ⇒ 整个类报 1 个 error，那 8 条测试**既不算通过也不算跳过**。
+        //   实测过：`tests="1" errors="1"`，与"静默跳过"是同一种病。
+        //   每个 @Test 由 需要字体() 各自跳过，所以这里留 null 是对的。
+        rasterizer = (font == null) ? null : new GlyphRasterizer(font);
     }
 
     @AfterAll
@@ -37,6 +42,19 @@ class GlyphRasterizerTest {
         int[] box = new int[4];
         font.glyphPixelBox(glyphIndex, font.scaleForPixelHeight(GlyphRasterizer.EM_SIZE), box);
         return box;
+    }
+
+    /**
+     * **每个测试各自**守一道：没设字体就跳过**这一条**。
+     *
+     * <p>⚠️ 不能把它放在 `@BeforeAll` 里——那样整个类会在计数之前中止，
+     * surefire 报的是 `tests="0"`：**这个类从报告里消失了**，
+     * 既不算通过、也不算跳过。实测就是如此（235 → 226，而 `skipped` 仍是 0）。
+     * 那是本仓库最忌讳的"被静默跳过的断言"——放在这里才会计进 `Skipped`，看得见。
+     */
+    @BeforeEach
+    void 需要字体() {
+        TestFonts.require();
     }
 
     @Test

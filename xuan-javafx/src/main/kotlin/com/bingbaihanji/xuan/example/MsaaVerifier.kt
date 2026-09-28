@@ -126,7 +126,7 @@ fun msaaVerifierMain() {
  * 请求的采样数所用的**系统属性名**。
  *
  * <p>七个像素校验器与 [MsaaVerifierApp] **共用这一个名字、共用下面那份解析**
- * ——它们各自 `FXGLTransfer(msaa = readRequestedMsaa())`。理由与本文件里那道守卫相同：
+ * ——它们各自 `FXGLTransfer(msaa = readRequestedMsaa(), font = textFont())`。理由与本文件里那道守卫相同：
  * 本仓库吃过"**共用属性名 ≠ 共用判定**"的亏（两侧各写一份 `== "1"` / `== "true"`），
  * 这里连名字都只留一份，就没得抄漏。
  */
@@ -137,7 +137,7 @@ internal const val MSAA_PROPERTY = "xuan.probe.msaa"
  * 失去读数能力的值。
  *
  * <p>★ 它存在的意义：让"**明确拒绝**"真的承重。**没有它时那道守卫是死代码**——
- * 七个入口全写 `FXGLTransfer()`（`msaa` 恒为默认 0），于是文档里"用 `msaa=0` 跑"
+ * 七个入口全写 `FXGLTransfer(font = textFont())`（`msaa` 恒为默认 0），于是文档里"用 `msaa=0` 跑"
  * 之外根本没有第二条路可走，守卫**只在有人改源码时才会触发**（实测过：
  * 给 `PipelineVerifier` 传 `-Dxuan.probe.msaa=4` 当时**不会有任何拒绝**）。
  * 现在 `-Dxuan.probe.msaa=4` 会让七个校验器**在 `start()` 里明确拒绝并以 1 退出**；
@@ -236,7 +236,7 @@ class MsaaVerifierApp : Application() {
     private val requestedMsaa: Int = readRequestedMsaa()
 
     override fun start(stage: Stage) {
-        val bridge = FXGLTransfer(msaa = requestedMsaa)
+        val bridge = FXGLTransfer(msaa = requestedMsaa, font = textFont())
         bridge.onFrame { gc -> drawScene(gc) }
         bridge.onRender { verifyOnce() }
         transfer = bridge

@@ -6,6 +6,8 @@ import com.bingbaihanji.xuan.chartrender.ChartRenderer
 import com.bingbaihanji.xuan.geom.Flattener
 import com.bingbaihanji.xuan.geom.Path
 import com.bingbaihanji.xuan.geom.PathHit
+import com.bingbaihanji.xuan.text.GlyphAtlas
+import com.bingbaihanji.xuan.text.FontGlyphSource
 import com.bingbaihanji.xuan.geom.StrokeGenerator
 import com.bingbaihanji.xuan.geom.Tessellator
 import com.bingbaihanji.xuan.math.Mat3
@@ -752,12 +754,38 @@ class Gc constructor(private val batch: RenderBatch) {
      * @param y    起点 y（用户坐标）：**基线**所在的像素行
      * @return 推进宽度（像素），即笔最终走到 `x + 返回值`
      */
+    /**
+     * 取字形来源；**没加载字体时明确抛异常**。
+     *
+     * <p>2026-09-28 起本库**不再自带字体**（原先那份 `simhei.ttf` 是微软/中易的专有字体，
+     * 与 MIT 声明冲突）。字体由调用方在**构造时**给：
+     *
+     * <pre>
+     * // DSL
+     * xuan { font = File("/path/to/NotoSansSC-Regular.ttf") }
+     *
+     * // 或直接用桥接器
+     * FXGLTransfer(font = FontFile.load(Path.of("/path/to/font.ttf")))
+     * </pre>
+     *
+     * <p><strong>为什么是抛而不是"画不出来就算了"</strong>：静默什么都不画，
+     * 与"这一帧在文字那段抛了异常"在画面上**逐像素相同**——而本项目最防的就是这个
+     * （见 CLAUDE.md 的「静默错误输出」）。抛出来至少能指到"该配字体了"。
+     *
+     * @throws IllegalStateException 没有加载字体时
+     */
+    private fun requireFont(): FontGlyphSource = batch.glyphSource()
+        ?: throw IllegalStateException(NO_FONT_MESSAGE)
+
+    private fun requireGlyphAtlas(): GlyphAtlas = batch.glyphAtlas()
+        ?: throw IllegalStateException(NO_FONT_MESSAGE)
+
     fun drawText(text: String, x: Float, y: Float): Float {
         if (text.isEmpty()) {
             return 0f
         }
-        val glyphSource = batch.glyphSource()
-        val atlas = batch.glyphAtlas()
+        val glyphSource = requireFont()
+        val atlas = requireGlyphAtlas()
         // 槽位里的偏移/尺寸/推进全是 em 像素，这里换成当前字号下的缩放。
         // 字号因此只是发射顶点时的一个乘法，不会触发任何重新光栅化。
         val scale = fontSize / glyphSource.pixelHeight()
@@ -796,7 +824,7 @@ class Gc constructor(private val batch: RenderBatch) {
         if (text.isEmpty()) {
             return 0f
         }
-        val glyphSource = batch.glyphSource()
+        val glyphSource = requireFont()
         var width = 0f
         var index = 0
         while (index < text.length) {
@@ -2079,3 +2107,13 @@ class Gc constructor(private val batch: RenderBatch) {
         private const val FLOATS_PER_STYLE_LEVEL = 4
     }
 }
+
+/**
+ * 没加载字体时的异常消息。**写成常量是为了它只有一份**——
+ * 两处守卫（`drawText` / `measureText`）必须给出一模一样的指引。
+ */
+private const val NO_FONT_MESSAGE =
+    "本库不再自带字体：drawText / measureText 需要一个字体文件。" +
+        "请在构造时指定——DSL 用 `xuan { font = File(\"…/NotoSansSC-Regular.ttf\") }`，" +
+        "或直接用 `FXGLTransfer(font = FontFile.load(Path.of(\"…\")))`。" +
+        "（原先自带的 simhei.ttf 是专有字体，与 MIT 声明冲突，已移除。）"

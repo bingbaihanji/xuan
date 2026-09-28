@@ -223,8 +223,10 @@ xuan-render-gl/src/test/.../gpu/        FftWindowTest、FftKernelTest
 + `MsaaVerifier`（**要跑三次**：`msaa=0` / `4` / `-1`，由 `xuan-javafx/scripts/msaa-verify.sh` 比对）。
 后两者的处境与那七个的区别见「抗锯齿」一节。）
 
-当前 **422 个测试，0 失败，2 跳过**（2 个跳过是 `TessellatorRegressionTest` 里两条
-`@Disabled` 的已知缺陷）。单测命令：`mvn test -Dtest=类名`（跨模块加 `-pl 模块名`）。
+当前 **422 个测试，0 失败**；**跳过数取决于有没有给字体**（2026-09-28 起本库不再自带）：
+**给了 `-Dxuan.text.font=<路径>` ⇒ 2 跳过**（`TessellatorRegressionTest` 里两条 `@Disabled`）；
+**没给 ⇒ 11 跳过**（多出的 9 条是 `FontFileTest` 5 + `GlyphRasterizerTest` 4，
+**记成 `Skipped` 而不是消失**——理由见「发布」一节里那个 `@BeforeAll` 的坑）。单测命令：`mvn test -Dtest=类名`（跨模块加 `-pl 模块名`）。
 分布：`geom/` 102、`renderer/` 107、`gl/` 13、`text/` 32、`chart/` 85、`chartrender/` 69、
 `gpu/` 14（合计 422 = `xuan-core` 187 + `xuan-render-gl` 235；
 路径命中那一步给 `geom/` 加了 10 条——`PathHitTest`，理由见「已实现 vs 未实现」里那一条；
@@ -410,10 +412,14 @@ Main.kt                     设置 prism.* 系统属性
 - **文本的可拾取范围比墨迹大一圈**：ID pass 不看 alpha，而文本的四边形覆盖的是
   整个 SDF 位图矩形（含四周各 `SdfGenerator.SPREAD` = 8 像素的外扩）。与
   "全透明图元仍可拾取"同类，**是刻意的，有测试钉着，不要当成 bug 修**。
-- **字体**：默认从 classpath 的 `/fonts/simhei.ttf` 加载（`FontFile.DEFAULT_RESOURCE`），
-  启动时解析失败会**抛异常**（不退化成"一个字都画不出来"）。换字体见
-  `src/main/resources/fonts/README.md`——**这个仓库公开分发前必须换掉它**，
-  黑体是微软/中易的专有字体。
+- ★ **字体：本库不再自带（2026-09-28 移除），由调用方在构造时给**。
+  `xuan { font = File(…) }` 或 `FXGLTransfer(font = FontFile.load(…))`。
+  **没给字体时 `drawText` / `measureText` 抛 `IllegalStateException`**，消息里写着怎么补
+  ——**不是静默不画**（静默不画与“这一帧在文字那段抛了”在画面上逐像素相同）。
+  为什么移除：原先那份 `simhei.ttf` 与系统字体目录里那份 **逐字节相同**，
+  是微软/中易的专有字体，与 MIT 声明冲突。
+  选字体的两条硬约束（优先 TTF、避开可变字体）与“哪些验收要字体”见
+  `xuan-render-gl/src/main/resources/fonts/README.md`。
 - 本期**不做**字距/连字/bidi、多行与对齐、富文本、多字体回退、MSDF。这些是刻意
   不做，不是漏了。
 
@@ -1720,21 +1726,22 @@ app 的窗口完全由 JavaFX 管理，GLFW 不参与。
 
 **发布范围**：**内部发布**（2026-09-27 定）。这一条决定了下面几件事的处置。
 
-### ⚠️ 公开分发前必须先换掉自带字体（法务拦截项，不是技术债）
+### ✅ 字体：已于开源前移除（原法务拦截项）
 
-`xuan-render-gl/src/main/resources/fonts/simhei.ttf` 是**微软 / 中易的专有字体**，
-实测与 `C:\Windows\Fonts\simhei.ttf` **逐字节相同**（md5 `4093871a7f48e43b9ce7c38da0c34809`），
-也就是系统字体的直接拷贝。它与本项目的 MIT 声明**直接冲突**——
-把专有字体按 MIT 分发是不成立的。
+原先仓库自带一份 `simhei.ttf`，实测与系统字体目录里那份 **逐字节相同**
+（md5 `4093871a7f48e43b9ce7c38da0c34809`）——微软/中易的专有字体，与 MIT 声明冲突。
+**2026-09-28 已删除**，字体改为**调用方构造时指定**（见「文本」一节）。
 
-- 内部自用 / 跑测试：保留，没问题（`TextVerifier` 就是靠它换台机器也能跑）。
-- **公开分发：必须先换**。替代品要 **OFL 授权的静态（非可变）字体**。
-  ⚠️ **本机没有现成的可换件**：`C:\Windows\Fonts` 里唯一的 OFL 中文字体是
-  `NotoSansSC-VF.ttf` / `NotoSerifSC-VF.ttf`，**都是可变字体**（带 `fvar`），
-  而 `stb` 会忽略变体轴 —— 所以这一步要**联网下载静态版**，不是复制一个文件。
-- 换完**必须重跑 `TextVerifier`** 并重核所有与字体相关的期望值（换字体改度量）。
-- README 顶部有一块显著提示、`LICENSE` 末尾有例外条款、字体目录 README 有完整约束，
-  三处都写了。**改这条时三处要一起改。**
+去掉之后有**两处连带代价**，都已处置：
+
+- **跑校验器要带 `-Dxuan.text.font=<路径>`**：大部分校验器都会间接碰文字
+  （`ChartVerifier` 经 `ChartPainter.width`、`AxisVerifier` 经它自己的度量、
+  `ClickVerifier` 要画标签…）。**没给时它们明确失败并退 1**，不是静默跳过。
+- **`FontFileTest` / `GlyphRasterizerTest` 共 9 条**同理：没给属性时记成 **`Skipped`**。
+  ⚠️ **实现这条时踩过一个坑**：把 assumption 放在 `@BeforeAll` 里时，整个类会在计数之前
+  中止，surefire 报 `tests="0"` ——**类从报告里消失了**，既不算通过也不算跳过
+  （实测 235 → 226 而 `skipped` 仍是 0，正是最坏的那种“静默跳过”）。
+  放进 `@BeforeEach` 才会计进 `Skipped`，看得见。
 
 ### 仓库卫生（0.1.0 时补的）
 

@@ -80,7 +80,7 @@ class AxisVerifierApp : Application() {
 
     override fun start(stage: Stage) {
         // 采样数走同一个系统属性（解析与 MsaaVerifier 共用），否则下面那道守卫是死代码。
-        val bridge = FXGLTransfer(msaa = readRequestedMsaa())
+        val bridge = FXGLTransfer(msaa = readRequestedMsaa(), font = textFont())
         // 本校验器的读数全部来自 glReadPixels，多采样画布上那次调用是非法操作。
         requirePixelReadback(bridge)
         bridge.onFrame { gc -> drawScene(gc) }

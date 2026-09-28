@@ -239,7 +239,16 @@ public final class RenderBatch implements Disposable {
     /** SDF 文本使用的着色器程序。 */
     private final ShaderProgram sdfShader;
 
-    /** 字体。与 glyphSource 同时创建，同时释放。 */
+    /**
+     * 字体；**可空**——本类不再自带字体（2026-09-28 起）。
+     *
+     * <p>字体是**可选能力**：没给就一个字都画不出来，而 {@code Gc.drawText} /
+     * {@code measureText} 会**明确抛异常**告诉调用方怎么补。这不是"降级"——
+     * 静默什么都不画正是本项目最防的形态（"少画了东西"与"这一帧抛了"在画面上一样）。
+     *
+     * <p>为什么去掉自带字体：仓库里那份 `simhei.ttf` 是**微软/中易的专有字体**，
+     * 与项目的 MIT 声明冲突，公开分发前必须去掉。
+     */
     private final FontFile font;
 
     /** 字形来源：字体 + 光栅化器 + 距离场。 */
@@ -279,6 +288,16 @@ public final class RenderBatch implements Disposable {
      *                               {@link VertexFormat#STRIDE_BYTES} 换算成字节数
      */
     public RenderBatch(GLAbstraction gl, int initialVertexCapacity) {
+        this(gl, initialVertexCapacity, null);
+    }
+
+    /**
+     * 带字体的构造。{@code font} 为 {@code null} 表示**不加载字体**——
+     * 此时文本相关的方法会抛异常，其余绘制一切照常。
+     *
+     * @param font 字体；可为 null
+     */
+    public RenderBatch(GLAbstraction gl, int initialVertexCapacity, FontFile font) {
         this.gl = gl;
         this.shader = gl.createShader(VERTEX_SHADER, FRAGMENT_SHADER);
         this.vertexBuffer = new VertexBuffer(gl, initialVertexCapacity * VertexFormat.STRIDE_BYTES);
@@ -288,14 +307,17 @@ public final class RenderBatch implements Disposable {
         this.pickBuffer = new PickBuffer(gl, 1, 1);
 
         this.sdfShader = gl.createShader(VERTEX_SHADER, SDF_FRAGMENT_SHADER);
-        // 字体在启动时就加载并解析：规格 §7 要求"字体缺失 / 无法解析"在启动时抛异常，
-        // 而不是退化成"一个字都画不出来"——后者的表现是屏幕一片空白，
-        // 排查方向会指向 GL 而不是字体。
-        //
-        // 这一步会分配 9.7 MB 的堆外内存并在 dispose 里归还，见 FontFile 的说明。
-        this.font = FontFile.loadClasspath(FontFile.DEFAULT_RESOURCE);
-        this.glyphSource = new FontGlyphSource(font, new GlyphRasterizer(font));
-        this.glyphAtlas = new GlyphAtlas(gl, glyphSource);
+        // ★ 字体**由调用方给**（2026-09-28 起）。本类不再从 classpath 加载自带字体：
+        //   仓库里那份 simhei.ttf 是专有字体，与 MIT 声明冲突。
+        //   没给字体时下面两件都是 null，文本相关方法由 Gc 抛异常——**不是静默不画**。
+        this.font = font;
+        if (font == null) {
+            this.glyphSource = null;
+            this.glyphAtlas = null;
+        } else {
+            this.glyphSource = new FontGlyphSource(font, new GlyphRasterizer(font));
+            this.glyphAtlas = new GlyphAtlas(gl, glyphSource);
+        }
         createVao();
     }
 
@@ -398,7 +420,9 @@ public final class RenderBatch implements Disposable {
         pickBufferValid = false;
         // 图集的帧边界重置钩子：只有在上一帧判定过"货架装不下"时才会真的重置，
         // 因此正常帧是零开销。整体重置只能发生在帧边界——见 GlyphAtlas 的类说明。
-        glyphAtlas.beginFrame();
+        if (glyphAtlas != null) {
+            glyphAtlas.beginFrame();
+        }
     }
 
     /**
@@ -421,6 +445,7 @@ public final class RenderBatch implements Disposable {
      *
      * @return 字形图集
      */
+    /** 字形图集；**没加载字体时为 null**（见 {@link #font}）。 */
     public GlyphAtlas glyphAtlas() {
         return glyphAtlas;
     }
@@ -433,6 +458,7 @@ public final class RenderBatch implements Disposable {
      *
      * @return 字形来源
      */
+    /** 字形来源；**没加载字体时为 null**（见 {@link #font}）。 */
     public FontGlyphSource glyphSource() {
         return glyphSource;
     }
@@ -738,8 +764,12 @@ public final class RenderBatch implements Disposable {
         pickShader.dispose();
         pickBuffer.dispose();
         sdfShader.dispose();
-        glyphAtlas.dispose();
-        font.dispose();
+        if (glyphAtlas != null) {
+            glyphAtlas.dispose();
+        }
+        if (font != null) {
+            font.dispose();
+        }
         vertexBuffer.dispose();
         gl.deleteVao(vao);
         glDeleteTextures(whiteTexture);

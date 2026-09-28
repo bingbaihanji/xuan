@@ -5,6 +5,7 @@ import com.bingbaihanji.xuan.chart.Chart
 import com.bingbaihanji.xuan.renderer.Gc
 import com.bingbaihanji.xuan.renderer.PickHit
 import com.bingbaihanji.xuan.renderer.RenderBatch
+import com.bingbaihanji.xuan.text.FontFile
 import com.huskerdev.grapl.gl.GLContext
 import com.huskerdev.grapl.gl.GLProfile
 import com.huskerdev.openglfx.GLExecutor
@@ -66,8 +67,29 @@ class FXGLTransfer(
     shareWith: GLContext? = GLCanvas.Defaults.SHARE_WITH,
     majorVersion: Int = GLCanvas.Defaults.MAJOR_VERSION,
     minorVersion: Int = GLCanvas.Defaults.MINOR_VERSION,
-    externalWindow: Boolean = GLCanvas.Defaults.EXTERNAL_WINDOW
+    externalWindow: Boolean = GLCanvas.Defaults.EXTERNAL_WINDOW,
+    /**
+     * 字体；**默认 null = 不加载字体**（2026-09-28 起本库不再自带）。
+     *
+     * <p>没给字体时 `drawText` / `measureText` 会**明确抛异常**，其余绘制一切照常。
+     * 原先自带的 `simhei.ttf` 是微软/中易的专有字体，与项目的 MIT 声明冲突，
+     * 已在开源前移除——**要画文字请自己指定一个**（如 OFL 授权的 Noto Sans SC
+     * 静态版；避开可变字体与 OTF/CFF，理由见 `fonts/README.md`）。
+     *
+     * <p>在这里加载而不是在 init 回调里：`FontFile.load` 不碰 GL，而**早失败**能指到
+     * "路径读不了"，而不是过一会儿退化成"没字体"。
+     */
+    val font: FontFile? = null
 ) {
+
+    /**
+     * 只给字体的便捷构造——**给 Java 用**。
+     *
+     * <p>本类所有构造参数都有默认值，Kotlin 因此会生成一个**无参构造器**；
+     * 但 Java 调不了"只填某一个默认参数"（`@JvmOverloads` 也只从**尾部**丢参数，
+     * 而 `font` 恰好在尾部），所以这里显式开一个。
+     */
+    constructor(fontFile: FontFile?) : this(font = fontFile)
 
     /** 批处理提交器。只有在 GL 上下文就绪之后才能构造，因此是在初始化回调里创建的。 */
     private var renderBatch: RenderBatch? = null
@@ -162,7 +184,7 @@ class FXGLTransfer(
             val gl = LwjglGLAbstraction()
             // RenderBatch 在构造期就编译着色器、生成 VAO/VBO/纹理，必须有活着的 GL 上下文，
             // 因此只能在这里创建；此前 gc() 一直返回 null。
-            val batch = RenderBatch(gl, INITIAL_VERTEX_CAPACITY)
+            val batch = RenderBatch(gl, INITIAL_VERTEX_CAPACITY, font)
             renderBatch = batch
             gc = Gc(batch)
             onInitCallback?.invoke()

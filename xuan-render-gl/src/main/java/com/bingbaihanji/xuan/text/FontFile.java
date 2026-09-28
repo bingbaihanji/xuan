@@ -37,8 +37,6 @@ import java.nio.file.Path;
  */
 public final class FontFile implements Disposable {
 
-    /** 默认字体资源路径，见 {@code src/main/resources/fonts/README.md}。 */
-    public static final String DEFAULT_RESOURCE = "/fonts/simhei.ttf";
 
     /**
      * 字体字节的持有者。
@@ -122,7 +120,7 @@ public final class FontFile implements Disposable {
     /**
      * 从 classpath 加载字体。
      *
-     * @param resource 资源路径，如 {@value #DEFAULT_RESOURCE}
+     * @param resource 资源路径，如某个 `.ttf` 的 classpath 路径
      * @return 加载好的字体
      * @throws IllegalStateException 资源不存在时（消息里给出期望路径）
      */

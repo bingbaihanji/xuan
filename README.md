@@ -6,19 +6,22 @@
 `fillRect` / `strokePath` 这类方法形状），内部走 **GPU 批处理管线**：绘制调用只往顶点缓冲里
 追加数据，每帧一次性提交重放。
 
-## ⚠️ 公开分发前必须先做这一件事：换掉自带字体
+## 本库**不自带字体**——要画文字请自己指定一个
 
-本仓库自带 `xuan-render-gl/src/main/resources/fonts/simhei.ttf`，它是
-**微软 / 中易的专有字体**（Windows 系统自带的「黑体」SimHei）——**不是自由字体，
-不在本项目的 MIT 授权范围内**（见 [LICENSE](LICENSE) 末尾的例外条款）。
+`drawText` / `measureText` 需要一个字体文件，而本库**不打包任何字体**：
 
-- **本机自用 / 内部开发 / 跑测试**：没有问题，这份字体就是为此放进来的。
-- **要公开分发（开源、发 jar、镜像到别的平台）**：**必须先换掉它**，
-  否则是在按 MIT 分发一份专有字体。
+```kotlin
+xuan {
+    font = File("/path/to/NotoSansSC-Regular.ttf")
+    onRender { drawText("你好", 20f, 40f) }
+}
+```
 
-替代品要用 **OFL 授权的静态（非可变）** 中文字体，如 **Noto Sans SC / 思源黑体**。
-换完**必须重跑 `TextVerifier`**：不同字体的度量不同，那里与字体相关的期望值要重新核对。
-完整约束（为什么不能用 OTF/CFF、为什么不能用可变字体、怎么核对）见
+没给字体时那两个方法会**抛异常**并说明怎么补（不是静默不画——静默不画与
+"这一帧在文字那段抛了"在画面上逐像素相同）。
+
+**为什么不自带**：原先打包的 `simhei.ttf` 是微软 / 中易的专有字体，与项目的 MIT 声明冲突。
+选字体有两条硬约束（优先 TTF、避开可变字体）与完整说明见
 [`xuan-render-gl/src/main/resources/fonts/README.md`](xuan-render-gl/src/main/resources/fonts/README.md)。
 
 ## 特性
@@ -363,9 +366,8 @@ gc.drawText("可点的标签", 40f, 200f)
 - **缺字不跳过**：字体里没有的码点画成 `.notdef`（豆腐块），不静默省略。
 - **可拾取范围比墨迹大一圈**：文本的四边形覆盖整个 SDF 位图矩形（含四周各
   `SPREAD` = 8 像素的外扩）。与"全透明图元仍可拾取"同类，是**刻意**行为。
-- **字体**：默认用 `/fonts/simhei.ttf`（黑体）。换字体见
-  `src/main/resources/fonts/README.md`——**公开分发前必须换掉它**，
-  黑体是微软/中易的专有字体。
+- **字体**：**本库不自带**，构造时用 `font = File(…)` 指定（见文首）。
+  选字体优先 **TTF（`glyf`）**、避开 **OTF/CFF** 与**可变字体**，理由见 `fonts/README.md`。
 
 ### 图表
 
@@ -622,7 +624,7 @@ xuan-javafx/               # JavaFX 场景图集成与应用层
 绘制后端单独一个包，也是同样的理由（`ChartPackageIsolationTest` 递归遍历 `chart/`
 整棵子树，按包名白名单守卫）。
 
-`xuan-render-gl/src/main/resources/fonts/` 放着字体文件与它的授权/换字体说明（见该目录的 README）。
+`xuan-render-gl/src/main/resources/fonts/` 里只有一份说明（**本库不再自带字体**，见该目录的 README）。
 
 ## 测试
 
@@ -692,6 +694,5 @@ FFT 本身的**数值**（峰值落在正确的 bin、与朴素 O(N²) DFT 逐 b
 
 **MIT License**，全文见 [LICENSE](LICENSE)。
 
-⚠️ **有一处例外**：仓库自带的 `fonts/simhei.ttf` 是第三方专有字体，
-**不在 MIT 授权范围内**，公开分发前必须换掉——详见上面「公开分发前必须先做这一件事」
+（本库**不自带字体**：原先打包的 `simhei.ttf` 是专有字体，已于开源前移除。）
 与 [LICENSE](LICENSE) 末尾的例外条款。

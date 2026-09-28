@@ -22,17 +22,11 @@ SOFTWARE.
 
 --------------------------------------------------------------------------
 
-例外（不在上述 MIT 授权范围内）
+字体（说明，非例外）
 
-本项目自带一份第三方字体资源：
+**本库不自带字体。** 原先随仓库分发过一份 `simhei.ttf`——它是微软 / 中易的专有字体，
+不在本项目的 MIT 授权范围内。**它已于 2026-09-28 移除**，因此上面那段"例外"不再需要。
 
-    jfgl-render-gl/src/main/resources/fonts/simhei.ttf
-
-它是微软 / 中易（ZhongYi）的**专有字体**（Windows 系统自带的「黑体」SimHei），
-**不属于 MIT 授权范围**，也不得随本项目对外再分发。它的存在只是为了本机与
-内部开发时 SDF 文本子系统能有一份覆盖 CJK 的字体可用。
-
-**若要把本仓库公开分发**（开源、发布 jar、镜像到别的平台），必须先按
-`jfgl-render-gl/src/main/resources/fonts/README.md` 的说明把它换成 OFL 授权的
-替代品（如静态版 Noto Sans SC / 思源黑体），并重跑 `TextVerifier` 核对与字体
-相关的期望值。详见该 README。
+`Gc.drawText` / `measureText` 需要一个由**调用方**指定的字体文件
+（`xuan { font = File(…) }` 或 `FXGLTransfer(font = …)`）；没给时会明确抛异常。
+选字体的约束见 `xuan-render-gl/src/main/resources/fonts/README.md`。

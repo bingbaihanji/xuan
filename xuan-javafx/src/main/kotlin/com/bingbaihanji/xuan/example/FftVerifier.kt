@@ -330,7 +330,7 @@ class FftVerifierApp : Application() {
     override fun start(stage: Stage) {
         // 采样数走**同一个系统属性**（`-Dxuan.probe.msaa`，解析与 MsaaVerifier 共用）：
         // 没有这一行时下面那道守卫是**死代码**——msaa 恒为默认 0，"明确拒绝"只在改源码时才可能触发。
-        val bridge = FXGLTransfer(msaa = readRequestedMsaa())
+        val bridge = FXGLTransfer(msaa = readRequestedMsaa(), font = textFont())
         // ★ 回读拒绝守卫（实现见 MsaaVerifier.kt 的 requirePixelReadback）。
         //   ⚠️ 本校验器与其余六个的处境**不同**，照实写：它**不画任何像素**，读的是 SSBO
         //   （`glGetBufferSubData`），那条路与画布帧缓冲的采样数**无关** ⇒ 多采样画布

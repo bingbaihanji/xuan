@@ -2,6 +2,7 @@ package com.bingbaihanji.xuan.text;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -19,23 +20,38 @@ class FontFileTest {
 
     @BeforeAll
     static void 加载字体() {
-        font = FontFile.loadClasspath(FontFile.DEFAULT_RESOURCE);
+        font = TestFonts.loadOrNull();
     }
 
     @AfterAll
     static void 释放字体() {
         if (font != null) {
-            font.dispose();
+            if (font != null) {
+                font.dispose();
+            }
         }
+    }
+
+    /**
+     * **每个测试各自**守一道：没设字体就跳过**这一条**。
+     *
+     * <p>⚠️ 不能把它放在 `@BeforeAll` 里——那样整个类会在计数之前中止，
+     * surefire 报的是 `tests="0"`：**这个类从报告里消失了**，
+     * 既不算通过、也不算跳过。实测就是如此（235 → 226，而 `skipped` 仍是 0）。
+     * 那是本仓库最忌讳的"被静默跳过的断言"——放在这里才会计进 `Skipped`，看得见。
+     */
+    @BeforeEach
+    void 需要字体() {
+        TestFonts.require();
     }
 
     @Test
     void stb原生库能在surefire环境加载并解析字体() {
         // 单独再加载一份并释放：既证明"能加载"，也证明"能释放"，而不动共享实例。
         FontFile probe = assertDoesNotThrow(
-                () -> FontFile.loadClasspath(FontFile.DEFAULT_RESOURCE),
-                "stb 的本地库在 surefire 里没能加载，或字体资源解析失败——"
-                        + "见实施计划 Task 4 Step 1 的处置办法");
+                () -> FontFile.load(TestFonts.path()),
+                "stb 的本地库在 surefire 里没能加载，或字体文件解析失败——"
+                        + "路径由 -D" + TestFonts.PROPERTY + " 给出");
         assertTrue(probe.scaleForPixelHeight(48f) > 0f, "能算出度量才算真的加载成功");
 
         probe.dispose();
@@ -72,7 +88,7 @@ class FontFileTest {
 
     @Test
     void 释放之后再使用会抛异常() {
-        FontFile temp = FontFile.loadClasspath(FontFile.DEFAULT_RESOURCE);
+        FontFile temp = FontFile.load(TestFonts.path());
         temp.dispose();
 
         // 释放后字体字节已经被 memFree，再交给 stb 就是 use-after-free：

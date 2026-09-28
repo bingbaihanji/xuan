@@ -40,6 +40,8 @@ import kotlin.system.exitProcess
 fun clickDslMain() {
     xuan {
         title = "Xuan 点击事件（DSL 版）"
+        // 字体不再自带（2026-09-28）：从 -Dxuan.text.font=<路径> 取；没设则文本会抛异常
+        font = textFontFile()
         width = 760.0
         height = 560.0
 

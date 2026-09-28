@@ -1,6 +1,7 @@
 package com.bingbaihanji.xuan.dsl
 
 import com.bingbaihanji.xuan.glview.FXGLTransfer
+import com.bingbaihanji.xuan.text.FontFile
 import com.bingbaihanji.xuan.renderer.Gc
 import com.bingbaihanji.xuan.renderer.PickHit
 import com.bingbaihanji.xuan.view.MainView
@@ -52,6 +53,24 @@ class Xuan {
 
     /** 窗口高度（逻辑像素）。 */
     var height: Double = 600.0
+    /**
+     * 字体文件；**默认 null = 不加载字体**（2026-09-28 起本库不再自带）。
+     *
+     * <pre>
+     * xuan {
+     *     font = File("/path/to/NotoSansSC-Regular.ttf")
+     *     onRender { drawText("你好", 20f, 40f) }
+     * }
+     * </pre>
+     *
+     * <p>没给字体时 `drawText` / `measureText` 会**明确抛异常**，其余绘制一切照常。
+     * 原先自带的 `simhei.ttf` 是微软/中易的专有字体，与 MIT 声明冲突，开源前已移除。
+     *
+     * <p>选字体有两条硬约束（详见 `xuan-render-gl/src/main/resources/fonts/README.md`）：
+     * 优先 **TTF（`glyf` 轮廓）**、避开 **OTF/CFF**；并避开**可变字体**（带 `fvar`）——
+     * `stb` 会忽略变体轴、只渲染默认实例。
+     */
+    var font: java.io.File? = null
 
     /** GL 初始化完成、[Gc] 已可用时的回调。 */
     private var onInitCallback: ((Gc) -> Unit)? = null
@@ -304,6 +323,7 @@ class AntialiasConfig {
      * （第七个 `FftVerifier` 读的是 SSBO，不受影响，但它也挂同一道守卫——纪律，非必要性）。
      */
     var msaa: Int = 0
+
 }
 
 /**
@@ -338,7 +358,12 @@ internal class XuanApplication : Application() {
     override fun start(stage: Stage) {
         val config = config ?: error("Xuan 配置缺失：请通过 xuan { } 启动，不要直接 launch XuanApplication")
         // MSAA 只在这里给一次：采样数是帧缓冲的属性，GLCanvas 没有 setter（见 Xuan.antialias）。
-        val bridge = FXGLTransfer(msaa = config.antialiasConfig.msaa)
+        val bridge = FXGLTransfer(
+            msaa = config.antialiasConfig.msaa,
+            // 在这里加载（而不是延到 GL 线程）：FontFile.load 不碰 GL，
+            // 而**早失败**能把"路径读不了"直接报出来，不退化成一个延迟的"没字体"。
+            font = config.font?.let { FontFile.load(it.toPath()) }
+        )
         bridge.onInit {
             // 走到这里 Gc 必然已经创建好；用 let 兜住"未来某天接线顺序变了"的情况，
             // 而不是用 !! 在回调里制造一个无从定位的空指针。

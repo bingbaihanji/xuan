@@ -12,6 +12,7 @@ import com.bingbaihanji.xuan.chart.ChartLayout;
 import com.bingbaihanji.xuan.chart.ChartTextMetrics;
 import com.bingbaihanji.xuan.chart.ChartType;
 import com.bingbaihanji.xuan.chart.Series;
+import com.bingbaihanji.xuan.example.TextFontKt;
 import com.bingbaihanji.xuan.glview.FXGLTransfer;
 import com.bingbaihanji.xuan.renderer.Gc;
 import com.bingbaihanji.xuan.renderer.PickHit;
@@ -175,7 +176,9 @@ public final class Main extends Application {
 
     @Override
     public void start(Stage stage) {
-        bridge = new FXGLTransfer();
+        // 字体由本库**不再自带**（2026-09-28）：从 `-Dxuan.text.font=<路径>` 取。
+        // 没设就传 null —— 那时 drawText 会抛出并说明怎么补（不是静默不画）。
+        bridge = new FXGLTransfer(TextFontKt.textFont());
         chart = createChart();
 
         // GL 线程每帧只执行当前下拉框对应的绘制方法。
