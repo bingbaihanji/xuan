@@ -14,11 +14,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
 
-import static org.lwjgl.opengl.GL11.GL_FLOAT;
-import static org.lwjgl.opengl.GL11.GL_ONE;
-import static org.lwjgl.opengl.GL11.GL_ONE_MINUS_SRC_ALPHA;
-import static org.lwjgl.opengl.GL11.GL_TRIANGLE_STRIP;
-import static org.lwjgl.opengl.GL11.glScissor;
+import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL20.glEnableVertexAttribArray;
 import static org.lwjgl.opengl.GL20.glVertexAttribPointer;
 
@@ -96,6 +92,60 @@ final class BarSeriesRenderer implements SeriesRenderer {
 
         gl.bindVbo(0);
         gl.bindVao(0);
+    }
+
+    /**
+     * 两个 pass 共用的那一套 uniform（写成方法而不是各写一遍，理由见
+     * {@code StepSeriesRenderer.setCommonUniforms}）。
+     *
+     * @param tolerance 绘制时传 0，ID pass 传 {@link #PICK_TOLERANCE_PX}
+     */
+    private static void setCommonUniforms(ShaderProgram shader, GLRenderContext c,
+                                          ChartRenderLayout layout, Rect plot, Series series,
+                                          float pxPerSample, float halfWidth, float barOffset,
+                                          float tolerance, int pickId) {
+        shader.setUniform("uPlotRect", plot.x, plot.y, plot.width, plot.height);
+        shader.setUniform("uViewport", (float) c.viewportWidth(), (float) c.viewportHeight());
+        shader.setUniform("uValueRange", layout.yMin(), layout.yMax());
+        shader.setUniform("uPxPerSample", pxPerSample);
+        shader.setUniform("uBarHalfWidth", halfWidth);
+        shader.setUniform("uBarOffset", barOffset);
+        // 下沿是一个**数值**（默认 0），不是绘图区下边缘。
+        shader.setUniform("uBaseline", series.baseline());
+        shader.setUniform("uPickTolerance", tolerance);
+        int argb = series.color();
+        shader.setUniform("uColor",
+                ((argb >> 16) & 0xFF) / 255f,
+                ((argb >> 8) & 0xFF) / 255f,
+                (argb & 0xFF) / 255f,
+                ((argb >>> 24) & 0xFF) / 255f);
+        shader.setUniform("uPickId", pickId);
+    }
+
+    /**
+     * 本渲染器只画它真正画得出来的图型，其余明确报错。
+     *
+     * <p><strong>只接受 {@link ChartType#BAR}。</strong>不能写成"只要
+     * {@code drawsBars()} 就放行"（目前只有它一个为真，但那是一条会随枚举增长的判据），
+     * 也不能接受散点：柱子的顶点是"数值与基线之间的矩形"，当成居中的标记点画会得到
+     * 一串方点——<b>柱高这个含义整个消失</b>，而画面看起来像一张散点图。
+     */
+    private static void requireSupported(ChartType type) {
+        if (type == ChartType.BAR) {
+            return;
+        }
+        throw new IllegalArgumentException(
+                "BarSeriesRenderer 不支持图型 " + type + "。明确报错而不是静默画错："
+                        + "折线/散点/面积当成柱画，形状与含义全都变了，而画面看起来正常。");
+    }
+
+    /**
+     * 把裁剪盒设到绘图区（GL 侧的原点在左下、y 向上，所以要翻一次，
+     * 理由见 {@code LineSeriesRenderer} 的同一方法）。
+     */
+    private static void setScissorTo(Rect plot, int viewportHeight) {
+        int y = viewportHeight - (int) plot.y - (int) plot.height;
+        glScissor((int) plot.x, y, (int) plot.width, (int) plot.height);
     }
 
     /**
@@ -201,60 +251,6 @@ final class BarSeriesRenderer implements SeriesRenderer {
         gl.bindVao(0);
         gl.disableBlend();
         gl.setScissorEnabled(scissorWasOn);
-    }
-
-    /**
-     * 两个 pass 共用的那一套 uniform（写成方法而不是各写一遍，理由见
-     * {@code StepSeriesRenderer.setCommonUniforms}）。
-     *
-     * @param tolerance 绘制时传 0，ID pass 传 {@link #PICK_TOLERANCE_PX}
-     */
-    private static void setCommonUniforms(ShaderProgram shader, GLRenderContext c,
-                                          ChartRenderLayout layout, Rect plot, Series series,
-                                          float pxPerSample, float halfWidth, float barOffset,
-                                          float tolerance, int pickId) {
-        shader.setUniform("uPlotRect", plot.x, plot.y, plot.width, plot.height);
-        shader.setUniform("uViewport", (float) c.viewportWidth(), (float) c.viewportHeight());
-        shader.setUniform("uValueRange", layout.yMin(), layout.yMax());
-        shader.setUniform("uPxPerSample", pxPerSample);
-        shader.setUniform("uBarHalfWidth", halfWidth);
-        shader.setUniform("uBarOffset", barOffset);
-        // 下沿是一个**数值**（默认 0），不是绘图区下边缘。
-        shader.setUniform("uBaseline", series.baseline());
-        shader.setUniform("uPickTolerance", tolerance);
-        int argb = series.color();
-        shader.setUniform("uColor",
-                ((argb >> 16) & 0xFF) / 255f,
-                ((argb >> 8) & 0xFF) / 255f,
-                (argb & 0xFF) / 255f,
-                ((argb >>> 24) & 0xFF) / 255f);
-        shader.setUniform("uPickId", pickId);
-    }
-
-    /**
-     * 本渲染器只画它真正画得出来的图型，其余明确报错。
-     *
-     * <p><strong>只接受 {@link ChartType#BAR}。</strong>不能写成"只要
-     * {@code drawsBars()} 就放行"（目前只有它一个为真，但那是一条会随枚举增长的判据），
-     * 也不能接受散点：柱子的顶点是"数值与基线之间的矩形"，当成居中的标记点画会得到
-     * 一串方点——<b>柱高这个含义整个消失</b>，而画面看起来像一张散点图。
-     */
-    private static void requireSupported(ChartType type) {
-        if (type == ChartType.BAR) {
-            return;
-        }
-        throw new IllegalArgumentException(
-                "BarSeriesRenderer 不支持图型 " + type + "。明确报错而不是静默画错："
-                        + "折线/散点/面积当成柱画，形状与含义全都变了，而画面看起来正常。");
-    }
-
-    /**
-     * 把裁剪盒设到绘图区（GL 侧的原点在左下、y 向上，所以要翻一次，
-     * 理由见 {@code LineSeriesRenderer} 的同一方法）。
-     */
-    private static void setScissorTo(Rect plot, int viewportHeight) {
-        int y = viewportHeight - (int) plot.y - (int) plot.height;
-        glScissor((int) plot.x, y, (int) plot.width, (int) plot.height);
     }
 
     /** 释放本类持有的 GL 资源（VAO 与角点 VBO）。 */

@@ -129,7 +129,7 @@ public final class SeriesUploadPlan {
      * "现在该不该写"与"以后读到了怎么办"两处推理，而两处迟早会分叉）。
      */
     private static List<Mirror> mirrorPlan(long newCount, long writtenCount, int capacity,
-                                          SeriesLayout layout, long firstWritten) {
+                                           SeriesLayout layout, long firstWritten) {
         if (layout.smooth()) {
             return smoothMirrors(writtenCount, capacity, layout, firstWritten);
         }
@@ -193,7 +193,7 @@ public final class SeriesUploadPlan {
      * "环没绕满就不写"的特判</b>（普通布局那条特判是历史遗留，见上面）。
      */
     private static List<Mirror> smoothMirrors(long writtenCount, int capacity,
-                                             SeriesLayout layout, long firstWritten) {
+                                              SeriesLayout layout, long firstWritten) {
         long last = writtenCount - 1;
         // 三个扩展槽位：槽位 capacity-1、槽位 0、槽位 1 的镜像。
         int[] addresses = {-1, capacity, capacity + 1};

@@ -43,6 +43,12 @@ import java.util.Arrays;
  */
 public final class FftKernel implements Disposable {
 
+    /** 本核支持的最大变换长度。由 shared memory 决定（2×MAX_N 个 float），见类文档。 */
+    public static final int MAX_N = 4096;
+
+    /** 本核支持的最小变换长度。 */
+    public static final int MIN_N = 256;
+
     /**
      * 线程组大小。
      *
@@ -54,12 +60,6 @@ public final class FftKernel implements Disposable {
      * 而三处循环的步长走 {@code gl_WorkGroupSize.x}，由布局推导，不再各写一份。
      */
     private static final int LOCAL_SIZE = 1024;
-
-    /** 本核支持的最大变换长度。由 shared memory 决定（2×MAX_N 个 float），见类文档。 */
-    public static final int MAX_N = 4096;
-
-    /** 本核支持的最小变换长度。 */
-    public static final int MIN_N = 256;
 
     /**
      * 着色器源码模板。
@@ -89,131 +89,99 @@ public final class FftKernel implements Disposable {
      * </ul>
      */
     private static final String SHADER_TEMPLATE = """
-            #version 430
-            layout(local_size_x = %d) in;
-
-            layout(std430, binding = 0) readonly  buffer InputBuffer  { float inY[]; };
-            layout(std430, binding = 1) writeonly buffer OutputBuffer { float outMag[]; };
-
-            // 全部是 int —— setUniform 走 glUniform1i。声明成 uint 会静默失效。
-            // 变换长度（2 的幂，范围见 Java 侧的 MIN_N / MAX_N——
-            // 这里刻意不写数字，免得跟常量各说各话）
-            uniform int   u_N;
-            uniform int   u_RingCapacity; // 环形缓冲容量（2 的幂）
-            uniform int   u_RingStart;    // 第一个样本在环里的槽位
-            uniform int   u_WindowKind;   // 0=矩形 1=Hann 2=Hamming 3=BH
-            uniform float u_Scale;        // 2/N × 窗补偿
-
-            // 注意：不要用 half 当变量名 —— 它是 GLSL 保留字。
-            shared float sRe[%d];
-            shared float sIm[%d];
-
-            float windowAt(int i) {
-                float x = 6.283185307179586 * float(i) / float(u_N - 1);
-                if (u_WindowKind == 0) return 1.0;
-                if (u_WindowKind == 1) return 0.5 - 0.5 * cos(x);
-                if (u_WindowKind == 2) return 0.54 - 0.46 * cos(x);
-                return 0.35875 - 0.48829 * cos(x) + 0.14128 * cos(2.0 * x) - 0.01168 * cos(3.0 * x);
-            }
-
-            void main() {
-                int tid = int(gl_LocalInvocationID.x);
-                int n   = u_N;
-                int cap = u_RingCapacity;
-
-                int logN = 0;
-                for (int t = n; t > 1; t >>= 1) logN++;
-
-                // ① 取数 + 加窗 + 位反转，一次做完。
-                //    bitfieldReverse 反转全部 32 位，右移掉高位即得 logN 位的反转。
-                //
-                //    ⚠️ 移位必须在 **uint 域**里做完再转 int。
-                //    写成 `int(bitfieldReverse(...)) >> (32 - logN)` 是错的：
-                //    反转之后**最高位几乎总是 1**（i 的最低位变成了最高位），
-                //    转成 int 就是负数，而 GLSL 对**有符号**左操作数的 >> 是**算术右移**
-                //    （符号扩展）。例如 i=1 时得到 0xFFFFFC00 = **-1024** 而不是 1024，
-                //    于是 sRe[rev] 用一个**负下标**写共享内存——那是**越界写**，
-                //    驱动可能崩、也可能悄悄写坏别处。
-                //    步长走 gl_WorkGroupSize.x（= local_size_x 的声明值），不写 1024 字面量。
-                //    ⚠️ 它是 uint，GLSL 不做 int↔uint 的隐式转换，必须显式 int(...)。
-                for (int i = tid; i < n; i += int(gl_WorkGroupSize.x)) {
-                    int src = (u_RingStart + i) & (cap - 1);
-                    int rev = int(bitfieldReverse(uint(i)) >> uint(32 - logN));
-                    sRe[rev] = inY[src] * windowAt(i);
-                    sIm[rev] = 0.0;
-                }
-                barrier();
-
-                // ② log2(N) 级蝶形（DIT，输入已位反转）
-                for (int len = 2; len <= n; len <<= 1) {
-                    int halfLen = len >> 1;
-                    for (int k = tid; k < n / 2; k += int(gl_WorkGroupSize.x)) {
-                        int group = k / halfLen;
-                        int pos   = k %% halfLen;
-                        int k1    = group * len + pos;
-                        int k2    = k1 + halfLen;
-                        float angle = -6.283185307179586 * float(pos) / float(len);
-                        float wr = cos(angle);
-                        float wi = sin(angle);
-                        float tr = wr * sRe[k2] - wi * sIm[k2];
-                        float ti = wr * sIm[k2] + wi * sRe[k2];
-                        float ur = sRe[k1];
-                        float ui = sIm[k1];
-                        sRe[k1] = ur + tr;
-                        sIm[k1] = ui + ti;
-                        sRe[k2] = ur - tr;
-                        sIm[k2] = ui - ti;
-                    }
-                    barrier();
-                }
-
-                // ③ 幅度（半谱，含 DC 与 Nyquist）
-                for (int k = tid; k <= n / 2; k += int(gl_WorkGroupSize.x)) {
-                    float re = sRe[k];
-                    float im = sIm[k];
-                    outMag[k] = sqrt(re * re + im * im) * u_Scale;
-                }
-            }
-            """;
-
-    /**
-     * 由常量生成的着色器源码；构造 {@link FftKernel} 时才会求值。
-     *
-     * <p><strong>包级可见是刻意的</strong>：它是纯字符串运算、不需要 GL 上下文，
-     * 所以按本项目的判据（"能不能脱离 GL 上下文跑测试"）它<strong>该进单测</strong>——
-     * 见 {@code FftKernelTest}。本轮踩过的三个坑（裸 {@code %} 被当格式符、
-     * 共享数组长度与 {@link #MAX_N} 脱钩、步长写回字面量）全都属于
-     * <strong>不看字符串就发现不了</strong>的那一类。
-     */
-    static String shaderSource() {
-        return SHADER_TEMPLATE.formatted(LOCAL_SIZE, MAX_N, MAX_N);
-    }
-
-    /** {@link #LOCAL_SIZE} 的只读访问器，供同包测试断言布局与步长的一致性。 */
-    static int localSize() {
-        return LOCAL_SIZE;
-    }
-
-    /**
-     * {@link #SHADER_TEMPLATE} 的只读访问器——<strong>测试必须能看见"格式化之前"的那份</strong>。
-     *
-     * <p>为什么非要暴露模板本身：{@code shaderSource()} 的返回值是
-     * <strong>格式化之后</strong>的字符串，两种缺陷在那里<strong>看不见</strong>——
-     * <ul>
-     *   <li>模板里写死的 {@code sRe[4096]} 与 {@code sRe[%d]} 在
-     *       {@code MAX_N == 4096} 时生成<strong>一模一样</strong>的串；</li>
-     *   <li>{@code %n} 这类格式符会被 {@code formatted} <strong>吃掉</strong>
-     *       （换成换行符），生成串里根本不留下它。</li>
-     * </ul>
-     * 实测过：只断言生成串的话，这两条变异都<strong>全绿</strong>。
-     */
-    static String shaderTemplate() {
-        return SHADER_TEMPLATE;
-    }
+                                                  #version 430
+                                                  layout(local_size_x = %d) in;
+                                                  
+                                                  layout(std430, binding = 0) readonly  buffer InputBuffer  { float inY[]; };
+                                                  layout(std430, binding = 1) writeonly buffer OutputBuffer { float outMag[]; };
+                                                  
+                                                  // 全部是 int —— setUniform 走 glUniform1i。声明成 uint 会静默失效。
+                                                  // 变换长度（2 的幂，范围见 Java 侧的 MIN_N / MAX_N——
+                                                  // 这里刻意不写数字，免得跟常量各说各话）
+                                                  uniform int   u_N;
+                                                  uniform int   u_RingCapacity; // 环形缓冲容量（2 的幂）
+                                                  uniform int   u_RingStart;    // 第一个样本在环里的槽位
+                                                  uniform int   u_WindowKind;   // 0=矩形 1=Hann 2=Hamming 3=BH
+                                                  uniform float u_Scale;        // 2/N × 窗补偿
+                                                  
+                                                  // 注意：不要用 half 当变量名 —— 它是 GLSL 保留字。
+                                                  shared float sRe[%d];
+                                                  shared float sIm[%d];
+                                                  
+                                                  float windowAt(int i) {
+                                                      float x = 6.283185307179586 * float(i) / float(u_N - 1);
+                                                      if (u_WindowKind == 0) return 1.0;
+                                                      if (u_WindowKind == 1) return 0.5 - 0.5 * cos(x);
+                                                      if (u_WindowKind == 2) return 0.54 - 0.46 * cos(x);
+                                                      return 0.35875 - 0.48829 * cos(x) + 0.14128 * cos(2.0 * x) - 0.01168 * cos(3.0 * x);
+                                                  }
+                                                  
+                                                  void main() {
+                                                      int tid = int(gl_LocalInvocationID.x);
+                                                      int n   = u_N;
+                                                      int cap = u_RingCapacity;
+                                                  
+                                                      int logN = 0;
+                                                      for (int t = n; t > 1; t >>= 1) logN++;
+                                                  
+                                                      // ① 取数 + 加窗 + 位反转，一次做完。
+                                                      //    bitfieldReverse 反转全部 32 位，右移掉高位即得 logN 位的反转。
+                                                      //
+                                                      //    ⚠️ 移位必须在 **uint 域**里做完再转 int。
+                                                      //    写成 `int(bitfieldReverse(...)) >> (32 - logN)` 是错的：
+                                                      //    反转之后**最高位几乎总是 1**（i 的最低位变成了最高位），
+                                                      //    转成 int 就是负数，而 GLSL 对**有符号**左操作数的 >> 是**算术右移**
+                                                      //    （符号扩展）。例如 i=1 时得到 0xFFFFFC00 = **-1024** 而不是 1024，
+                                                      //    于是 sRe[rev] 用一个**负下标**写共享内存——那是**越界写**，
+                                                      //    驱动可能崩、也可能悄悄写坏别处。
+                                                      //    步长走 gl_WorkGroupSize.x（= local_size_x 的声明值），不写 1024 字面量。
+                                                      //    ⚠️ 它是 uint，GLSL 不做 int↔uint 的隐式转换，必须显式 int(...)。
+                                                      for (int i = tid; i < n; i += int(gl_WorkGroupSize.x)) {
+                                                          int src = (u_RingStart + i) & (cap - 1);
+                                                          int rev = int(bitfieldReverse(uint(i)) >> uint(32 - logN));
+                                                          sRe[rev] = inY[src] * windowAt(i);
+                                                          sIm[rev] = 0.0;
+                                                      }
+                                                      barrier();
+                                                  
+                                                      // ② log2(N) 级蝶形（DIT，输入已位反转）
+                                                      for (int len = 2; len <= n; len <<= 1) {
+                                                          int halfLen = len >> 1;
+                                                          for (int k = tid; k < n / 2; k += int(gl_WorkGroupSize.x)) {
+                                                              int group = k / halfLen;
+                                                              int pos   = k %% halfLen;
+                                                              int k1    = group * len + pos;
+                                                              int k2    = k1 + halfLen;
+                                                              float angle = -6.283185307179586 * float(pos) / float(len);
+                                                              float wr = cos(angle);
+                                                              float wi = sin(angle);
+                                                              float tr = wr * sRe[k2] - wi * sIm[k2];
+                                                              float ti = wr * sIm[k2] + wi * sRe[k2];
+                                                              float ur = sRe[k1];
+                                                              float ui = sIm[k1];
+                                                              sRe[k1] = ur + tr;
+                                                              sIm[k1] = ui + ti;
+                                                              sRe[k2] = ur - tr;
+                                                              sIm[k2] = ui - ti;
+                                                          }
+                                                          barrier();
+                                                      }
+                                                  
+                                                      // ③ 幅度（半谱，含 DC 与 Nyquist）
+                                                      for (int k = tid; k <= n / 2; k += int(gl_WorkGroupSize.x)) {
+                                                          float re = sRe[k];
+                                                          float im = sIm[k];
+                                                          outMag[k] = sqrt(re * re + im * im) * u_Scale;
+                                                      }
+                                                  }
+                                                  """;
 
     private final GLAbstraction gl;
+
     private final ComputeShader shader;
+
     private final int outputBuffer;
+
     private final int n;
 
     /**
@@ -280,6 +248,41 @@ public final class FftKernel implements Disposable {
         // 让"为什么构造失败"变成一句谎话。
         gl.bindShaderStorageBuffer(0);
         this.outputBuffer = buf;
+    }
+
+    /**
+     * 由常量生成的着色器源码；构造 {@link FftKernel} 时才会求值。
+     *
+     * <p><strong>包级可见是刻意的</strong>：它是纯字符串运算、不需要 GL 上下文，
+     * 所以按本项目的判据（"能不能脱离 GL 上下文跑测试"）它<strong>该进单测</strong>——
+     * 见 {@code FftKernelTest}。本轮踩过的三个坑（裸 {@code %} 被当格式符、
+     * 共享数组长度与 {@link #MAX_N} 脱钩、步长写回字面量）全都属于
+     * <strong>不看字符串就发现不了</strong>的那一类。
+     */
+    static String shaderSource() {
+        return SHADER_TEMPLATE.formatted(LOCAL_SIZE, MAX_N, MAX_N);
+    }
+
+    /** {@link #LOCAL_SIZE} 的只读访问器，供同包测试断言布局与步长的一致性。 */
+    static int localSize() {
+        return LOCAL_SIZE;
+    }
+
+    /**
+     * {@link #SHADER_TEMPLATE} 的只读访问器——<strong>测试必须能看见"格式化之前"的那份</strong>。
+     *
+     * <p>为什么非要暴露模板本身：{@code shaderSource()} 的返回值是
+     * <strong>格式化之后</strong>的字符串，两种缺陷在那里<strong>看不见</strong>——
+     * <ul>
+     *   <li>模板里写死的 {@code sRe[4096]} 与 {@code sRe[%d]} 在
+     *       {@code MAX_N == 4096} 时生成<strong>一模一样</strong>的串；</li>
+     *   <li>{@code %n} 这类格式符会被 {@code formatted} <strong>吃掉</strong>
+     *       （换成换行符），生成串里根本不留下它。</li>
+     * </ul>
+     * 实测过：只断言生成串的话，这两条变异都<strong>全绿</strong>。
+     */
+    static String shaderTemplate() {
+        return SHADER_TEMPLATE;
     }
 
     /** FFT 输出的 bin 数（半谱，含 DC 与 Nyquist）。 */

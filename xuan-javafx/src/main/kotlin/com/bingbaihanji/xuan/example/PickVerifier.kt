@@ -136,11 +136,26 @@ class PickVerifierApp : Application() {
     private val idClipped = 5
 
     // 图形几何（用户坐标）
-    private val aX = 50f; private val aY = 50f; private val aW = 200f; private val aH = 100f
-    private val bX = 150f; private val bY = 100f; private val bW = 200f; private val bH = 100f
-    private val sX = 400f; private val sY = 50f; private val sW = 150f; private val sH = 100f
-    private val tX = 50f; private val tY = 250f; private val tW = 150f; private val tH = 100f
-    private val clipX = 400; private val clipY = 250; private val clipW = 100; private val clipH = 100
+    private val aX = 50f;
+    private val aY = 50f;
+    private val aW = 200f;
+    private val aH = 100f
+    private val bX = 150f;
+    private val bY = 100f;
+    private val bW = 200f;
+    private val bH = 100f
+    private val sX = 400f;
+    private val sY = 50f;
+    private val sW = 150f;
+    private val sH = 100f
+    private val tX = 50f;
+    private val tY = 250f;
+    private val tW = 150f;
+    private val tH = 100f
+    private val clipX = 400;
+    private val clipY = 250;
+    private val clipW = 100;
+    private val clipH = 100
 
     override fun start(stage: Stage) {
         // 采样数走**同一个系统属性**（`-Dxuan.probe.msaa`，解析与 MsaaVerifier 共用）：
@@ -266,8 +281,10 @@ class PickVerifierApp : Application() {
         // 这条断言必须在带上 ID 之前取样——等到校验帧再看，计数里已经混进了
         // 后面那些带 ID 的帧，就什么都证明不了了。
         if (justRendered == 1) {
-            reportSkipOptimization(bridge, expected = 0,
-                detail = "前两帧均无拾取 ID")
+            reportSkipOptimization(
+                bridge, expected = 0,
+                detail = "前两帧均无拾取 ID"
+            )
             return
         }
         val gc = bridge.gc() ?: return
@@ -307,10 +324,14 @@ class PickVerifierApp : Application() {
             val atClip = gc.pick(420f, 270f)?.id() ?: 0
             // (420,270) 证明 ID pass 确实跑了——否则"没命中"可能只是因为它没跑，
             // 那样这条断言就变成了恒真检查。
-            reportStale("已消失图元的位置不再命中", atA == 0,
-                "(100,80) 实际=$atA 期望=0（帧 4 该处是 idA=$idA）")
-            reportStale("本帧仍在的图元照常命中（证明 ID pass 跑了）", atClip == idClipped,
-                "(420,270) 实际=$atClip 期望=$idClipped")
+            reportStale(
+                "已消失图元的位置不再命中", atA == 0,
+                "(100,80) 实际=$atA 期望=0（帧 4 该处是 idA=$idA）"
+            )
+            reportStale(
+                "本帧仍在的图元照常命中（证明 ID pass 跑了）", atClip == idClipped,
+                "(420,270) 实际=$atClip 期望=$idClipped"
+            )
 
             staleIdFailures = staleFailures.size
         }
@@ -337,8 +358,10 @@ class PickVerifierApp : Application() {
         fun expectPick(label: String, x: Float, y: Float, expectedId: Int) {
             val hit = gc.pick(x, y)
             val actual = hit?.id() ?: 0
-            report(label, actual == expectedId,
-                "($x,$y) 实际=$actual 期望=$expectedId")
+            report(
+                label, actual == expectedId,
+                "($x,$y) 实际=$actual 期望=$expectedId"
+            )
         }
 
         // 标题与「跳过优化」一节已在第 1 帧处打印过了，这里接着往下走。
@@ -354,8 +377,10 @@ class PickVerifierApp : Application() {
         //   - pickPassCount 被误加了复位 → 1，见 RenderBatch 类注释里那条警告；
         //   - 帧中途 flush → 多出来的那部分，属良性，但仍要如实记录实际值。
         // 直接改成实测值会让这条断言失去意义：它对「数字是多少」不敏感，对「为什么」才敏感。
-        report("有拾取对象时每帧恰好一趟 ID pass", bridge.pickPassCountForTest() == 3,
-            "ID pass 执行次数=${bridge.pickPassCountForTest()}，期望 3（帧 2、3、4）")
+        report(
+            "有拾取对象时每帧恰好一趟 ID pass", bridge.pickPassCountForTest() == 3,
+            "ID pass 执行次数=${bridge.pickPassCountForTest()}，期望 3（帧 2、3、4）"
+        )
 
         println("\n-- 点查询 --")
         expectPick("A 独占区域命中 A", 100f, 80f, idA)
@@ -372,8 +397,10 @@ class PickVerifierApp : Application() {
 
         println("\n-- payload 解析 --")
         val hitA = gc.pick(100f, 80f)
-        report("命中结果能解析回注册对象", hitA?.payload() == "A",
-            "payload=${hitA?.payload()}")
+        report(
+            "命中结果能解析回注册对象", hitA?.payload() == "A",
+            "payload=${hitA?.payload()}"
+        )
 
         println("\n-- 矩形区域查询 --")
         fun expectRect(label: String, x: Float, y: Float, w: Float, h: Float, expected: Set<Int>) {
@@ -390,10 +417,14 @@ class PickVerifierApp : Application() {
         val abHits = gc.pickRect(60f, 60f, 320f, 160f).associateBy { it.id() }
         val aAt = abHits[idA]
         val bAt = abHits[idB]
-        report("A 首次出现坐标", aAt != null && aAt.x() == 60f && aAt.y() == 60f,
-            "实际=(${aAt?.x()},${aAt?.y()}) 期望=(60.0,60.0)")
-        report("B 首次出现坐标", bAt != null && bAt.x() == 150f && bAt.y() == 100f,
-            "实际=(${bAt?.x()},${bAt?.y()}) 期望=(150.0,100.0)")
+        report(
+            "A 首次出现坐标", aAt != null && aAt.x() == 60f && aAt.y() == 60f,
+            "实际=(${aAt?.x()},${aAt?.y()}) 期望=(60.0,60.0)"
+        )
+        report(
+            "B 首次出现坐标", bAt != null && bAt.x() == 150f && bAt.y() == 100f,
+            "实际=(${bAt?.x()},${bAt?.y()}) 期望=(150.0,100.0)"
+        )
         expectRect("覆盖裁剪区与描边", 390f, 45f, 180f, 320f, setOf(idStroke, idClipped))
         expectRect("完全在画面外", -500f, -500f, 10f, 10f, emptySet())
         expectRect("拖到画面外仍返回交集部分", -500f, -500f, 700f, 700f, setOf(idA, idB))
@@ -424,8 +455,10 @@ class PickVerifierApp : Application() {
         // 那条断言只能在帧 5 取样。失败数先存着，退出码留到最后一起算。
         frameFourFailures = failures.size
         println()
-        println(if (failures.isEmpty()) "=== 帧 4 校验全部通过，继续等帧 $staleIdFrame ==="
-        else "=== 帧 $justRendered 失败 ${failures.size} 项：${failures.joinToString("；")} ===")
+        println(
+            if (failures.isEmpty()) "=== 帧 4 校验全部通过，继续等帧 $staleIdFrame ==="
+            else "=== 帧 $justRendered 失败 ${failures.size} 项：${failures.joinToString("；")} ==="
+        )
     }
 
     /**
@@ -444,8 +477,10 @@ class PickVerifierApp : Application() {
         val ok = actual == expected
         println("=== Xuan 拾取校验（帧缓冲 ${bridge.scaledWidth}x${bridge.scaledHeight}）===")
         println("\n-- 跳过优化 --")
-        println("  [${if (ok) "PASS" else "FAIL"}] 无拾取对象时不渲染 ID pass — " +
-                "$detail，实际=$actual 期望=$expected")
+        println(
+            "  [${if (ok) "PASS" else "FAIL"}] 无拾取对象时不渲染 ID pass — " +
+                    "$detail，实际=$actual 期望=$expected"
+        )
         if (!ok) {
             println("\n=== 失败 1 项 ===")
             Platform.exit()
@@ -503,6 +538,7 @@ class PickVerifierApp : Application() {
                 submitAsync(bridge, gc, 450f, 300f, idClipped, deliverExpected = false)
                 submitAsync(bridge, gc, 430f, 280f, idClipped)
             }
+
             staleIdFrame + 3 -> {
                 // ★ 从 **JavaFX 线程**提交——这才是生产用法（鼠标事件在 JavaFX 线程上，
                 // 而 Gc 只能在 GL 线程用）。上面几条都是从 GL 线程直接调的，走不到
@@ -614,38 +650,49 @@ class PickVerifierApp : Application() {
                 // 一帧连发时被覆盖的那几条：回调**不该**被调用。这条不是凑数——
                 // 它钉住「最新覆盖旧的」。若实现改成排队，这里会收到结果，
                 // 而排队在生产里表现为 hover 回调越积越多、延迟越来越大。
-                report("[seq${e.seq}] 被覆盖的请求不交付（最新覆盖旧）", got.isEmpty(),
+                report(
+                    "[seq${e.seq}] 被覆盖的请求不交付（最新覆盖旧）", got.isEmpty(),
                     "$where 收到 ${got.size} 条结果${if (got.isEmpty()) "" else "(id=" + got.map { it.id } + ")"}")
                 continue
             }
-            report("[seq${e.seq}] 异步拾取交付且 ID 正确", one != null && one.id == e.expectedId,
-                "$where 期望=${e.expectedId} 实际=${one?.id ?: "未交付"}，收到 ${got.size} 条")
+            report(
+                "[seq${e.seq}] 异步拾取交付且 ID 正确", one != null && one.id == e.expectedId,
+                "$where 期望=${e.expectedId} 实际=${one?.id ?: "未交付"}，收到 ${got.size} 条"
+            )
             if (e.checkSync) {
-                report("[seq${e.seq}] 异步与同步结论一致（自洽对照）", one != null && one.id == e.syncId,
-                    "$where 同步=${e.syncId} 异步=${one?.id ?: "未交付"}")
+                report(
+                    "[seq${e.seq}] 异步与同步结论一致（自洽对照）", one != null && one.id == e.syncId,
+                    "$where 同步=${e.syncId} 异步=${one?.id ?: "未交付"}"
+                )
             }
         }
 
         // 汇总断言：回调**必须**落在 JavaFX 线程上。不逐条报是因为它的判据是
         // 「有没有任何一条跑错了线程」，逐条报会淹没在噪音里。
         val wrongThread = asyncOutcomes.filter { !it.onFxThread }
-        report("全部异步回调都在 JavaFX 线程上", asyncOutcomes.isNotEmpty() && wrongThread.isEmpty(),
-            "${asyncOutcomes.size} 条结果中 ${wrongThread.size} 条不在 JavaFX 线程")
+        report(
+            "全部异步回调都在 JavaFX 线程上", asyncOutcomes.isNotEmpty() && wrongThread.isEmpty(),
+            "${asyncOutcomes.size} 条结果中 ${wrongThread.size} 条不在 JavaFX 线程"
+        )
 
         // payload 链路：从 PBO 读回的 ID 也要能经注册表解析回对象。
         val fxSeq = asyncSubmissions.firstOrNull { it.onFxThread }?.seq
         val fxOutcome = fxSeq?.let { s -> asyncOutcomes.firstOrNull { it.seq == s } }
-        report("跨线程提交的结果能解析回注册对象", fxOutcome?.payload == "Clipped",
-            "payload=${fxOutcome?.payload}")
+        report(
+            "跨线程提交的结果能解析回注册对象", fxOutcome?.payload == "Clipped",
+            "payload=${fxOutcome?.payload}"
+        )
 
         val total = frameFourFailures + staleIdFailures + failures.size
         println()
         if (total == 0) {
             println("=== 全部通过 ===")
         } else {
-            println("=== 失败 $total 项（帧 4 共 $frameFourFailures 项，" +
-                    "帧 $staleIdFrame 共 $staleIdFailures 项，异步阶段共 ${failures.size} 项）：" +
-                    "${failures.joinToString("；")} ===")
+            println(
+                "=== 失败 $total 项（帧 4 共 $frameFourFailures 项，" +
+                        "帧 $staleIdFrame 共 $staleIdFailures 项，异步阶段共 ${failures.size} 项）：" +
+                        "${failures.joinToString("；")} ==="
+            )
         }
 
         Platform.exit()

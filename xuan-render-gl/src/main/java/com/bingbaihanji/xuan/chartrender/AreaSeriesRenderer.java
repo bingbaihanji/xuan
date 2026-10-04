@@ -12,11 +12,7 @@ import com.bingbaihanji.xuan.util.Rect;
 
 import java.util.List;
 
-import static org.lwjgl.opengl.GL11.GL_FLOAT;
-import static org.lwjgl.opengl.GL11.GL_ONE;
-import static org.lwjgl.opengl.GL11.GL_ONE_MINUS_SRC_ALPHA;
-import static org.lwjgl.opengl.GL11.GL_TRIANGLE_STRIP;
-import static org.lwjgl.opengl.GL11.glScissor;
+import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL20.glEnableVertexAttribArray;
 import static org.lwjgl.opengl.GL20.glVertexAttribPointer;
 
@@ -126,6 +122,82 @@ final class AreaSeriesRenderer implements SeriesRenderer {
         }
         int a = Math.round(((argb >>> 24) & 0xFF) * alpha);
         return (a << 24) | (argb & 0x00FFFFFF);
+    }
+
+    /** 绘图区宽度：{@code uPxPerSample} 的分子（与折线路径同一个口径）。 */
+    private static float plotWidth(GLRenderContext c) {
+        return c.layout().plotRect().width;
+    }
+
+    /**
+     * 给一段实例设置"哪几段可以画成曲线"（与折线路径逐字相同的两个 uniform）。
+     *
+     * <p>不开平滑时两个都传 0（一段都不许平滑），理由见
+     * {@code LineSeriesRenderer.setSmoothRange}。
+     */
+    private static void setSmoothRange(ShaderProgram shader, SeriesBuffer buffer,
+                                       WindowRange.Segment seg, boolean smooth) {
+        if (!smooth) {
+            shader.setUniform("uSmoothFrom", 0f);
+            shader.setUniform("uSmoothTo", 0f);
+            return;
+        }
+        shader.setUniform("uSmoothFrom", SmoothCurve.smoothFromInSegment(
+                seg.firstDataIndex(), seg.instanceCount(), buffer.smoothableFirst()));
+        shader.setUniform("uSmoothTo", SmoothCurve.smoothToInSegment(
+                seg.firstDataIndex(), seg.instanceCount(), buffer.smoothableEnd()));
+    }
+
+    /**
+     * 填充两个 pass 共用的那一套 uniform。
+     *
+     * @param pickId 绘制时传 0（拾取着色器里 uColor 被优化掉，但仍要对齐 uniform 名单）
+     */
+    private static void setCommonUniforms(ShaderProgram shader, GLRenderContext c,
+                                          ChartRenderLayout layout, Rect plot, Series series,
+                                          double windowStart, double windowEnd, int pickId) {
+        shader.setUniform("uPlotRect", plot.x, plot.y, plot.width, plot.height);
+        shader.setUniform("uViewport", (float) c.viewportWidth(), (float) c.viewportHeight());
+        shader.setUniform("uValueRange", layout.yMin(), layout.yMax());
+        shader.setUniform("uPxPerSample",
+                (float) (plot.width / (windowEnd - windowStart)));
+        // 下沿是一个**数值**（默认 0），不是绘图区下边缘——写成下边缘的话，
+        // 轴一放大柱子/填充的高度就会跟着轴走，而画面完全正常。
+        shader.setUniform("uBaseline", series.baseline());
+        int argb = fillColor(series);
+        shader.setUniform("uColor",
+                ((argb >> 16) & 0xFF) / 255f,
+                ((argb >> 8) & 0xFF) / 255f,
+                (argb & 0xFF) / 255f,
+                ((argb >>> 24) & 0xFF) / 255f);
+        // 必须是 int 的那个 setUniform（glUniform1i），理由见 SeriesShaders。
+        shader.setUniform("uPickId", pickId);
+    }
+
+    /**
+     * 本渲染器只画它真正画得出来的图型，其余明确报错。
+     *
+     * <p><strong>只接受 {@link ChartType#AREA}。</strong>不能写成"只要
+     * {@code fillsUnderCurve()} 就放行"，也不能接受折线：本渲染器会把折线的
+     * <b>下半部分整块涂满</b>——一条曲线变成一片色块，而画面看起来"就是这种风格"。
+     */
+    private static void requireSupported(ChartType type) {
+        if (type == ChartType.AREA) {
+            return;
+        }
+        throw new IllegalArgumentException(
+                "AreaSeriesRenderer 不支持图型 " + type + "。明确报错而不是静默画错："
+                        + "把折线按面积画，曲线下方会被涂满，那条线的形状也就无从读起；"
+                        + "把散点按面积画，点全都淹在填充里。");
+    }
+
+    /**
+     * 把裁剪盒设到绘图区（GL 侧的原点在左下、y 向上，所以要翻一次，
+     * 理由见 {@code LineSeriesRenderer} 的同一方法）。
+     */
+    private static void setScissorTo(Rect plot, int viewportHeight) {
+        int y = viewportHeight - (int) plot.y - (int) plot.height;
+        glScissor((int) plot.x, y, (int) plot.width, (int) plot.height);
     }
 
     /**
@@ -239,82 +311,6 @@ final class AreaSeriesRenderer implements SeriesRenderer {
         //   否则沿曲线会露出一条背景色的细缝（两边各自用 SmoothCurve 的同一份算术与
         //   同一个细分档位，所以它们逐像素重合）。
         lineRenderer.renderPolyline(ctx, data, series, axes);
-    }
-
-    /** 绘图区宽度：{@code uPxPerSample} 的分子（与折线路径同一个口径）。 */
-    private static float plotWidth(GLRenderContext c) {
-        return c.layout().plotRect().width;
-    }
-
-    /**
-     * 给一段实例设置"哪几段可以画成曲线"（与折线路径逐字相同的两个 uniform）。
-     *
-     * <p>不开平滑时两个都传 0（一段都不许平滑），理由见
-     * {@code LineSeriesRenderer.setSmoothRange}。
-     */
-    private static void setSmoothRange(ShaderProgram shader, SeriesBuffer buffer,
-                                       WindowRange.Segment seg, boolean smooth) {
-        if (!smooth) {
-            shader.setUniform("uSmoothFrom", 0f);
-            shader.setUniform("uSmoothTo", 0f);
-            return;
-        }
-        shader.setUniform("uSmoothFrom", SmoothCurve.smoothFromInSegment(
-                seg.firstDataIndex(), seg.instanceCount(), buffer.smoothableFirst()));
-        shader.setUniform("uSmoothTo", SmoothCurve.smoothToInSegment(
-                seg.firstDataIndex(), seg.instanceCount(), buffer.smoothableEnd()));
-    }
-
-    /**
-     * 填充两个 pass 共用的那一套 uniform。
-     *
-     * @param pickId 绘制时传 0（拾取着色器里 uColor 被优化掉，但仍要对齐 uniform 名单）
-     */
-    private static void setCommonUniforms(ShaderProgram shader, GLRenderContext c,
-                                          ChartRenderLayout layout, Rect plot, Series series,
-                                          double windowStart, double windowEnd, int pickId) {
-        shader.setUniform("uPlotRect", plot.x, plot.y, plot.width, plot.height);
-        shader.setUniform("uViewport", (float) c.viewportWidth(), (float) c.viewportHeight());
-        shader.setUniform("uValueRange", layout.yMin(), layout.yMax());
-        shader.setUniform("uPxPerSample",
-                (float) (plot.width / (windowEnd - windowStart)));
-        // 下沿是一个**数值**（默认 0），不是绘图区下边缘——写成下边缘的话，
-        // 轴一放大柱子/填充的高度就会跟着轴走，而画面完全正常。
-        shader.setUniform("uBaseline", series.baseline());
-        int argb = fillColor(series);
-        shader.setUniform("uColor",
-                ((argb >> 16) & 0xFF) / 255f,
-                ((argb >> 8) & 0xFF) / 255f,
-                (argb & 0xFF) / 255f,
-                ((argb >>> 24) & 0xFF) / 255f);
-        // 必须是 int 的那个 setUniform（glUniform1i），理由见 SeriesShaders。
-        shader.setUniform("uPickId", pickId);
-    }
-
-    /**
-     * 本渲染器只画它真正画得出来的图型，其余明确报错。
-     *
-     * <p><strong>只接受 {@link ChartType#AREA}。</strong>不能写成"只要
-     * {@code fillsUnderCurve()} 就放行"，也不能接受折线：本渲染器会把折线的
-     * <b>下半部分整块涂满</b>——一条曲线变成一片色块，而画面看起来"就是这种风格"。
-     */
-    private static void requireSupported(ChartType type) {
-        if (type == ChartType.AREA) {
-            return;
-        }
-        throw new IllegalArgumentException(
-                "AreaSeriesRenderer 不支持图型 " + type + "。明确报错而不是静默画错："
-                        + "把折线按面积画，曲线下方会被涂满，那条线的形状也就无从读起；"
-                        + "把散点按面积画，点全都淹在填充里。");
-    }
-
-    /**
-     * 把裁剪盒设到绘图区（GL 侧的原点在左下、y 向上，所以要翻一次，
-     * 理由见 {@code LineSeriesRenderer} 的同一方法）。
-     */
-    private static void setScissorTo(Rect plot, int viewportHeight) {
-        int y = viewportHeight - (int) plot.y - (int) plot.height;
-        glScissor((int) plot.x, y, (int) plot.width, (int) plot.height);
     }
 
     /** 释放本类持有的 GL 资源（VAO 与角点 VBO）；折线渲染器是共享的，不由本类释放。 */

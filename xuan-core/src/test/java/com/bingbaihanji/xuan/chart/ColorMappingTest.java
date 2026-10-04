@@ -2,7 +2,9 @@ package com.bingbaihanji.xuan.chart;
 
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link ColorMapping} 的单测：**纯计算**。
@@ -14,7 +16,9 @@ import static org.junit.jupiter.api.Assertions.*;
 class ColorMappingTest {
 
     private static final int BLACK = 0xFF000000;
+
     private static final int WHITE = 0xFFFFFFFF;
+
     private static final int RED = 0xFFFF0000;
 
     private static int channel(byte[] lut, int index, int offset) {
@@ -92,7 +96,7 @@ class ColorMappingTest {
     @Test
     void 色标位置必须非递减且落在0到1() {
         assertThrows(IllegalArgumentException.class, () -> ColorMapping.of(
-                new ColorMapping.Stop(0.8, BLACK), new ColorMapping.Stop(0.2, WHITE)),
+                        new ColorMapping.Stop(0.8, BLACK), new ColorMapping.Stop(0.2, WHITE)),
                 "位置倒序必须构造时就拒绝：插值时区间长度为负，结果是一段乱跳的颜色");
         assertThrows(IllegalArgumentException.class,
                 () -> ColorMapping.of(new ColorMapping.Stop(-0.1, BLACK)));

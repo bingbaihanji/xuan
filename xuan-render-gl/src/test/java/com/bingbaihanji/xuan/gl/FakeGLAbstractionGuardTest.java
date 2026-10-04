@@ -13,7 +13,10 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 钉住假实现的<strong>护栏面</strong>。
@@ -110,6 +113,63 @@ class FakeGLAbstractionGuardTest {
         return bySignature;
     }
 
+    private static void invokeWithDefaults(Method m, FakeGLAbstraction target) {
+        try {
+            m.invoke(target, defaultArgs(m));
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            if (cause instanceof Error error) {
+                throw error;
+            }
+            throw new AssertionError("MUST_THROW 的方法抛了受检异常：" + m, cause);
+        } catch (IllegalAccessException e) {
+            throw new AssertionError("无法调用 " + m + "（可见性变了？）", e);
+        }
+    }
+
+    private static Object[] defaultArgs(Method m) {
+        Class<?>[] types = m.getParameterTypes();
+        Object[] args = new Object[types.length];
+        for (int i = 0; i < types.length; i++) {
+            args[i] = defaultValue(types[i]);
+        }
+        return args;
+    }
+
+    private static Object defaultValue(Class<?> type) {
+        if (!type.isPrimitive()) {
+            return null;
+        }
+        if (type == int.class) {
+            return 0;
+        }
+        if (type == boolean.class) {
+            return false;
+        }
+        if (type == long.class) {
+            return 0L;
+        }
+        if (type == float.class) {
+            return 0f;
+        }
+        if (type == double.class) {
+            return 0d;
+        }
+        if (type == short.class) {
+            return (short) 0;
+        }
+        if (type == byte.class) {
+            return (byte) 0;
+        }
+        if (type == char.class) {
+            return (char) 0;
+        }
+        throw new AssertionError("未知的原始类型：" + type);
+    }
+
     @Test
     void 假实现的方法分类不得静默变化() {
         Set<String> actual = declaredGlMethods().keySet();
@@ -198,46 +258,5 @@ class FakeGLAbstractionGuardTest {
         assertEquals(List.of(spare + "@0:32"), fake.vboSubDataCalls);
         // 再多一个字节才越界
         assertThrows(AssertionError.class, () -> fake.uploadVboSubData(0, ByteBuffer.allocate(33)));
-    }
-
-    private static void invokeWithDefaults(Method m, FakeGLAbstraction target) {
-        try {
-            m.invoke(target, defaultArgs(m));
-        } catch (InvocationTargetException e) {
-            Throwable cause = e.getCause();
-            if (cause instanceof RuntimeException runtime) {
-                throw runtime;
-            }
-            if (cause instanceof Error error) {
-                throw error;
-            }
-            throw new AssertionError("MUST_THROW 的方法抛了受检异常：" + m, cause);
-        } catch (IllegalAccessException e) {
-            throw new AssertionError("无法调用 " + m + "（可见性变了？）", e);
-        }
-    }
-
-    private static Object[] defaultArgs(Method m) {
-        Class<?>[] types = m.getParameterTypes();
-        Object[] args = new Object[types.length];
-        for (int i = 0; i < types.length; i++) {
-            args[i] = defaultValue(types[i]);
-        }
-        return args;
-    }
-
-    private static Object defaultValue(Class<?> type) {
-        if (!type.isPrimitive()) {
-            return null;
-        }
-        if (type == int.class) return 0;
-        if (type == boolean.class) return false;
-        if (type == long.class) return 0L;
-        if (type == float.class) return 0f;
-        if (type == double.class) return 0d;
-        if (type == short.class) return (short) 0;
-        if (type == byte.class) return (byte) 0;
-        if (type == char.class) return (char) 0;
-        throw new AssertionError("未知的原始类型：" + type);
     }
 }

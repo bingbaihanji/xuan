@@ -4,15 +4,6 @@ package com.bingbaihanji.xuan.chart;
 @FunctionalInterface
 public interface ChartValueFormatter {
 
-    /**
-     * 格式化一个轴值。
-     *
-     * @param value 数值
-     * @param range 轴的名称与单位
-     * @return 不含轴名称和单位的文本
-     */
-    String format(double value, AxisRange range);
-
     /** 默认格式：最多六位小数，去掉无意义的尾零。 */
     ChartValueFormatter DEFAULT = (value, ignored) -> {
         if (!Double.isFinite(value)) {
@@ -28,4 +19,13 @@ public interface ChartValueFormatter {
         }
         return text.substring(0, end);
     };
+
+    /**
+     * 格式化一个轴值。
+     *
+     * @param value 数值
+     * @param range 轴的名称与单位
+     * @return 不含轴名称和单位的文本
+     */
+    String format(double value, AxisRange range);
 }

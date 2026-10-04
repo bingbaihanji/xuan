@@ -3,9 +3,36 @@ package com.bingbaihanji.xuan.chart;
 import com.bingbaihanji.xuan.util.Rect;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 class ChartInteractionTest {
+
+    /**
+     * 造一张 12 点、x 值 = 0..11、y 值全为 10 的图。
+     *
+     * <p>y 全取同一个值是为了让每一点的屏幕 y 都相同（{@code sy = 200}）——
+     * 于是"谁离指针更近"完全由 x 决定，断言里那几个距离可以手算。
+     * y 窗口 [0, 20]、绘图区高 400 ⇒ {@code dataToDisplay(10) = 200}、{@code sy = 200}。
+     */
+    private static Chart twelvePointChart() {
+        double[] xs = new double[12];
+        double[] ys = new double[12];
+        for (int i = 0; i < 12; i++) {
+            xs[i] = i;
+            ys[i] = 10;
+        }
+        ArrayChartData data = new ArrayChartData(
+                new AxisRange[]{AxisRange.of(0, 11), AxisRange.of(0, 20)},
+                new double[][]{xs, ys});
+        Chart chart = new Chart(
+                new Axis(AxisType.LINEAR, data.axisRange(0)).setDisplayLength(600),
+                new Axis(AxisType.LINEAR, data.axisRange(1)).setDisplayLength(400));
+        chart.addLayer("数据").add(new Series("s", data, ChartType.LINE));
+        return chart;
+    }
 
     @Test
     void 命中最近点并生成轴名称单位和系列名称() {
@@ -46,30 +73,6 @@ class ChartInteractionTest {
         assertNull(chart.interaction().probe(chart, new Rect(0, 0, 100, 100)));
         chart.interaction().updatePointer(200, 200);
         assertNull(chart.interaction().probe(chart, new Rect(0, 0, 100, 100)));
-    }
-
-    /**
-     * 造一张 12 点、x 值 = 0..11、y 值全为 10 的图。
-     *
-     * <p>y 全取同一个值是为了让每一点的屏幕 y 都相同（{@code sy = 200}）——
-     * 于是"谁离指针更近"完全由 x 决定，断言里那几个距离可以手算。
-     * y 窗口 [0, 20]、绘图区高 400 ⇒ {@code dataToDisplay(10) = 200}、{@code sy = 200}。
-     */
-    private static Chart twelvePointChart() {
-        double[] xs = new double[12];
-        double[] ys = new double[12];
-        for (int i = 0; i < 12; i++) {
-            xs[i] = i;
-            ys[i] = 10;
-        }
-        ArrayChartData data = new ArrayChartData(
-                new AxisRange[]{AxisRange.of(0, 11), AxisRange.of(0, 20)},
-                new double[][]{xs, ys});
-        Chart chart = new Chart(
-                new Axis(AxisType.LINEAR, data.axisRange(0)).setDisplayLength(600),
-                new Axis(AxisType.LINEAR, data.axisRange(1)).setDisplayLength(400));
-        chart.addLayer("数据").add(new Series("s", data, ChartType.LINE));
-        return chart;
     }
 
     /**

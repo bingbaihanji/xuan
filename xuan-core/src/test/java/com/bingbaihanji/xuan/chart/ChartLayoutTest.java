@@ -25,6 +25,7 @@ class ChartLayoutTest {
 
     /** 假度量：宽度与字数成正比。真实字体只影响"文字占多宽"，不影响任何一条带子的高度。 */
     private static final ChartTextMetrics METRICS = new ChartTextMetrics() {
+
         @Override
         public float width(String text, float fontSize) {
             return text.codePointCount(0, text.length()) * fontSize * 0.5f;
@@ -291,8 +292,8 @@ class ChartLayoutTest {
         // 而"居中于绘图区"也是"这条轴从哪到哪"的正确语义。
         float yBandW = METRICS.width(layout.yAxisTitle().text(), 10f);
         assertSameRect(new Rect(FRAME.x + yBandW + 4f + 26f,
-                FRAME.y + FRAME.height - xTitleH,
-                FRAME.width - yBandW - 4f - 26f, xTitleH), x.rect(),
+                        FRAME.y + FRAME.height - xTitleH,
+                        FRAME.width - yBandW - 4f - 26f, xTitleH), x.rect(),
                 "x 轴标题带贴内框下边、横跨绘图区");
         assertEquals(FRAME.y + FRAME.height - xTitleH + 10f * ChartLayout.BASELINE_FACTOR,
                 x.baseline(), 1e-4f, "基线 = 带子顶部 + 字号 × BASELINE_FACTOR");

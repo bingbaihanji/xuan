@@ -1,37 +1,24 @@
 package com.bingbaihanji.xuan.example
 
-import com.bingbaihanji.xuan.chart.ArrayChartData
-import com.bingbaihanji.xuan.chart.Axis
-import com.bingbaihanji.xuan.chart.AxisRange
-import com.bingbaihanji.xuan.chart.AxisType
-import com.bingbaihanji.xuan.chart.Chart
-import com.bingbaihanji.xuan.chart.ChartType
-import com.bingbaihanji.xuan.chart.Series
+import com.bingbaihanji.xuan.chart.*
 import com.bingbaihanji.xuan.glview.FXGLTransfer
 import com.bingbaihanji.xuan.renderer.Gc
 import com.bingbaihanji.xuan.util.Rect
 import com.bingbaihanji.xuan.view.MainView
 import javafx.application.Application
 import javafx.application.Platform
-import javafx.scene.Scene as FxScene
 import javafx.stage.Stage
-import org.lwjgl.opengl.GL11.GL_RENDERER
-import org.lwjgl.opengl.GL11.GL_RGBA
-import org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE
-import org.lwjgl.opengl.GL11.GL_VERSION
-import org.lwjgl.opengl.GL11.glFinish
-import org.lwjgl.opengl.GL11.glGetError
-import org.lwjgl.opengl.GL11.glGetString
-import org.lwjgl.opengl.GL11.glReadPixels
+import org.lwjgl.opengl.GL11.*
 import org.lwjgl.opengl.GL15
 import org.lwjgl.opengl.GL33
 import java.nio.ByteBuffer
-import java.util.Random
+import java.util.*
 import kotlin.math.PI
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.system.exitProcess
+import javafx.scene.Scene as FxScene
 
 /**
  * 图表折线渲染器的**性能探针**（不是校验器）：它不做任何断言，只打印数字然后以 0 退出。
@@ -687,10 +674,12 @@ class ChartPerfProbeApp : Application() {
         Runtime.getRuntime().addShutdownHook(Thread {
             println()
             println("=== JVM 开始退出（退出钩子）===")
-            println("当时配置下标 $index / ${configs.size}"
-                    + "：${configs.getOrNull(index)?.label ?: "（全部跑完）"}"
-                    + "，本档已画 $frameInConfig 帧"
-                    + "，已完成 ${results.size} 档")
+            println(
+                "当时配置下标 $index / ${configs.size}"
+                        + "：${configs.getOrNull(index)?.label ?: "（全部跑完）"}"
+                        + "，本档已画 $frameInConfig 帧"
+                        + "，已完成 ${results.size} 档"
+            )
             for ((thread, stack) in Thread.getAllStackTraces()) {
                 if (!thread.isAlive) continue
                 println("  线程 [${thread.name}] daemon=${thread.isDaemon} state=${thread.state}")
@@ -729,7 +718,8 @@ class ChartPerfProbeApp : Application() {
         if (System.currentTimeMillis() - startWall > DEADLINE_MS) {
             println("\n=== 墙钟超时（${DEADLINE_MS / 1000}s），探针没有排完全部配置 ===")
             printSummary()
-            println("=== 以下配置没跑：${
+            println(
+                "=== 以下配置没跑：${
                 configs.drop(index).joinToString("；") { it.label }
             } ===")
             Platform.exit()
@@ -1036,8 +1026,10 @@ class ChartPerfProbeApp : Application() {
         val rw = PLOT_W.toInt()
         val rh = PLOT_H.toInt()
         val buf = ByteBuffer.allocateDirect(rw * rh * 4)
-        glReadPixels(PLOT_X.toInt(), h - PLOT_Y.toInt() - rh, rw, rh,
-            GL_RGBA, GL_UNSIGNED_BYTE, buf)
+        glReadPixels(
+            PLOT_X.toInt(), h - PLOT_Y.toInt() - rh, rw, rh,
+            GL_RGBA, GL_UNSIGNED_BYTE, buf
+        )
         buf.position(0)
         val px = IntArray(rw * rh)
         for (row in 0 until rh) {
@@ -1060,20 +1052,30 @@ class ChartPerfProbeApp : Application() {
         val bridge = transfer ?: return
         ensureGpuTimer()
         println("=== Xuan 折线渲染器性能探针 ===")
-        println("模式 = $mode   配置数 = ${configs.size}   轮数 = $rounds"
-                + (if (warmCounts.isNotEmpty()) "   预热档 = ${warmCounts.joinToString()}" else ""))
-        println("帧缓冲 ${bridge.scaledWidth}x${bridge.scaledHeight}"
-                + "（Gc ${gc.width}x${gc.height}）"
-                + "  绘图区 ${PLOT_W.toInt()}x${PLOT_H.toInt()}")
+        println(
+            "模式 = $mode   配置数 = ${configs.size}   轮数 = $rounds"
+                    + (if (warmCounts.isNotEmpty()) "   预热档 = ${warmCounts.joinToString()}" else "")
+        )
+        println(
+            "帧缓冲 ${bridge.scaledWidth}x${bridge.scaledHeight}"
+                    + "（Gc ${gc.width}x${gc.height}）"
+                    + "  绘图区 ${PLOT_W.toInt()}x${PLOT_H.toInt()}"
+        )
         println("GL_RENDERER = ${glGetString(GL_RENDERER)}")
         println("GL_VERSION  = ${glGetString(GL_VERSION)}")
-        println("GPU 计时（GL_TIME_ELAPSED） = "
-                + if (gpuTimerEnabled) "可用（只包住 charts.draw）"
-                else "不可用（这一档没有 GPU 数字）")
-        println("配置：N ∈ ${POINT_COUNTS.joinToString()}，线宽 ∈ ${LINE_WIDTHS.joinToString()}"
-                + "，预热 $WARMUP_FRAMES 帧、口径A $MEASURE_FRAMES 帧、口径B $BATCH_FRAMES 帧")
-        println("数据：ArrayChartData（静态），x 等距 0..N，y = 正弦(周期 $SIGNAL_PERIOD 样本)"
-                + " + 每 $SPIKES_PER 个样本一个随机窄脉冲；x 轴窗口 = 整个数据范围")
+        println(
+            "GPU 计时（GL_TIME_ELAPSED） = "
+                    + if (gpuTimerEnabled) "可用（只包住 charts.draw）"
+            else "不可用（这一档没有 GPU 数字）"
+        )
+        println(
+            "配置：N ∈ ${POINT_COUNTS.joinToString()}，线宽 ∈ ${LINE_WIDTHS.joinToString()}"
+                    + "，预热 $WARMUP_FRAMES 帧、口径A $MEASURE_FRAMES 帧、口径B $BATCH_FRAMES 帧"
+        )
+        println(
+            "数据：ArrayChartData（静态），x 等距 0..N，y = 正弦(周期 $SIGNAL_PERIOD 样本)"
+                    + " + 每 $SPIKES_PER 个样本一个随机窄脉冲；x 轴窗口 = 整个数据范围"
+        )
         println()
         println("口径 A（与上一轮数字可比）：起点在 onFrame 的**末尾**（`t0 = nanoTime()` 排在")
         println("    drawFrame 与 takeUploadedBytes 之后）→ 终点在 onRender 里 glFinish() 之后。")
@@ -1198,13 +1200,17 @@ class ChartPerfProbeApp : Application() {
         println()
         println("=== 拆分（同一 N、同一份数据、同样实例数）===")
         if (baseline == null) {
-            println("本模式没有空帧基线（只有 full 模式排了它），这一节跳过；"
-                    + "每行的口径A / 批量 / 帧周期 / GPU 数字仍然可比。")
+            println(
+                "本模式没有空帧基线（只有 full 模式排了它），这一节跳过；"
+                        + "每行的口径A / 批量 / 帧周期 / GPU 数字仍然可比。"
+            )
         } else {
-            println("空帧基线：口径A ${"%.2f".format(baseline.meanMs)} ms"
-                    + "（口径B ${num(baseline.batchMs)}，帧周期 ${num(baseline.periodMs)}，"
-                    + "GPU ${num(baseline.gpuMs)}）"
-                    + "——只有绘图区底色那 2 个三角形，没有任何图表绘制")
+            println(
+                "空帧基线：口径A ${"%.2f".format(baseline.meanMs)} ms"
+                        + "（口径B ${num(baseline.batchMs)}，帧周期 ${num(baseline.periodMs)}，"
+                        + "GPU ${num(baseline.gpuMs)}）"
+                        + "——只有绘图区底色那 2 个三角形，没有任何图表绘制"
+            )
             for (n in POINT_COUNTS) {
                 // 保持 LINE_WIDTHS 的顺序：先细后粗。只取"全窗口 + 第一轮"那一份，
                 // 否则可见窗口 A/B 那几档（同一个 N、同一个线宽）会被 firstOrNull 挑中。
@@ -1222,12 +1228,14 @@ class ChartPerfProbeApp : Application() {
                 val thick = byWidth[1]
                 val fill = thick.meanMs - thin.meanMs
                 val vertexCost = thin.meanMs - baseline.meanMs
-                println("N=$n：口径A 1px ${"%.2f".format(thin.meanMs)}"
-                        + " ｜ 8px ${"%.2f".format(thick.meanMs)}"
-                        + " ｜ 差（≈光栅化填充）${"%+.2f".format(fill)}"
-                        + " ｜ 1px−基线（≈顶点/实例/提交）${"%.2f".format(vertexCost)}"
-                        + " ｜ 批量 ${num(thin.batchMs)} ｜ 帧周期 ${num(thin.periodMs)}"
-                        + " ｜ ★GPU 1px ${num(thin.gpuMs)} / 8px ${num(thick.gpuMs)}")
+                println(
+                    "N=$n：口径A 1px ${"%.2f".format(thin.meanMs)}"
+                            + " ｜ 8px ${"%.2f".format(thick.meanMs)}"
+                            + " ｜ 差（≈光栅化填充）${"%+.2f".format(fill)}"
+                            + " ｜ 1px−基线（≈顶点/实例/提交）${"%.2f".format(vertexCost)}"
+                            + " ｜ 批量 ${num(thin.batchMs)} ｜ 帧周期 ${num(thin.periodMs)}"
+                            + " ｜ ★GPU 1px ${num(thin.gpuMs)} / 8px ${num(thick.gpuMs)}"
+                )
             }
         }
 
@@ -1243,13 +1251,17 @@ class ChartPerfProbeApp : Application() {
                         && it.config.lineWidth == 1f && it.config.round == 0
             }
             full?.let {
-                println("  可见 3000000 个样本（全窗口）：口径A ${"%.2f".format(it.meanMs)} ms"
-                        + " ｜ GPU ${num(it.gpuMs)} ms ｜ 帧周期 ${num(it.periodMs)}")
+                println(
+                    "  可见 3000000 个样本（全窗口）：口径A ${"%.2f".format(it.meanMs)} ms"
+                            + " ｜ GPU ${num(it.gpuMs)} ms ｜ 帧周期 ${num(it.periodMs)}"
+                )
             }
             for (r in ab.sortedByDescending { it.config.visible }) {
-                println("  可见 ${r.config.visible} 个样本：口径A ${"%.2f".format(r.meanMs)} ms"
-                        + " ｜ GPU ${num(r.gpuMs)} ms ｜ 批量 ${num(r.batchMs)}"
-                        + " ｜ 帧周期 ${num(r.periodMs)}")
+                println(
+                    "  可见 ${r.config.visible} 个样本：口径A ${"%.2f".format(r.meanMs)} ms"
+                            + " ｜ GPU ${num(r.gpuMs)} ms ｜ 批量 ${num(r.batchMs)}"
+                            + " ｜ 帧周期 ${num(r.periodMs)}"
+                )
             }
             println("  判据：口径A 与 GPU 若跟着实例数成比例地变 ⇒ 成本**真的在实例上**；")
             println("        若三个数几乎相同 ⇒ 成本与实例数无关，那个固定值才是平顶的成因。")
@@ -1267,11 +1279,13 @@ class ChartPerfProbeApp : Application() {
                     it.config.n == n && it.config.lineWidth == w && it.config.round == 1
                 }
                 if (r0 != null && r1 != null) {
-                    println("  N=$n ${Config.trim(w)}px：第1轮 ${"%.2f".format(r0.meanMs)} ms"
-                            + "（距启动 ${"%.0f".format(r0.elapsedSec)}s）"
-                            + " → 第2轮（倒序、后跑）${"%.2f".format(r1.meanMs)} ms"
-                            + "（距启动 ${"%.0f".format(r1.elapsedSec)}s）"
-                            + "  差 ${"%+.2f".format(r1.meanMs - r0.meanMs)} ms")
+                    println(
+                        "  N=$n ${Config.trim(w)}px：第1轮 ${"%.2f".format(r0.meanMs)} ms"
+                                + "（距启动 ${"%.0f".format(r0.elapsedSec)}s）"
+                                + " → 第2轮（倒序、后跑）${"%.2f".format(r1.meanMs)} ms"
+                                + "（距启动 ${"%.0f".format(r1.elapsedSec)}s）"
+                                + "  差 ${"%+.2f".format(r1.meanMs - r0.meanMs)} ms"
+                    )
                 }
             }
         }
@@ -1310,17 +1324,23 @@ class ChartPerfProbeApp : Application() {
         val expectedInk = (PLOT_W * rowsPerColumn).toInt()
         println()
         println("=== 斜坡观测 N=${cfg.n}  lineWidth=${Config.trim(width)}px ===")
-        println("数据：y 从 $RAMP_LO 线性升到 $RAMP_HI（没有别的形状）；"
-                + "x 轴窗口 = 整个数据范围 0..${cfg.n - 1}")
+        println(
+            "数据：y 从 $RAMP_LO 线性升到 $RAMP_HI（没有别的形状）；"
+                    + "x 轴窗口 = 整个数据范围 0..${cfg.n - 1}"
+        )
         println("绘图区 ${PLOT_W.toInt()}x${PLOT_H.toInt()}（回读的就是这一块，局部坐标）")
         val ink = shot.count(SIGNAL_RGB)
-        println("这一块里折线色像素共 $ink px"
-                + "（一条铺满 ${PLOT_W.toInt()} px 宽、线宽 ${Config.trim(width)}px 的斜线约 $expectedInk px）")
+        println(
+            "这一块里折线色像素共 $ink px"
+                    + "（一条铺满 ${PLOT_W.toInt()} px 宽、线宽 ${Config.trim(width)}px 的斜线约 $expectedInk px）"
+        )
         if (ink == 0) {
             println("★ 一个像素都没有：这一档压根没画出东西（或画的不是这个颜色）")
         } else if (ink < expectedInk / 4) {
-            println("★ 墨迹只有预期的一个零头：这条线是**断的/稀疏的**"
-                    + "（每个实例的四边形都退化成亚像素大小，光栅化可能几乎不出片元）")
+            println(
+                "★ 墨迹只有预期的一个零头：这条线是**断的/稀疏的**"
+                        + "（每个实例的四边形都退化成亚像素大小，光栅化可能几乎不出片元）"
+            )
         }
         println()
         println("  x比例 ｜  列 ｜ 期望值 ｜ 实测值 ｜  偏差   ｜ 该列±3px：墨迹行范围 / 墨迹px数")
@@ -1331,23 +1351,29 @@ class ChartPerfProbeApp : Application() {
             val expected = RAMP_LO + (RAMP_HI - RAMP_LO) * f
             val mark = if (f == 0.1 || f == 0.3 || f == 0.5 || f == 0.7 || f == 0.9) "★" else " "
             if (band == null) {
-                println("$mark ${"%5.1f%%".format(f * 100)} ｜ ${"%4d".format(col)} ｜ "
-                        + "${"%6.3f".format(expected)} ｜   无墨迹 ｜     —     ｜ — / 0")
+                println(
+                    "$mark ${"%5.1f%%".format(f * 100)} ｜ ${"%4d".format(col)} ｜ "
+                            + "${"%6.3f".format(expected)} ｜   无墨迹 ｜     —     ｜ — / 0"
+                )
             } else {
                 // 局部行 → 数据值：行 0 = 绘图区上边缘 = y 窗口上界（值 1.0）。
                 val measured = 1.0 - band.first / PLOT_H.toDouble()
-                println("$mark ${"%5.1f%%".format(f * 100)} ｜ ${"%4d".format(col)} ｜ "
-                        + "${"%6.3f".format(expected)} ｜ ${"%6.3f".format(measured)} ｜ "
-                        + "${"%+.3f".format(measured - expected)} ｜ 行 ${band.first}..${band.last} / $bandPx")
+                println(
+                    "$mark ${"%5.1f%%".format(f * 100)} ｜ ${"%4d".format(col)} ｜ "
+                            + "${"%6.3f".format(expected)} ｜ ${"%6.3f".format(measured)} ｜ "
+                            + "${"%+.3f".format(measured - expected)} ｜ 行 ${band.first}..${band.last} / $bandPx"
+                )
             }
         }
         // 偏置的解析式：实测取的是「±3 列里最上面那个有色像素」，也就是
         //   （最右那一列的中心线高度）+（半个线宽）——两者都要换算成"值"。
         val bias = (width * 0.5 + 3 * (RAMP_HI - RAMP_LO) * PLOT_H / PLOT_W) / PLOT_H
         println("说明：实测值取「该列±3px 里最上面那个有色像素」，因此系统性地偏高约")
-        println("      (半个线宽 + 3 列的斜率) / 绘图区高度 = ${"%.4f".format(bias)}"
-                + "（线宽 ${Config.trim(width)}px 的解析值）——"
-                + "整条线上「偏差」那一列应当是**同一个常数**。")
+        println(
+            "      (半个线宽 + 3 列的斜率) / 绘图区高度 = ${"%.4f".format(bias)}"
+                    + "（线宽 ${Config.trim(width)}px 的解析值）——"
+                    + "整条线上「偏差」那一列应当是**同一个常数**。"
+        )
         println("      ★ 的五行是任务点名要的 10%/30%/50%/70%/90%。")
     }
 

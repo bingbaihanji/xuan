@@ -1,7 +1,8 @@
 package com.bingbaihanji.xuan.geom;
 
 import org.junit.jupiter.api.Test;
-import static org.junit.jupiter.api.Assertions.*;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class TessellatorHoleTest {
 
@@ -15,21 +16,6 @@ class TessellatorHoleTest {
         }
         return sum;
     }
-
-    @Test
-    void 带方形洞的方形面积为差集() {
-        Tessellator t = new Tessellator();
-        float[] outer = {0f, 0f, 20f, 0f, 20f, 20f, 0f, 20f};
-        float[] inner = {5f, 5f, 5f, 15f, 15f, 15f, 15f, 5f};
-
-        t.tessellateWithHoles(outer, 4, new float[][]{inner}, new int[]{4});
-
-        assertEquals(400f - 100f, area(t.triangles()), 1e-2f);
-    }
-
-    // ------------------------------------------------------------------
-    // tessellateContours：按包含关系分类（Gc.fillPath 走的入口）
-    // ------------------------------------------------------------------
 
     /** 把若干轮廓首尾拼成一块扁平数组：[轮廓 0 的顶点，轮廓 1 的顶点，...]。 */
     private static float[] concat(float[]... contours) {
@@ -46,6 +32,10 @@ class TessellatorHoleTest {
         return all;
     }
 
+    // ------------------------------------------------------------------
+    // tessellateContours：按包含关系分类（Gc.fillPath 走的入口）
+    // ------------------------------------------------------------------
+
     /** 每条轮廓的起点顶点下标（顶点而不是 float）：每个都是 4 个顶点。 */
     private static int[] offsetsOf(int... contourCounts) {
         int[] offsets = new int[contourCounts.length];
@@ -55,6 +45,17 @@ class TessellatorHoleTest {
             at += contourCounts[i];
         }
         return offsets;
+    }
+
+    @Test
+    void 带方形洞的方形面积为差集() {
+        Tessellator t = new Tessellator();
+        float[] outer = {0f, 0f, 20f, 0f, 20f, 20f, 0f, 20f};
+        float[] inner = {5f, 5f, 5f, 15f, 15f, 15f, 15f, 5f};
+
+        t.tessellateWithHoles(outer, 4, new float[][]{inner}, new int[]{4});
+
+        assertEquals(400f - 100f, area(t.triangles()), 1e-2f);
     }
 
     @Test

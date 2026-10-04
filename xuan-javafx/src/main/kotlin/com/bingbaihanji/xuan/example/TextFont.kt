@@ -49,6 +49,6 @@ fun textFont(): FontFile? = textFontFile()?.let { FontFile.load(it.toPath()) }
  */
 const val FONT_PROPERTY_HINT: String =
     "本校验器需要字体：请用 -D$FONT_PROPERTY=<某个 .ttf 的路径> 指定。" +
-        "（本库不再自带字体——原先那份 simhei.ttf 是专有字体，与 MIT 声明冲突。）" +
-        "建议用 OFL 授权的静态版 Noto Sans SC；避开可变字体与 OTF/CFF，理由见 fonts/README.md。"
+            "（本库不再自带字体——原先那份 simhei.ttf 是专有字体，与 MIT 声明冲突。）" +
+            "建议用 OFL 授权的静态版 Noto Sans SC；避开可变字体与 OTF/CFF，理由见 fonts/README.md。"
 

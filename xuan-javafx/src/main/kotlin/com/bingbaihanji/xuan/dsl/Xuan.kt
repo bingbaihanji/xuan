@@ -1,9 +1,9 @@
 package com.bingbaihanji.xuan.dsl
 
 import com.bingbaihanji.xuan.glview.FXGLTransfer
-import com.bingbaihanji.xuan.text.FontFile
 import com.bingbaihanji.xuan.renderer.Gc
 import com.bingbaihanji.xuan.renderer.PickHit
+import com.bingbaihanji.xuan.text.FontFile
 import com.bingbaihanji.xuan.view.MainView
 import javafx.application.Application
 import javafx.scene.Scene
@@ -53,6 +53,7 @@ class Xuan {
 
     /** 窗口高度（逻辑像素）。 */
     var height: Double = 600.0
+
     /**
      * 字体文件；**默认 null = 不加载字体**（2026-09-28 起本库不再自带）。
      *

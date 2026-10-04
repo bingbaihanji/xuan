@@ -14,11 +14,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
 
-import static org.lwjgl.opengl.GL11.GL_FLOAT;
-import static org.lwjgl.opengl.GL11.GL_ONE;
-import static org.lwjgl.opengl.GL11.GL_ONE_MINUS_SRC_ALPHA;
-import static org.lwjgl.opengl.GL11.GL_TRIANGLE_STRIP;
-import static org.lwjgl.opengl.GL11.glScissor;
+import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL20.glEnableVertexAttribArray;
 import static org.lwjgl.opengl.GL20.glVertexAttribPointer;
 
@@ -101,6 +97,70 @@ final class StepSeriesRenderer implements SeriesRenderer {
 
         gl.bindVbo(0);
         gl.bindVao(0);
+    }
+
+    /**
+     * 两个 pass 共用的那一套 uniform。
+     *
+     * <p><b>写成方法而不是在两个地方各写一遍</b>：绘制与拾取必须用同一套几何
+     * （只差容差与 ID 两个量），两处各写一遍迟早会分叉，而分叉的表现是
+     * "点到的地方不是看到的地方"——那是本类最怕的静默缺陷。
+     *
+     * @param tolerance 绘制时传 0（取真实线宽），ID pass 传 {@link #PICK_TOLERANCE_PX}
+     * @param pickId    绘制时传 0，ID pass 传真实号
+     */
+    private static void setCommonUniforms(ShaderProgram shader, GLRenderContext c,
+                                          ChartRenderLayout layout, Rect plot, Series series,
+                                          double windowStart, double windowEnd,
+                                          float tolerance, int pickId) {
+        shader.setUniform("uPlotRect", plot.x, plot.y, plot.width, plot.height);
+        shader.setUniform("uViewport", (float) c.viewportWidth(), (float) c.viewportHeight());
+        shader.setUniform("uValueRange", layout.yMin(), layout.yMax());
+        shader.setUniform("uPxPerSample",
+                (float) (plot.width / (windowEnd - windowStart)));
+        shader.setUniform("uHalfWidth", series.lineWidth() * 0.5f);
+        shader.setUniform("uPickTolerance", tolerance);
+        // Series.color() 返回 ARGB 整数，按 0xAARRGGBB 拆分量。
+        int argb = series.color();
+        shader.setUniform("uColor",
+                ((argb >> 16) & 0xFF) / 255f,
+                ((argb >> 8) & 0xFF) / 255f,
+                (argb & 0xFF) / 255f,
+                ((argb >>> 24) & 0xFF) / 255f);
+        // 必须是 int 的那个 setUniform（glUniform1i）：对 uint uniform 用它报
+        // GL_INVALID_OPERATION 且值保持 0，而 0 正是"什么都没命中"。
+        shader.setUniform("uPickId", pickId);
+    }
+
+    /**
+     * 本渲染器只画它真正画得出来的图型，其余明确报错。
+     *
+     * <p><strong>只接受 {@link ChartType#STEP}。</strong>不能写成"只要
+     * {@code connectsSamples()} 就放行"：{@link ChartType#LINE} 与
+     * {@link ChartType#LINE_AND_MARKERS} 同样落在那个判据里，而本渲染器会把它们
+     * <b>每一段都画成"先横后竖"</b>——一条平滑的曲线变成锯齿台阶。
+     * 锯齿看起来像"采样率不够"，不像缺陷。
+     */
+    private static void requireSupported(ChartType type) {
+        if (type == ChartType.STEP) {
+            return;
+        }
+        throw new IllegalArgumentException(
+                "StepSeriesRenderer 不支持图型 " + type + "。明确报错而不是静默画错："
+                        + "把折线按阶梯画，平滑的曲线会变成一级级台阶，而那看起来像采样率不够；"
+                        + "把柱状图按阶梯画，柱子的高度含义整个消失。");
+    }
+
+    /**
+     * 把裁剪盒设到绘图区。
+     *
+     * <p>{@code glScissor} 的原点在帧缓冲左下角、y 向上，而本管线是"原点左上、y 向下"，
+     * 所以 GL 侧的下边 = {@code viewportHeight - plot.y - plot.height}。漏掉这一步的后果是
+     * 裁剪区上下镜像——数据在绘图区下半部分被裁掉、上半部分却画到了外面。
+     */
+    private static void setScissorTo(Rect plot, int viewportHeight) {
+        int y = viewportHeight - (int) plot.y - (int) plot.height;
+        glScissor((int) plot.x, y, (int) plot.width, (int) plot.height);
     }
 
     /**
@@ -205,70 +265,6 @@ final class StepSeriesRenderer implements SeriesRenderer {
         gl.bindVao(0);
         gl.disableBlend();
         gl.setScissorEnabled(scissorWasOn);
-    }
-
-    /**
-     * 两个 pass 共用的那一套 uniform。
-     *
-     * <p><b>写成方法而不是在两个地方各写一遍</b>：绘制与拾取必须用同一套几何
-     * （只差容差与 ID 两个量），两处各写一遍迟早会分叉，而分叉的表现是
-     * "点到的地方不是看到的地方"——那是本类最怕的静默缺陷。
-     *
-     * @param tolerance 绘制时传 0（取真实线宽），ID pass 传 {@link #PICK_TOLERANCE_PX}
-     * @param pickId    绘制时传 0，ID pass 传真实号
-     */
-    private static void setCommonUniforms(ShaderProgram shader, GLRenderContext c,
-                                          ChartRenderLayout layout, Rect plot, Series series,
-                                          double windowStart, double windowEnd,
-                                          float tolerance, int pickId) {
-        shader.setUniform("uPlotRect", plot.x, plot.y, plot.width, plot.height);
-        shader.setUniform("uViewport", (float) c.viewportWidth(), (float) c.viewportHeight());
-        shader.setUniform("uValueRange", layout.yMin(), layout.yMax());
-        shader.setUniform("uPxPerSample",
-                (float) (plot.width / (windowEnd - windowStart)));
-        shader.setUniform("uHalfWidth", series.lineWidth() * 0.5f);
-        shader.setUniform("uPickTolerance", tolerance);
-        // Series.color() 返回 ARGB 整数，按 0xAARRGGBB 拆分量。
-        int argb = series.color();
-        shader.setUniform("uColor",
-                ((argb >> 16) & 0xFF) / 255f,
-                ((argb >> 8) & 0xFF) / 255f,
-                (argb & 0xFF) / 255f,
-                ((argb >>> 24) & 0xFF) / 255f);
-        // 必须是 int 的那个 setUniform（glUniform1i）：对 uint uniform 用它报
-        // GL_INVALID_OPERATION 且值保持 0，而 0 正是"什么都没命中"。
-        shader.setUniform("uPickId", pickId);
-    }
-
-    /**
-     * 本渲染器只画它真正画得出来的图型，其余明确报错。
-     *
-     * <p><strong>只接受 {@link ChartType#STEP}。</strong>不能写成"只要
-     * {@code connectsSamples()} 就放行"：{@link ChartType#LINE} 与
-     * {@link ChartType#LINE_AND_MARKERS} 同样落在那个判据里，而本渲染器会把它们
-     * <b>每一段都画成"先横后竖"</b>——一条平滑的曲线变成锯齿台阶。
-     * 锯齿看起来像"采样率不够"，不像缺陷。
-     */
-    private static void requireSupported(ChartType type) {
-        if (type == ChartType.STEP) {
-            return;
-        }
-        throw new IllegalArgumentException(
-                "StepSeriesRenderer 不支持图型 " + type + "。明确报错而不是静默画错："
-                        + "把折线按阶梯画，平滑的曲线会变成一级级台阶，而那看起来像采样率不够；"
-                        + "把柱状图按阶梯画，柱子的高度含义整个消失。");
-    }
-
-    /**
-     * 把裁剪盒设到绘图区。
-     *
-     * <p>{@code glScissor} 的原点在帧缓冲左下角、y 向上，而本管线是"原点左上、y 向下"，
-     * 所以 GL 侧的下边 = {@code viewportHeight - plot.y - plot.height}。漏掉这一步的后果是
-     * 裁剪区上下镜像——数据在绘图区下半部分被裁掉、上半部分却画到了外面。
-     */
-    private static void setScissorTo(Rect plot, int viewportHeight) {
-        int y = viewportHeight - (int) plot.y - (int) plot.height;
-        glScissor((int) plot.x, y, (int) plot.width, (int) plot.height);
     }
 
     /** 释放本类持有的 GL 资源（VAO 与角点 VBO）。 */

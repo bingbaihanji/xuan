@@ -12,11 +12,7 @@ import com.bingbaihanji.xuan.util.Rect;
 
 import java.util.List;
 
-import static org.lwjgl.opengl.GL11.GL_FLOAT;
-import static org.lwjgl.opengl.GL11.GL_ONE;
-import static org.lwjgl.opengl.GL11.GL_ONE_MINUS_SRC_ALPHA;
-import static org.lwjgl.opengl.GL11.GL_TRIANGLE_STRIP;
-import static org.lwjgl.opengl.GL11.glScissor;
+import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL20.glEnableVertexAttribArray;
 import static org.lwjgl.opengl.GL20.glVertexAttribPointer;
 
@@ -145,6 +141,70 @@ final class LineSeriesRenderer implements SeriesRenderer {
 
         gl.bindVbo(0);
         gl.bindVao(0);
+    }
+
+    /**
+     * 给一段实例设置"哪几段可以画成曲线"（{@code uSmoothFrom} / {@code uSmoothTo}）。
+     *
+     * <p>区间是<b>本段内的实例下标</b>，不是数据下标——理由见
+     * {@link SmoothCurve#smoothFromInSegment}（绝对下标进着色器只能走 float，
+     * 而 1e6 上的 float 精度足以让边界附近的一条实例读到一个陈旧的控制点）。
+     *
+     * <p>不开平滑时两个都传 0（"一段都不许平滑"）——那是个真话，
+     * 也免得让人以为这两个值在那种情况下还参与判定。
+     */
+    private static void setSmoothRange(ShaderProgram shader, SeriesBuffer buffer,
+                                       WindowRange.Segment seg, boolean smooth) {
+        if (!smooth) {
+            shader.setUniform("uSmoothFrom", 0f);
+            shader.setUniform("uSmoothTo", 0f);
+            return;
+        }
+        shader.setUniform("uSmoothFrom", SmoothCurve.smoothFromInSegment(
+                seg.firstDataIndex(), seg.instanceCount(), buffer.smoothableFirst()));
+        shader.setUniform("uSmoothTo", SmoothCurve.smoothToInSegment(
+                seg.firstDataIndex(), seg.instanceCount(), buffer.smoothableEnd()));
+    }
+
+    /**
+     * 本渲染器只画它真正画得出来的图型，其余明确报错。
+     *
+     * <p><strong>只接受 {@link ChartType#LINE} 与 {@link ChartType#LINE_AND_MARKERS}。</strong>
+     * 不能写成"只要 {@code connectsSamples()} 或 {@code drawsMarkers()} 就放行"：
+     * {@link ChartType#STEP}（先横后竖）与 {@link ChartType#AREA}（线下填充）同样
+     * 落在那两个判据里，而本渲染器会把它们画成<b>普通折线</b>——
+     * 阶梯图形被拉成斜线、面积图整个填充消失，画面却完全正常。
+     * 这与"按线性去画对数轴"是同一种错误：<b>形状是错的，而不报错</b>。
+     * 本期这两者都还没有渲染器（见计划 Task 15 的"未实现"清单）。
+     *
+     * <p>{@link ChartType#LINE_AND_MARKERS} <b>整个都归本渲染器</b>（折线 + 标记点，
+     * 后半由 {@link ScatterSeriesRenderer#renderMarkers} 画，见类文档）——
+     * 这条不再是缺口，所以那个图型列在白名单里是对的。
+     * 光看 {@code drawsMarkers()} 为真就把它路由到散点渲染器仍是错的：
+     * 那样折线整条消失、只剩一串点，而"只有点"看起来像一种刻意的风格。
+     */
+    private static void requireSupported(ChartType type) {
+        if (type == ChartType.LINE || type == ChartType.LINE_AND_MARKERS) {
+            return;
+        }
+        throw new IllegalArgumentException(
+                "LineSeriesRenderer 不支持图型 " + type + "。明确报错而不是静默不画/画错："
+                        + "画面里少一条曲线，与\"这条曲线没数据\"在视觉上完全一样；"
+                        + "而把一个阶梯图或面积图画成普通折线更糟——形状是错的，画面却正常。");
+    }
+
+    /**
+     * 把裁剪盒设到绘图区。
+     *
+     * <p>{@code glScissor} 的原点在帧缓冲<b>左下角</b>、y 向上，而本管线的用户空间是
+     * "像素、原点左上、y 向下"，{@code plot} 记的是矩形<strong>上边缘</strong>。
+     * 因此 GL 侧的下边 = {@code viewportHeight - plot.y - plot.height}。
+     * 漏掉这一步的后果是裁剪区上下镜像——数据在绘图区下半部分被裁掉、上半部分却画到
+     * 了绘图区外面，而顶点本身是对的。
+     */
+    private static void setScissorTo(Rect plot, int viewportHeight) {
+        int y = viewportHeight - (int) plot.y - (int) plot.height;
+        glScissor((int) plot.x, y, (int) plot.width, (int) plot.height);
     }
 
     /**
@@ -332,70 +392,6 @@ final class LineSeriesRenderer implements SeriesRenderer {
         gl.bindVao(0);
         gl.disableBlend();
         gl.setScissorEnabled(scissorWasOn);
-    }
-
-    /**
-     * 给一段实例设置"哪几段可以画成曲线"（{@code uSmoothFrom} / {@code uSmoothTo}）。
-     *
-     * <p>区间是<b>本段内的实例下标</b>，不是数据下标——理由见
-     * {@link SmoothCurve#smoothFromInSegment}（绝对下标进着色器只能走 float，
-     * 而 1e6 上的 float 精度足以让边界附近的一条实例读到一个陈旧的控制点）。
-     *
-     * <p>不开平滑时两个都传 0（"一段都不许平滑"）——那是个真话，
-     * 也免得让人以为这两个值在那种情况下还参与判定。
-     */
-    private static void setSmoothRange(ShaderProgram shader, SeriesBuffer buffer,
-                                       WindowRange.Segment seg, boolean smooth) {
-        if (!smooth) {
-            shader.setUniform("uSmoothFrom", 0f);
-            shader.setUniform("uSmoothTo", 0f);
-            return;
-        }
-        shader.setUniform("uSmoothFrom", SmoothCurve.smoothFromInSegment(
-                seg.firstDataIndex(), seg.instanceCount(), buffer.smoothableFirst()));
-        shader.setUniform("uSmoothTo", SmoothCurve.smoothToInSegment(
-                seg.firstDataIndex(), seg.instanceCount(), buffer.smoothableEnd()));
-    }
-
-    /**
-     * 本渲染器只画它真正画得出来的图型，其余明确报错。
-     *
-     * <p><strong>只接受 {@link ChartType#LINE} 与 {@link ChartType#LINE_AND_MARKERS}。</strong>
-     * 不能写成"只要 {@code connectsSamples()} 或 {@code drawsMarkers()} 就放行"：
-     * {@link ChartType#STEP}（先横后竖）与 {@link ChartType#AREA}（线下填充）同样
-     * 落在那两个判据里，而本渲染器会把它们画成<b>普通折线</b>——
-     * 阶梯图形被拉成斜线、面积图整个填充消失，画面却完全正常。
-     * 这与"按线性去画对数轴"是同一种错误：<b>形状是错的，而不报错</b>。
-     * 本期这两者都还没有渲染器（见计划 Task 15 的"未实现"清单）。
-     *
-     * <p>{@link ChartType#LINE_AND_MARKERS} <b>整个都归本渲染器</b>（折线 + 标记点，
-     * 后半由 {@link ScatterSeriesRenderer#renderMarkers} 画，见类文档）——
-     * 这条不再是缺口，所以那个图型列在白名单里是对的。
-     * 光看 {@code drawsMarkers()} 为真就把它路由到散点渲染器仍是错的：
-     * 那样折线整条消失、只剩一串点，而"只有点"看起来像一种刻意的风格。
-     */
-    private static void requireSupported(ChartType type) {
-        if (type == ChartType.LINE || type == ChartType.LINE_AND_MARKERS) {
-            return;
-        }
-        throw new IllegalArgumentException(
-                "LineSeriesRenderer 不支持图型 " + type + "。明确报错而不是静默不画/画错："
-                        + "画面里少一条曲线，与\"这条曲线没数据\"在视觉上完全一样；"
-                        + "而把一个阶梯图或面积图画成普通折线更糟——形状是错的，画面却正常。");
-    }
-
-    /**
-     * 把裁剪盒设到绘图区。
-     *
-     * <p>{@code glScissor} 的原点在帧缓冲<b>左下角</b>、y 向上，而本管线的用户空间是
-     * "像素、原点左上、y 向下"，{@code plot} 记的是矩形<strong>上边缘</strong>。
-     * 因此 GL 侧的下边 = {@code viewportHeight - plot.y - plot.height}。
-     * 漏掉这一步的后果是裁剪区上下镜像——数据在绘图区下半部分被裁掉、上半部分却画到
-     * 了绘图区外面，而顶点本身是对的。
-     */
-    private static void setScissorTo(Rect plot, int viewportHeight) {
-        int y = viewportHeight - (int) plot.y - (int) plot.height;
-        glScissor((int) plot.x, y, (int) plot.width, (int) plot.height);
     }
 
     /** 释放本类持有的 GL 资源（VAO 与单位四边形 VBO）。 */

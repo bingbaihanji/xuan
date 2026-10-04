@@ -242,6 +242,7 @@ class XuanDemoApp : Application() {
      */
     @Volatile
     private var mode = Mode.DRAW
+
     @Volatile
     private var kind = ShapeKind.RECT
 
@@ -431,6 +432,7 @@ class XuanDemoApp : Application() {
     /** 拖拽预览：起点（设备像素）。NaN 表示没有正在进行的拖拽。 */
     @Volatile
     private var dragStartX = Float.NaN
+
     @Volatile
     private var dragStartY = Float.NaN
 
@@ -470,6 +472,7 @@ class XuanDemoApp : Application() {
      */
     @Volatile
     private var anchorX = Float.NaN
+
     @Volatile
     private var anchorY = Float.NaN
 
@@ -483,6 +486,7 @@ class XuanDemoApp : Application() {
      */
     @Volatile
     private var previewX = Float.NaN
+
     @Volatile
     private var previewY = Float.NaN
 
@@ -496,10 +500,13 @@ class XuanDemoApp : Application() {
      */
     @Volatile
     private var marqueeX = Float.NaN
+
     @Volatile
     private var marqueeY = 0f
+
     @Volatile
     private var marqueeW = Float.NaN
+
     @Volatile
     private var marqueeH = 0f
 

@@ -12,6 +12,7 @@ public record ChartHover(
         float screenY,
         List<Line> lines
 ) {
+
     public ChartHover {
         if (series == null || index < 0 || lines == null) {
             throw new IllegalArgumentException("hover 参数非法");

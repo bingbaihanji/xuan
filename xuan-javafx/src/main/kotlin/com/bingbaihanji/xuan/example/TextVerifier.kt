@@ -255,23 +255,35 @@ class TextVerifierApp : Application() {
         println("\n-- 推进宽度 --")
         gc.fontSize = guoSize
         val measureGuo = gc.measureText("国")
-        report("空串的推进宽度为 0", emptyAdvance == 0f,
-            "drawText(\"\") 返回 $emptyAdvance")
-        report("空串的 measureText 为 0", gc.measureText("") == 0f,
-            "measureText(\"\")=${gc.measureText("")}")
-        report("全角汉字的推进宽度约等于一个字号", abs(measureGuo - guoSize) <= guoSize * 0.1f,
-            "measureText(\"国\")=$measureGuo，期望≈$guoSize（汉字是全角，1 em = 1 字号）")
-        report("drawText 的返回值与 measureText 一致", abs(guoDrawAdvance - measureGuo) < 0.5f,
+        report(
+            "空串的推进宽度为 0", emptyAdvance == 0f,
+            "drawText(\"\") 返回 $emptyAdvance"
+        )
+        report(
+            "空串的 measureText 为 0", gc.measureText("") == 0f,
+            "measureText(\"\")=${gc.measureText("")}"
+        )
+        report(
+            "全角汉字的推进宽度约等于一个字号", abs(measureGuo - guoSize) <= guoSize * 0.1f,
+            "measureText(\"国\")=$measureGuo，期望≈$guoSize（汉字是全角，1 em = 1 字号）"
+        )
+        report(
+            "drawText 的返回值与 measureText 一致", abs(guoDrawAdvance - measureGuo) < 0.5f,
             "drawText=$guoDrawAdvance，measureText=$measureGuo——两者都应当等于" +
-                "度量×缩放，只差浮点舍入")
-        report("两个字的推进宽度是单个的两倍",
+                    "度量×缩放，只差浮点舍入"
+        )
+        report(
+            "两个字的推进宽度是单个的两倍",
             abs(gc.measureText("国国") - 2f * measureGuo) < 0.01f,
-            "measureText(\"国国\")=${gc.measureText("国国")}，期望 ${2f * measureGuo}")
-        report("墨迹不超出推进宽度",
+            "measureText(\"国国\")=${gc.measureText("国国")}，期望 ${2f * measureGuo}"
+        )
+        report(
+            "墨迹不超出推进宽度",
             inkGuo.count > 0 && inkGuo.minX >= guoX.toInt()
                     && inkGuo.maxX < (guoX + measureGuo).toInt(),
             "墨迹 x∈[${inkGuo.minX},${inkGuo.maxX}]，推进区间 " +
-                "[${guoX.toInt()}, ${(guoX + measureGuo).toInt()})")
+                    "[${guoX.toInt()}, ${(guoX + measureGuo).toInt()})"
+        )
 
         // 代理对：一个增补平面字符是**一个**码点。用 charAt 逐 char 走会得到两倍。
         // 两个串在字体里都不存在，因此都是 1 个 .notdef 字形——只要码点数相同，
@@ -281,9 +293,11 @@ class TextVerifierApp : Application() {
         // 都能安全保存，而这条断言的正确性不该取决于源文件的编码。
         val pairAdvance = gc.measureText("\uD83D\uDE00")   // 代理对，U+1F600
         val singleMissing = gc.measureText("\uFFFF")         // 单个 BMP 缺失码点
-        report("增补平面字符按一个码点计算", abs(pairAdvance - singleMissing) < 0.01f,
+        report(
+            "增补平面字符按一个码点计算", abs(pairAdvance - singleMissing) < 0.01f,
             "代理对(U+1F600)=$pairAdvance，单个缺失码点(U+FFFF)=$singleMissing——" +
-                "用 charAt 逐 char 迭代会得到两倍")
+                    "用 charAt 逐 char 迭代会得到两倍"
+        )
 
         // —— 2. 基线位置 ——
         println("\n-- 基线位置 --")
@@ -294,58 +308,76 @@ class TextVerifierApp : Application() {
         // 所以这条断言量的是"墨迹基本贴着基线、没有整体掉到基线之下"，上界取
         // 字号的 0.2 em：真实值 0.102 em 稳过，而把 (x,y) 当成文本框左上角
         // 会让整块墨迹下移约 0.78 em（「一」那条断言当场失败）。
-        report("「国」的墨迹贴着基线而不是掉在基线之下",
+        report(
+            "「国」的墨迹贴着基线而不是掉在基线之下",
             inkGuo.count > 0 && inkGuo.minY < guoBaseline.toInt()
                     && inkGuo.maxY <= guoBaseline.toInt() + (guoSize * 0.2f).toInt(),
             "墨迹 y∈[${inkGuo.minY},${inkGuo.maxY}]，基线 y=${guoBaseline.toInt()}，" +
-                "允许下探到 ${guoBaseline.toInt() + (guoSize * 0.2f).toInt()}（字号的 0.2 em）；" +
-                "simhei 的「国」字形框本身就低于基线 0.102 em")
-        report("「一」的墨迹整体在基线之上",
+                    "允许下探到 ${guoBaseline.toInt() + (guoSize * 0.2f).toInt()}（字号的 0.2 em）；" +
+                    "simhei 的「国」字形框本身就低于基线 0.102 em"
+        )
+        report(
+            "「一」的墨迹整体在基线之上",
             inkYi.count > 0 && inkYi.maxY <= guoBaseline.toInt() + 2,
-            "墨迹 y∈[${inkYi.minY},${inkYi.maxY}]")
-        report("「一」比「国」矮（相对高度符合度量）",
+            "墨迹 y∈[${inkYi.minY},${inkYi.maxY}]"
+        )
+        report(
+            "「一」比「国」矮（相对高度符合度量）",
             inkYi.count > 0 && inkGuo.count > 0
                     && inkYi.minY > inkGuo.minY && inkYi.maxY < inkGuo.maxY,
-            "「一」y∈[${inkYi.minY},${inkYi.maxY}] vs 「国」y∈[${inkGuo.minY},${inkGuo.maxY}]")
+            "「一」y∈[${inkYi.minY},${inkYi.maxY}] vs 「国」y∈[${inkGuo.minY},${inkGuo.maxY}]"
+        )
 
         // —— 3. ★ 核心验收点：过渡带宽度不随缩放变宽 ——
         println("\n-- ★ SDF：过渡带宽度不随缩放变宽（核心验收点）--")
         val smallBand = bandIn(frame, regionSmall, (inkSmall.minY + inkSmall.maxY) / 2)
         val bigBand = bandIn(frame, regionBig, (inkBig.minY + inkBig.maxY) / 2)
-        report("大字号处存在可测的边缘过渡带", bigBand[0] >= 1,
+        report(
+            "大字号处存在可测的边缘过渡带", bigBand[0] >= 1,
             "192px 的过渡带=${bigBand[0]}px。测出 0 说明边缘是硬跳变——" +
-                "SDF 着色器的 smoothstep 没生效（例如写成了 vec4(vColor.rgb, vColor.a * a)，" +
-                "那会让每个被覆盖的像素都饱和）")
-        report("★ 大字号笔画内部饱和（证明上面的测量没有空转）", bigBand[1] >= 4,
-            "192px 的饱和连续段=${bigBand[1]}px，期望 ≥4")
+                    "SDF 着色器的 smoothstep 没生效（例如写成了 vec4(vColor.rgb, vColor.a * a)，" +
+                    "那会让每个被覆盖的像素都饱和）"
+        )
+        report(
+            "★ 大字号笔画内部饱和（证明上面的测量没有空转）", bigBand[1] >= 4,
+            "192px 的饱和连续段=${bigBand[1]}px，期望 ≥4"
+        )
         if (smallBand[0] < 1) {
-            report("小字号处存在可测的过渡带", false,
+            report(
+                "小字号处存在可测的过渡带", false,
                 "24px 的过渡带测出 0px：笔画只有约 2px 宽，整条都在过渡区内，" +
-                    "或边缘恰好落在像素中心上。这是**测量方法**的局限而不是缺陷——" +
-                    "请把小字号端换成 32px 重测，并如实记录改了什么，" +
-                    "不要直接把这条断言删掉")
+                        "或边缘恰好落在像素中心上。这是**测量方法**的局限而不是缺陷——" +
+                        "请把小字号端换成 32px 重测，并如实记录改了什么，" +
+                        "不要直接把这条断言删掉"
+            )
         } else {
             // 24 → 192 是 8 倍缩放。SDF 的过渡带由屏幕空间的 fwidth 决定，
             // 与缩放无关；位图拉伸时它会随缩放线性变宽。
-            report("★ 192px 的过渡带不随 8 倍缩放变宽",
+            report(
+                "★ 192px 的过渡带不随 8 倍缩放变宽",
                 bigBand[0] <= smallBand[0] * 2 + 1,
                 "24px=${smallBand[0]}px，192px=${bigBand[0]}px，阈值 ${smallBand[0] * 2 + 1}px。" +
-                    "位图被放大时过渡带会宽约 8 倍——这条断言是唯一的区分手段")
+                        "位图被放大时过渡带会宽约 8 倍——这条断言是唯一的区分手段"
+            )
         }
 
         // —— 4. 空串 ——
         println("\n-- 空串 --")
         val inkEmpty = inkIn(frame, regionEmpty)
-        report("空串不画任何东西", inkEmpty.count == 0,
-            "空串位置有 ${inkEmpty.count} 个非背景像素")
+        report(
+            "空串不画任何东西", inkEmpty.count == 0,
+            "空串位置有 ${inkEmpty.count} 个非背景像素"
+        )
 
         // —— 5. 新字形首帧后的位置稳定 ——
         println("\n-- 新字形第二次出现时位置稳定 --")
         val stored = inkAtFrameTwo
-        report("帧 3 与帧 2 的墨迹包围盒逐值一致",
+        report(
+            "帧 3 与帧 2 的墨迹包围盒逐值一致",
             stored != null && stored.minX == inkLine.minX && stored.minY == inkLine.minY
                     && stored.maxX == inkLine.maxX && stored.maxY == inkLine.maxY,
-            "帧2=$stored 帧3=$inkLine")
+            "帧2=$stored 帧3=$inkLine"
+        )
         // 说明：这条断言的区分力有限——命中缓存与重新分配在"uv 指向同一份位图"时
         // 会得到相同的像素。它拦得住的是 uv 漂移、图集被写坏、字形被重新光栅化成
         // 不同的形状这几类。真的"每帧重新分配"要断言的是槽位计数，那需要另外的探针。
@@ -360,8 +392,10 @@ class TextVerifierApp : Application() {
         // 整个 SDF 位图矩形——含四周各 SPREAD 个 em 像素的外扩。
         // 所以文本的可拾取范围比墨迹大一圈：这是刻意的，与"全透明图元仍可拾取"同类。
         val onPadding = gc.pick((inkGuo.minX - 4).toFloat(), (inkGuo.minY + 2).toFloat())?.id() ?: 0
-        report("文本的拾取范围包含 SDF 外扩（比墨迹大一圈）", onPadding == INK_ID,
-            "墨迹左缘 ${inkGuo.minX} 左侧 4px 处实际=$onPadding 期望=$INK_ID")
+        report(
+            "文本的拾取范围包含 SDF 外扩（比墨迹大一圈）", onPadding == INK_ID,
+            "墨迹左缘 ${inkGuo.minX} 左侧 4px 处实际=$onPadding 期望=$INK_ID"
+        )
 
         // —— 7. fontSize 必须进样式栈的浮点部分 ——
         println("\n-- 样式栈：fontSize --")
@@ -372,12 +406,16 @@ class TextVerifierApp : Application() {
         gc.fontSize = 80f
         report("内层 fontSize 生效", gc.fontSize == 80f, "实际=${gc.fontSize}")
         gc.restore()
-        report("restore 一层回到中间层 40", gc.fontSize == 40f,
-            "实际=${gc.fontSize}——每层宽度错成 2 时这一层可能偶然正确，下一句才是关键")
+        report(
+            "restore 一层回到中间层 40", gc.fontSize == 40f,
+            "实际=${gc.fontSize}——每层宽度错成 2 时这一层可能偶然正确，下一句才是关键"
+        )
         gc.restore()
-        report("再 restore 回到最外层 20", gc.fontSize == 20f,
+        report(
+            "再 restore 回到最外层 20", gc.fontSize == 20f,
             "实际=${gc.fontSize}——每层宽度错成 2 时，第 0 层的 fontSize 槽会被第 1 层盖掉，" +
-                "这里会读回 lineWidth 的值")
+                    "这里会读回 lineWidth 的值"
+        )
 
         // 深层嵌套：同时覆盖 ensureStyleCapacity 的扩容路径（初始 8 层 → 21 层）
         val beforeDeep = gc.fontSize
@@ -397,8 +435,10 @@ class TextVerifierApp : Application() {
         if (deepProblem == null && gc.fontSize != beforeDeep) {
             deepProblem = "全部 restore 之后 fontSize=${gc.fontSize}，期望 $beforeDeep"
         }
-        report("21 层嵌套的 save/restore 逐层正确", deepProblem == null,
-            deepProblem ?: "21 层逐层 restore 全部正确")
+        report(
+            "21 层嵌套的 save/restore 逐层正确", deepProblem == null,
+            deepProblem ?: "21 层逐层 restore 全部正确"
+        )
 
         println()
         if (failures.isEmpty()) {

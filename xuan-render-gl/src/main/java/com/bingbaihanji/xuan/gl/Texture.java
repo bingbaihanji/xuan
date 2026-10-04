@@ -15,11 +15,11 @@ import static org.lwjgl.opengl.GL13.glActiveTexture;
  */
 public class Texture implements Disposable {
 
-    private int textureId;
-
     private final int width;
 
     private final int height;
+
+    private int textureId;
 
     private boolean disposed;
 
@@ -54,6 +54,18 @@ public class Texture implements Disposable {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
 
         glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    /** 将公共 API 的 ARGB 像素转换为 OpenGL 的 RGBA 字节序，供无上下文测试复用。 */
+    static ByteBuffer argbToRgba(int width, int height, int[] pixels) {
+        ByteBuffer buffer = BufferUtils.createByteBuffer(width * height * 4);
+        for (int pixel : pixels) {
+            buffer.put((byte) ((pixel >>> 16) & 0xFF));
+            buffer.put((byte) ((pixel >>> 8) & 0xFF));
+            buffer.put((byte) (pixel & 0xFF));
+            buffer.put((byte) ((pixel >>> 24) & 0xFF));
+        }
+        return buffer.flip();
     }
 
     /**
@@ -114,17 +126,5 @@ public class Texture implements Disposable {
         if (disposed) {
             throw new IllegalStateException("纹理已释放");
         }
-    }
-
-    /** 将公共 API 的 ARGB 像素转换为 OpenGL 的 RGBA 字节序，供无上下文测试复用。 */
-    static ByteBuffer argbToRgba(int width, int height, int[] pixels) {
-        ByteBuffer buffer = BufferUtils.createByteBuffer(width * height * 4);
-        for (int pixel : pixels) {
-            buffer.put((byte) ((pixel >>> 16) & 0xFF));
-            buffer.put((byte) ((pixel >>> 8) & 0xFF));
-            buffer.put((byte) (pixel & 0xFF));
-            buffer.put((byte) ((pixel >>> 24) & 0xFF));
-        }
-        return buffer.flip();
     }
 }

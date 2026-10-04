@@ -70,6 +70,21 @@ public record AxisStyle(
     // 与 ChartInteractionConfig 同一写法（含那个 14 参数的私有 copy）。
     // ------------------------------------------------------------------
 
+    /**
+     * 拒绝 NaN / ±Infinity，也拒绝 ≤ 0。
+     *
+     * <p>与 {@code Series.requireFinite} 的差别是这里**连"越界但有限"也不收**：
+     * 那边收下负线宽，是因为渲染侧对它有一个明确处置（不画线）；
+     * 而这里的尺寸量取 ≤ 0 只会让那个元素**静默消失**——看不见的网格线
+     * 与"把网格关了"在画面上完全一样。
+     */
+    private static void requirePositiveFinite(float value, String what) {
+        if (!(value > 0f) || !Float.isFinite(value)) {
+            throw new IllegalArgumentException(
+                    what + "必须是有限正数（0 会让那个元素静默消失，与关掉它无法区分），实际为 " + value);
+        }
+    }
+
     public AxisStyle visible(boolean v) {
         return new AxisStyle(v, gridVisible, gridColor, gridWidth, axisVisible, axisColor,
                 axisWidth, arrowsVisible, arrowSize, tickMarksVisible, tickLength,
@@ -152,20 +167,5 @@ public record AxisStyle(
         return new AxisStyle(visible, gridVisible, gridColor, gridWidth, axisVisible, axisColor,
                 axisWidth, arrowsVisible, arrowSize, tickMarksVisible, tickLength,
                 tickLabelsVisible, tickLabelFontSize, v);
-    }
-
-    /**
-     * 拒绝 NaN / ±Infinity，也拒绝 ≤ 0。
-     *
-     * <p>与 {@code Series.requireFinite} 的差别是这里**连"越界但有限"也不收**：
-     * 那边收下负线宽，是因为渲染侧对它有一个明确处置（不画线）；
-     * 而这里的尺寸量取 ≤ 0 只会让那个元素**静默消失**——看不见的网格线
-     * 与"把网格关了"在画面上完全一样。
-     */
-    private static void requirePositiveFinite(float value, String what) {
-        if (!(value > 0f) || !Float.isFinite(value)) {
-            throw new IllegalArgumentException(
-                    what + "必须是有限正数（0 会让那个元素静默消失，与关掉它无法区分），实际为 " + value);
-        }
     }
 }

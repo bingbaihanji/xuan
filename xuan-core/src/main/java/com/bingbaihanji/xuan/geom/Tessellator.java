@@ -672,6 +672,38 @@ public final class Tessellator {
     }
 
     /**
+     * 判断点 {@code (px,py)} 是否落在指定轮廓内部（射线法，奇偶规则）。
+     *
+     * <p>只数"向上穿过"的边，且用半开区间 `(yi > py) != (yj > py)` 判定，因此顶点正好
+     * 落在射线上时不会重复计数。顺/逆时针都适用。
+     *
+     * @param pts    扁平顶点数组
+     * @param offset 该轮廓第一个顶点的顶点下标
+     * @param count  顶点数
+     * @param px     待判定点的 x 坐标
+     * @param py     待判定点的 y 坐标
+     * @return 落在内部返回 {@code true}
+     */
+    private static boolean containsPoint(float[] pts, int offset, int count,
+                                         float px, float py) {
+        boolean inside = false;
+        for (int i = 0, j = count - 1; i < count; j = i++) {
+            float yi = pts[(offset + i) * 2 + 1];
+            float yj = pts[(offset + j) * 2 + 1];
+            if ((yi > py) == (yj > py)) {
+                continue;
+            }
+            float xi = pts[(offset + i) * 2];
+            float xj = pts[(offset + j) * 2];
+            double xCross = xi + (double) (py - yi) / (yj - yi) * (xj - xi);
+            if (px < xCross) {
+                inside = !inside;
+            }
+        }
+        return inside;
+    }
+
+    /**
      * 返回当前结果中的三角形个数。
      *
      * @return 三角形个数
@@ -888,6 +920,10 @@ public final class Tessellator {
         checkArea(outer, outerOffset, outerCount, holes, holeCounts);
     }
 
+    // ------------------------------------------------------------------
+    // 辅助
+    // ------------------------------------------------------------------
+
     /**
      * 三角化一条**由多个轮廓（子路径）组成的路径**：按<strong>包含关系</strong>把轮廓分成
      * 外轮廓与洞，每个外轮廓连同它直接包含的洞一起走 {@link #tessellateWithHoles}。
@@ -990,42 +1026,6 @@ public final class Tessellator {
             }
             tessellateWithHolesInto(points, offsets[o], counts[o], holeBuffers, holeCountsView);
         }
-    }
-
-    // ------------------------------------------------------------------
-    // 辅助
-    // ------------------------------------------------------------------
-
-    /**
-     * 判断点 {@code (px,py)} 是否落在指定轮廓内部（射线法，奇偶规则）。
-     *
-     * <p>只数"向上穿过"的边，且用半开区间 `(yi > py) != (yj > py)` 判定，因此顶点正好
-     * 落在射线上时不会重复计数。顺/逆时针都适用。
-     *
-     * @param pts    扁平顶点数组
-     * @param offset 该轮廓第一个顶点的顶点下标
-     * @param count  顶点数
-     * @param px     待判定点的 x 坐标
-     * @param py     待判定点的 y 坐标
-     * @return 落在内部返回 {@code true}
-     */
-    private static boolean containsPoint(float[] pts, int offset, int count,
-                                         float px, float py) {
-        boolean inside = false;
-        for (int i = 0, j = count - 1; i < count; j = i++) {
-            float yi = pts[(offset + i) * 2 + 1];
-            float yj = pts[(offset + j) * 2 + 1];
-            if ((yi > py) == (yj > py)) {
-                continue;
-            }
-            float xi = pts[(offset + i) * 2];
-            float xj = pts[(offset + j) * 2];
-            double xCross = xi + (double) (py - yi) / (yj - yi) * (xj - xi);
-            if (px < xCross) {
-                inside = !inside;
-            }
-        }
-        return inside;
     }
 
     /**

@@ -14,11 +14,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
 
-import static org.lwjgl.opengl.GL11.GL_FLOAT;
-import static org.lwjgl.opengl.GL11.GL_ONE;
-import static org.lwjgl.opengl.GL11.GL_ONE_MINUS_SRC_ALPHA;
-import static org.lwjgl.opengl.GL11.GL_TRIANGLE_STRIP;
-import static org.lwjgl.opengl.GL11.glScissor;
+import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL20.glEnableVertexAttribArray;
 import static org.lwjgl.opengl.GL20.glVertexAttribPointer;
 
@@ -151,6 +147,42 @@ final class ScatterSeriesRenderer implements SeriesRenderer {
      */
     private static float markerEdge(Series series) {
         return series.markerSize() * 2f;
+    }
+
+    /**
+     * 本渲染器只画它真正画得出来的图型，其余明确报错。
+     *
+     * <p><strong>只接受 {@link ChartType#SCATTER}。</strong>不能写成"只要
+     * {@code drawsMarkers()} 就放行"：{@link ChartType#LINE_AND_MARKERS} 同样
+     * 落在那条判据里，而本渲染器会把它的<b>折线部分整个丢掉</b>——
+     * 画面里只剩下一串孤立的点，看起来"就是一种散射图风格"，而不是"少了一半"。
+     * 那半由 {@link LineSeriesRenderer} 负责，它调的是 {@link #renderMarkers}
+     * （无守卫版本），而不是这里。
+     *
+     * <p>{@link ChartType#BAR} 也是"不连线"的，但它的顶点是矩形、不是居中的标记点，
+     * 画出来会是一串方点而柱状图的高度含义整个消失。
+     */
+    private static void requireSupported(ChartType type) {
+        if (type == ChartType.SCATTER) {
+            return;
+        }
+        throw new IllegalArgumentException(
+                "ScatterSeriesRenderer 不支持图型 " + type + "。明确报错而不是静默不画/画错："
+                        + "LINE_AND_MARKERS 的标记点确实归散点渲染器，但它的折线不归——"
+                        + "只画点会把折线整条丢掉，而\"只剩一串点\"看起来像刻意的风格；"
+                        + "BAR 的顶点是矩形，当成标记点画会让柱高这个含义消失。");
+    }
+
+    /**
+     * 把裁剪盒设到绘图区。
+     *
+     * <p>{@code glScissor} 的原点在帧缓冲<b>左下角</b>、y 向上，而本管线的用户空间是
+     * "像素、原点左上、y 向下"，{@code plot} 记的是矩形<strong>上边缘</strong>。
+     * 因此 GL 侧的下边 = {@code viewportHeight - plot.y - plot.height}。
+     */
+    private static void setScissorTo(Rect plot, int viewportHeight) {
+        int y = viewportHeight - (int) plot.y - (int) plot.height;
+        glScissor((int) plot.x, y, (int) plot.width, (int) plot.height);
     }
 
     /**
@@ -322,42 +354,6 @@ final class ScatterSeriesRenderer implements SeriesRenderer {
         gl.bindVao(0);
         gl.disableBlend();
         gl.setScissorEnabled(scissorWasOn);
-    }
-
-    /**
-     * 本渲染器只画它真正画得出来的图型，其余明确报错。
-     *
-     * <p><strong>只接受 {@link ChartType#SCATTER}。</strong>不能写成"只要
-     * {@code drawsMarkers()} 就放行"：{@link ChartType#LINE_AND_MARKERS} 同样
-     * 落在那条判据里，而本渲染器会把它的<b>折线部分整个丢掉</b>——
-     * 画面里只剩下一串孤立的点，看起来"就是一种散射图风格"，而不是"少了一半"。
-     * 那半由 {@link LineSeriesRenderer} 负责，它调的是 {@link #renderMarkers}
-     * （无守卫版本），而不是这里。
-     *
-     * <p>{@link ChartType#BAR} 也是"不连线"的，但它的顶点是矩形、不是居中的标记点，
-     * 画出来会是一串方点而柱状图的高度含义整个消失。
-     */
-    private static void requireSupported(ChartType type) {
-        if (type == ChartType.SCATTER) {
-            return;
-        }
-        throw new IllegalArgumentException(
-                "ScatterSeriesRenderer 不支持图型 " + type + "。明确报错而不是静默不画/画错："
-                        + "LINE_AND_MARKERS 的标记点确实归散点渲染器，但它的折线不归——"
-                        + "只画点会把折线整条丢掉，而\"只剩一串点\"看起来像刻意的风格；"
-                        + "BAR 的顶点是矩形，当成标记点画会让柱高这个含义消失。");
-    }
-
-    /**
-     * 把裁剪盒设到绘图区。
-     *
-     * <p>{@code glScissor} 的原点在帧缓冲<b>左下角</b>、y 向上，而本管线的用户空间是
-     * "像素、原点左上、y 向下"，{@code plot} 记的是矩形<strong>上边缘</strong>。
-     * 因此 GL 侧的下边 = {@code viewportHeight - plot.y - plot.height}。
-     */
-    private static void setScissorTo(Rect plot, int viewportHeight) {
-        int y = viewportHeight - (int) plot.y - (int) plot.height;
-        glScissor((int) plot.x, y, (int) plot.width, (int) plot.height);
     }
 
     /** 释放本类持有的 GL 资源（VAO 与单位四边形 VBO）。 */

@@ -684,8 +684,10 @@ class PathVerifierApp : Application() {
 
         // 一次全图扫描，同时得到每色像素数与包围盒。
         val counts = HashMap<Int, Int>()
-        val minX = HashMap<Int, Int>(); val minY = HashMap<Int, Int>()
-        val maxX = HashMap<Int, Int>(); val maxY = HashMap<Int, Int>()
+        val minX = HashMap<Int, Int>();
+        val minY = HashMap<Int, Int>()
+        val maxX = HashMap<Int, Int>();
+        val maxY = HashMap<Int, Int>()
         for (y in 0 until h) {
             for (x in 0 until w) {
                 val c = pixelAt(x, y)
@@ -713,9 +715,12 @@ class PathVerifierApp : Application() {
         }
 
         fun approx(label: String, actual: Int, expected: Double, tol: Double = TOLERANCE) {
-            val lo = expected * (1 - tol); val hi = expected * (1 + tol)
-            report(label, actual.toDouble() in lo..hi,
-                "实际 $actual，期望 ${expected.toInt()} ±${(tol * 100).toInt()}%")
+            val lo = expected * (1 - tol);
+            val hi = expected * (1 + tol)
+            report(
+                label, actual.toDouble() in lo..hi,
+                "实际 $actual，期望 ${expected.toInt()} ±${(tol * 100).toInt()}%"
+            )
         }
 
         fun bbox(label: String, argb: Int, ex: Int, ey: Int, ew: Int, eh: Int) {
@@ -723,10 +728,14 @@ class PathVerifierApp : Application() {
                 report(label, false, "无像素")
                 return
             }
-            val ax = minX[argb]!!; val ay = minY[argb]!!
-            val aw = maxX[argb]!! - ax + 1; val ah = maxY[argb]!! - ay + 1
-            report(label, ax == ex && ay == ey && aw == ew && ah == eh,
-                "实际 ($ax,$ay) ${aw}x$ah，期望 ($ex,$ey) ${ew}x$eh")
+            val ax = minX[argb]!!;
+            val ay = minY[argb]!!
+            val aw = maxX[argb]!! - ax + 1;
+            val ah = maxY[argb]!! - ay + 1
+            report(
+                label, ax == ex && ay == ey && aw == ew && ah == eh,
+                "实际 ($ax,$ay) ${aw}x$ah，期望 ($ex,$ey) ${ew}x$eh"
+            )
         }
 
         println("\n-- 绘制区尺寸 --")
@@ -737,22 +746,30 @@ class PathVerifierApp : Application() {
         if (drawnVariant < 2) {
             println("\n-- 多子路径描边：MOVE_TO 处必须断开 --")
             val twoSegments = drawnVariant == 0
-            val sx0 = SEG_X0.toInt(); val sx1 = SEG_X1.toInt()
-            val sy0 = SEG_Y0.toInt(); val sy1 = SEG_Y1.toInt()
+            val sx0 = SEG_X0.toInt();
+            val sx1 = SEG_X1.toInt()
+            val sy0 = SEG_Y0.toInt();
+            val sy1 = SEG_Y1.toInt()
 
             // 一条 200 长的横线、线宽 4：四条像素行、每行 200 个像素，应当**精确**是 800。
-            approx("第一条横线（y=$sy0）铺满 200x4",
-                countIn(sx0 - 5, sy0 - 4, sx1 + 5, sy0 + 4, SUB_PATH_RGB), 200.0 * 4)
+            approx(
+                "第一条横线（y=$sy0）铺满 200x4",
+                countIn(sx0 - 5, sy0 - 4, sx1 + 5, sy0 + 4, SUB_PATH_RGB), 200.0 * 4
+            )
             if (twoSegments) {
-                approx("第二条横线（y=$sy1）铺满 200x4",
-                    countIn(sx0 - 5, sy1 - 4, sx1 + 5, sy1 + 4, SUB_PATH_RGB), 200.0 * 4)
+                approx(
+                    "第二条横线（y=$sy1）铺满 200x4",
+                    countIn(sx0 - 5, sy1 - 4, sx1 + 5, sy1 + 4, SUB_PATH_RGB), 200.0 * 4
+                )
                 bbox("两条横线的包围盒（在一起）", SUB_PATH_RGB, sx0, sy0 - 2, sx1 - sx0, sy1 - sy0 + 4)
             } else {
                 // 变体 1 不画第二条：那个位置必须**一个像素都没有**。这一句与变体 0 里那句
                 // "第二条横线铺满"合起来才有意义——只断言"这里是干净的"，对"两条都没画"同样成立。
-                report("变体 1：未绘制的第二条横线位置必须是干净的",
+                report(
+                    "变体 1：未绘制的第二条横线位置必须是干净的",
                     countIn(sx0 - 5, sy1 - 4, sx1 + 5, sy1 + 4, SUB_PATH_RGB) == 0,
-                    "实际 ${countIn(sx0 - 5, sy1 - 4, sx1 + 5, sy1 + 4, SUB_PATH_RGB)} px")
+                    "实际 ${countIn(sx0 - 5, sy1 - 4, sx1 + 5, sy1 + 4, SUB_PATH_RGB)} px"
+                )
                 bbox("变体 1：只剩第一条横线", SUB_PATH_RGB, sx0, sy0 - 2, sx1 - sx0, 4)
             }
 
@@ -764,16 +781,20 @@ class PathVerifierApp : Application() {
             // 变体 1 里第二条横线不存在，也就无从连起；那一帧这条断言退化为恒真，
             // 由变体 0 那一帧负责。
             val corridor = countIn(150, 110, 170, 130, SUB_PATH_RGB)
-            report("两条子路径之间没有连线（假斜线会穿过 (160,120)）", corridor == 0,
-                "实际 $corridor px")
+            report(
+                "两条子路径之间没有连线（假斜线会穿过 (160,120)）", corridor == 0,
+                "实际 $corridor px"
+            )
 
             println("\n-- 无杂散像素（覆盖整幅画面）--")
             val expectedStrokes = if (twoSegments) 2 else 1
             // 该颜色全画面只出现在这些横线上：多画一块、少画一块、上一帧的顶点留在缓冲里，
             // 都会让这个总数变化。颜色种数同时钉住"没有出现别的颜色"。
-            report("描边色像素总数恰好等于 ${expectedStrokes} 条横线的面积",
+            report(
+                "描边色像素总数恰好等于 ${expectedStrokes} 条横线的面积",
                 counts[SUB_PATH_RGB] == expectedStrokes * 200 * 4,
-                "实际 ${counts[SUB_PATH_RGB] ?: 0}，期望 ${expectedStrokes * 200 * 4}")
+                "实际 ${counts[SUB_PATH_RGB] ?: 0}，期望 ${expectedStrokes * 200 * 4}"
+            )
         } else if (drawnVariant < 4) {
             println("\n-- 闭合子路径的收尾接头 --")
             val half = (SQUARE_LINE_WIDTH / 2).toInt()
@@ -798,14 +819,18 @@ class PathVerifierApp : Application() {
             val corner = countIn(cx, cy, cx + 3, cy + 3, CLOSED_JOIN_RGB)
 
             if (drawnVariant == 2) {
-                report("闭合子路径在收尾顶点外侧补上了接头（外角 4x4 应被填满）",
-                    corner == 16, "实际 $corner / 16 px，无接头时应为 0")
+                report(
+                    "闭合子路径在收尾顶点外侧补上了接头（外角 4x4 应被填满）",
+                    corner == 16, "实际 $corner / 16 px，无接头时应为 0"
+                )
                 closedJoinPixels = counts[CLOSED_JOIN_RGB] ?: 0
             } else {
                 // 反证：同一份几何、同一个颜色，只把"闭合"这一位去掉，收尾处就只剩平头封口。
                 // 没有这一条，"有接头"那一条对"整块都画错了"同样会通过。
-                report("反证：同一份几何按开放折线收尾时外角没有接头", corner == 0,
-                    "实际 $corner px")
+                report(
+                    "反证：同一份几何按开放折线收尾时外角没有接头", corner == 0,
+                    "实际 $corner px"
+                )
                 // 两个变体之间**只该差收尾那一个接头**：直角处一个**完整**的 miter 接头
                 // 恰好是 10x10 的整块（半线宽 10 的两条偏移线交于顶点外 (10,10)，
                 // 与顶点围成那个正方形），所以差的正好是 **100** 个像素，
@@ -817,8 +842,10 @@ class PathVerifierApp : Application() {
                 // 补全接头之后，两个半块合起来是一整块，那点不确定性随之消失。
                 // 数字从 45 变成 100 是**因为缺陷修好了**。
                 val diff = closedJoinPixels - (counts[CLOSED_JOIN_RGB] ?: 0)
-                report("两个变体只差收尾那一个完整接头（直角处恰为 10x10 = 100 px）", diff == 100,
-                    "闭合比开放多 $diff px（闭合总 $closedJoinPixels，开放总 ${counts[CLOSED_JOIN_RGB] ?: 0}）")
+                report(
+                    "两个变体只差收尾那一个完整接头（直角处恰为 10x10 = 100 px）", diff == 100,
+                    "闭合比开放多 $diff px（闭合总 $closedJoinPixels，开放总 ${counts[CLOSED_JOIN_RGB] ?: 0}）"
+                )
             }
 
             println("\n-- 无杂散像素（覆盖整幅画面）--")
@@ -833,44 +860,62 @@ class PathVerifierApp : Application() {
             // （不依赖 GL 光栅化）同时由红转绿。
             val expectedTotal = if (drawnVariant == 2) 16000 else 15900
             val total = counts[CLOSED_JOIN_RGB] ?: 0
-            report("方框描边像素总数 = 4 条边 - 4 处重叠 + 4 个完整接头（${if (drawnVariant == 2) "闭合" else "开放对照"}）",
-                total == expectedTotal, "实际 $total，期望 $expectedTotal")
+            report(
+                "方框描边像素总数 = 4 条边 - 4 处重叠 + 4 个完整接头（${if (drawnVariant == 2) "闭合" else "开放对照"}）",
+                total == expectedTotal, "实际 $total，期望 $expectedTotal"
+            )
         } else if (drawnVariant < 5) {
             println("\n-- 开放子路径：不该被当成闭合 --")
-            val ox0 = OPEN_X0.toInt(); val ox1 = OPEN_X1.toInt()
-            val oy0 = OPEN_Y0.toInt(); val oy1 = OPEN_Y1.toInt()
+            val ox0 = OPEN_X0.toInt();
+            val ox1 = OPEN_X1.toInt()
+            val oy0 = OPEN_Y0.toInt();
+            val oy1 = OPEN_Y1.toInt()
 
             // 水平腿 200 长、竖直腿 100 长（`OPEN_Y1 - OPEN_Y0`），线宽都是 4。
-            approx("开放折线的水平腿铺满 200x4",
-                countIn(ox0 - 5, oy0 - 4, ox1 + 5, oy0 + 4, SUB_PATH_RGB), 200.0 * 4)
-            approx("开放折线的竖直腿铺满 100x4",
-                countIn(ox1 - 4, oy0 - 5, ox1 + 4, oy1 + 5, SUB_PATH_RGB), 100.0 * 4)
+            approx(
+                "开放折线的水平腿铺满 200x4",
+                countIn(ox0 - 5, oy0 - 4, ox1 + 5, oy0 + 4, SUB_PATH_RGB), 200.0 * 4
+            )
+            approx(
+                "开放折线的竖直腿铺满 100x4",
+                countIn(ox1 - 4, oy0 - 5, ox1 + 4, oy1 + 5, SUB_PATH_RGB), 100.0 * 4
+            )
             // 拐角 (260,400) 是一个内部顶点，照常补 MITER 尖角：外沿伸到 (262,398)，
             // 于是包围盒比两条腿本身的 [60,260)x[398,500) 各多出一个像素。
-            bbox("开放折线的包围盒（含拐点尖角，不含任何收尾连线）", SUB_PATH_RGB,
-                ox0, oy0 - 2, ox1 - ox0 + 2, oy1 - oy0 + 2)
+            bbox(
+                "开放折线的包围盒（含拐点尖角，不含任何收尾连线）", SUB_PATH_RGB,
+                ox0, oy0 - 2, ox1 - ox0 + 2, oy1 - oy0 + 2
+            )
 
             // 判别式：开放子路径如果被当成闭合描边，末点 (260,500) 会与首点 (60,400)
             // 连上一条**并不存在**的斜线（斜率 -1/2，穿过 (160,450)）。
             // 两条腿都离这个方框很远（y=400 / x=260），方框里出现任何像素都只可能是它。
             val falseClose = countIn(150, 440, 170, 460, SUB_PATH_RGB)
-            report("开放子路径的首尾之间没有连线（假收尾线会穿过 (160,450)）", falseClose == 0,
-                "实际 $falseClose px")
+            report(
+                "开放子路径的首尾之间没有连线（假收尾线会穿过 (160,450)）", falseClose == 0,
+                "实际 $falseClose px"
+            )
 
             println("\n-- 无杂散像素（覆盖整幅画面）--")
             // 水平腿 800 + 竖直腿 400 - 拐角重叠 4 + 接头三角形（~1..7，擦边像素的多少
             // 取决于光栅化 tie 规则）≈ 1200。容差取 2% 而不是 5%：
             // 一段**假收尾斜线**（长 √(200²+100²)≈224、宽 4）会给总数加上近 900 px，
             // 那是数量级的差异，不需要靠容差去分辨。
-            approx("开放折线像素总数 = 两条腿 - 拐角重叠 + 接头", counts[SUB_PATH_RGB] ?: 0,
-                1200.0, 0.02)
+            approx(
+                "开放折线像素总数 = 两条腿 - 拐角重叠 + 接头", counts[SUB_PATH_RGB] ?: 0,
+                1200.0, 0.02
+            )
         } else if (drawnVariant < 6) {
             println("\n-- 带孔填充：外轮廓按包含关系分类 --")
-            val rcx = RING_CX.toInt(); val rcy = RING_CY.toInt()
-            val rOut = RING_R_OUTER.toInt(); val rIn = RING_R_INNER.toInt()
+            val rcx = RING_CX.toInt();
+            val rcy = RING_CY.toInt()
+            val rOut = RING_R_OUTER.toInt();
+            val rIn = RING_R_INNER.toInt()
             val side = SQ_SIDE.toInt()
-            val sq1x = SQ1_X.toInt(); val sq1y = SQ1_Y.toInt()
-            val sq2x = SQ2_X.toInt(); val sq2y = SQ2_Y.toInt()
+            val sq1x = SQ1_X.toInt();
+            val sq1y = SQ1_Y.toInt()
+            val sq2x = SQ2_X.toInt();
+            val sq2y = SQ2_Y.toInt()
 
             // 判别式之一：环心那块必须是背景。小圆整个落在大圆内部，按包含关系它是**洞**；
             // 一旦退化成"各填各的"或普通子路径，环心会被填成实心——而那个画面看上去
@@ -886,26 +931,34 @@ class PathVerifierApp : Application() {
                 val x = if (i == 0) sq1x else sq2x
                 val y = if (i == 0) sq1y else sq2y
                 val n = countIn(x, y, x + side - 1, y + side - 1, HOLE_FILL_RGB)
-                report("第 ${i + 1} 个正方形铺满 ${side}x$side", n == side * side,
-                    "实际 $n，期望 ${side * side}")
+                report(
+                    "第 ${i + 1} 个正方形铺满 ${side}x$side", n == side * side,
+                    "实际 $n，期望 ${side * side}"
+                )
             }
 
             // 环带面积按 π(R²−r²) 写：128 边形的面积只比圆小 0.04%。
             val band = countIn(rcx - rOut, rcy - rOut, rcx + rOut, rcy + rOut, HOLE_FILL_RGB)
-            approx("环带像素数 = π(R²−r²)", band,
-                Math.PI * (RING_R_OUTER.toDouble() * RING_R_OUTER - RING_R_INNER.toDouble() * RING_R_INNER))
+            approx(
+                "环带像素数 = π(R²−r²)", band,
+                Math.PI * (RING_R_OUTER.toDouble() * RING_R_OUTER - RING_R_INNER.toDouble() * RING_R_INNER)
+            )
 
             // 包围盒把四块都框住：环在最左、也在最上最下（它的极值点正好落在 0°/90°/180°/270°，
             // 128 边形的顶点里有这四个方向），第二个正方形在最右。
             val bx = rcx - rOut
             val by = rcy - rOut
-            bbox("带孔填充的包围盒（环 + 两个正方形）", HOLE_FILL_RGB,
-                bx, by, sq2x + side - 1 - bx + 1, rcy + rOut - 1 - by + 1)
+            bbox(
+                "带孔填充的包围盒（环 + 两个正方形）", HOLE_FILL_RGB,
+                bx, by, sq2x + side - 1 - bx + 1, rcy + rOut - 1 - by + 1
+            )
 
             println("\n-- 无杂散像素（覆盖整幅画面）--")
-            approx("填充色像素总数 = 两个正方形 + 环带", counts[HOLE_FILL_RGB] ?: 0,
+            approx(
+                "填充色像素总数 = 两个正方形 + 环带", counts[HOLE_FILL_RGB] ?: 0,
                 2.0 * side * side + Math.PI * (RING_R_OUTER.toDouble() * RING_R_OUTER
-                        - RING_R_INNER.toDouble() * RING_R_INNER), 0.02)
+                        - RING_R_INNER.toDouble() * RING_R_INNER), 0.02
+            )
         } else if (drawnVariant < 7) {
             println("\n-- 半透明描边：退化接头处不该被画两遍 --")
             val opaque = TRANSLUCENT_RGB or (0xFF shl 24)
@@ -913,22 +966,29 @@ class PathVerifierApp : Application() {
 
             // 前提 1：这个场景必须真的"混"过。不透明时两层与一层颜色完全相同，
             // 这条断言就会退化成恒真——所以先钉住"参考色既不是不透明色也不是背景"。
-            report("参考色确实被 alpha 混合过（既不是不透明色、也不是背景）",
+            report(
+                "参考色确实被 alpha 混合过（既不是不透明色、也不是背景）",
                 refColor != opaque && refColor != BACKGROUND,
-                "#%06X（不透明色 #%06X、背景 #%06X）".format(refColor, opaque, BACKGROUND))
+                "#%06X（不透明色 #%06X、背景 #%06X）".format(refColor, opaque, BACKGROUND)
+            )
 
             // 前提 2（同帧内的灵敏度对照）：两段带自相交处是**两层**，必须比单层更深。
             // 它在同一帧里证明了"两层 ≠ 一层"看得见，于是下面那条不是恒真。
             val doubleColor = pixelAt(DOUBLE_PROBE_X, DOUBLE_PROBE_Y)
-            report("对照：两段带自相交处是两层，颜色比单层更深",
+            report(
+                "对照：两段带自相交处是两层，颜色比单层更深",
                 doubleColor != refColor && doubleColor != BACKGROUND,
-                "($DOUBLE_PROBE_X,$DOUBLE_PROBE_Y) = #%06X，单层 #%06X".format(doubleColor, refColor))
+                "($DOUBLE_PROBE_X,$DOUBLE_PROBE_Y) = #%06X，单层 #%06X".format(doubleColor, refColor)
+            )
 
             // 判别式：退化接头内部只可能被接头自己覆盖（两个描边四边形都以"过顶点的
             // 横断面"收边），所以必须是**单层色**。接头被发两遍时它会变成双层色。
-            val probe = countIn(JOINT_PROBE_X, JOINT_PROBE_Y,
-                JOINT_PROBE_X + 2, JOINT_PROBE_Y + 2, refColor)
-            report("退化接头内部 9 px 全是**单层**色（画两遍会更深）", probe == 9,
+            val probe = countIn(
+                JOINT_PROBE_X, JOINT_PROBE_Y,
+                JOINT_PROBE_X + 2, JOINT_PROBE_Y + 2, refColor
+            )
+            report(
+                "退化接头内部 9 px 全是**单层**色（画两遍会更深）", probe == 9,
                 "实际 $probe / 9 px 是单层色，接头框内像素："
                         + (0..2).joinToString(" ") { dy ->
                     (0..2).joinToString(",") { dx ->
@@ -963,18 +1023,26 @@ class PathVerifierApp : Application() {
                 }
                 prevInk = isInk
             }
-            report("★ 虚线被切成 20 段（同一段几何的实线只有 1 段）", runs == 20,
-                "扫第 $DASH_SCAN_ROW 行、x∈[${DASH_X0.toInt()}, ${DASH_X1.toInt()})：实测 $runs 段")
-            report("★ 墨迹总宽 = 20 段 × 10 px = 200（实线会是 400）", ink == 200,
-                "实测 $ink px")
+            report(
+                "★ 虚线被切成 20 段（同一段几何的实线只有 1 段）", runs == 20,
+                "扫第 $DASH_SCAN_ROW 行、x∈[${DASH_X0.toInt()}, ${DASH_X1.toInt()})：实测 $runs 段"
+            )
+            report(
+                "★ 墨迹总宽 = 20 段 × 10 px = 200（实线会是 400）", ink == 200,
+                "实测 $ink px"
+            )
 
             // 前提：这条线**确实**落在扫描行上。不钉它的话，上面两条在"线画歪了 /
             // 一行都没扫到"时会双双报 0 段 0 px——两个都倒，读起来像"虚线整个没画"，
             // 而真因可能是几何错了。这一条把"扫描位置有效"与"虚线生效"分开。
-            val band = countIn(DASH_X0.toInt(), DASH_Y.toInt() - 3,
-                DASH_X1.toInt() - 1, DASH_Y.toInt() + 3, SUB_PATH_RGB)
-            report("前提：这条线确实落在扫描行附近（宽度 4）", band > 0,
-                "线周围 400x7 的盒子里有 $band px 墨迹")
+            val band = countIn(
+                DASH_X0.toInt(), DASH_Y.toInt() - 3,
+                DASH_X1.toInt() - 1, DASH_Y.toInt() + 3, SUB_PATH_RGB
+            )
+            report(
+                "前提：这条线确实落在扫描行附近（宽度 4）", band > 0,
+                "线周围 400x7 的盒子里有 $band px 墨迹"
+            )
         } else {
             println("\n-- 描边命中判定：与画面逐点对照 --")
 
@@ -991,43 +1059,53 @@ class PathVerifierApp : Application() {
             //     · 尖角判别点 —— 只有复刻接头会判 true。**它是唯一分得开两种实现的地方。**
             //   （这与变体 ③/④ 用"像素总数之差"而不是"外角有没有像素"是同一条道理。）
             val inBandPixel = pixelAt(HIT_IN_BAND_X, HIT_IN_BAND_Y)
-            report("① 带内对照点：判定为在描边上，且像素确实是描边色", inBandHit && inBandPixel == HIT_RGB,
+            report(
+                "① 带内对照点：判定为在描边上，且像素确实是描边色", inBandHit && inBandPixel == HIT_RGB,
                 "isPointInStroke=$inBandHit，该点像素 #%06X（期望描边色 #%06X）"
-                    .format(inBandPixel, HIT_RGB))
+                    .format(inBandPixel, HIT_RGB)
+            )
 
             val tipPixel = pixelAt(HIT_TIP_X, HIT_TIP_Y)
             // ⚠️ 这两个 `%06X` 曾经没被格式化：`.format(...)` 只绑到它**紧邻的那个**
             //   字符串字面量上，而占位符在前一个字面量里 ⇒ 报告里印出的是裸的 `#%06X`。
             //   断言照样能过（判据是 `tipHit && tipPixel == HIT_RGB`，与文案无关），
             //   所以**只有人看输出才发现**。改成插值就不会再犯。
-            report("② ★ 尖角判别点：判定为在描边上，且像素确实是描边色", tipHit && tipPixel == HIT_RGB,
+            report(
+                "② ★ 尖角判别点：判定为在描边上，且像素确实是描边色", tipHit && tipPixel == HIT_RGB,
                 "isPointInStroke=$tipHit，该点像素 #${"%06X".format(tipPixel)}" +
                         "（期望描边色 #${"%06X".format(HIT_RGB)}）。" +
                         "距折线 21.21px > 半线宽 20px ⇒ **半带宽实现会判 false**，" +
-                        "而它在 miter 三角形里、画面上确实有墨迹 ⇒ 只有复刻接头才会判 true")
+                        "而它在 miter 三角形里、画面上确实有墨迹 ⇒ 只有复刻接头才会判 true"
+            )
 
             val outPixel = pixelAt(HIT_OUT_X, HIT_OUT_Y)
-            report("③ 反面：远处的点判为不在描边上，且背景是干净的",
+            report(
+                "③ 反面：远处的点判为不在描边上，且背景是干净的",
                 !outHit && outPixel == BACKGROUND,
                 "isPointInStroke=$outHit，该点像素 #%06X（期望背景 #%06X）"
-                    .format(outPixel, BACKGROUND))
+                    .format(outPixel, BACKGROUND)
+            )
 
             // ④ 走一遍 `isPointInPath` 的**接线**（平坦化 → 设备变换 → 轮廓表 → 判定）。
             //    ⚠️ 它不接像素，因为本变体只描边不填充——没有"填充色"可比。
             //    奇偶规则下这条未闭合的 L 隐式闭合成的三角形是 (200,300)(400,300)(400,100)：
             //    y=200 处它的 x 跨度是 [300,400]，所以 (380,200) 在内部、
             //    (500,500) 在外面。判据即这两个结论（纯计算那侧由 `PathHitTest` 覆盖）。
-            report("④ isPointInPath 走通 Gc 那条接线（平坦化→设备变换→轮廓表）",
+            report(
+                "④ isPointInPath 走通 Gc 那条接线（平坦化→设备变换→轮廓表）",
                 pathHitCallable && !pathHitOutside,
                 "L 形内部 (380,200) ⇒ $pathHitCallable（期望 true）；" +
-                        "远处 (500,500) ⇒ $pathHitOutside（期望 false）")
+                        "远处 (500,500) ⇒ $pathHitOutside（期望 false）"
+            )
         }
 
         // 半透明变体（最后一个）是唯一的例外：它必然多出一种"两层"颜色
         // （两段描边带在尖角内侧自相交，那是本类已声明的限制，不是缺陷）。
         val expectedColors = if (drawnVariant == 6) 3 else EXPECTED_COLORS
-        report("画面只有 $expectedColors 种颜色（无杂散像素）", counts.size == expectedColors,
-            "实际 ${counts.size} 种：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")
+        report(
+            "画面只有 $expectedColors 种颜色（无杂散像素）", counts.size == expectedColors,
+            "实际 ${counts.size} 种：${counts.keys.sorted().joinToString { "#%06X".format(it) }}"
+        )
         report("背景色为 clear 色", (counts[BACKGROUND] ?: 0) > 0, "背景像素 ${counts[BACKGROUND] ?: 0}")
 
         println()

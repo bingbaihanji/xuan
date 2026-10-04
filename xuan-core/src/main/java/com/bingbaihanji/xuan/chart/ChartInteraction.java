@@ -20,11 +20,16 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class ChartInteraction {
 
-    private record Pointer(float x, float y) {
-    }
-
     private final AtomicReference<Pointer> pointer = new AtomicReference<>();
+
     private volatile ChartInteractionConfig config = ChartInteractionConfig.defaults();
+
+    private static String axisLabel(AxisRange range) {
+        if (range.name().isBlank()) {
+            return range.unit().isBlank() ? "值" : range.unit();
+        }
+        return range.unit().isBlank() ? range.name() : range.name() + " (" + range.unit() + ")";
+    }
 
     public ChartInteractionConfig config() {
         return config;
@@ -163,7 +168,7 @@ public final class ChartInteraction {
     }
 
     private List<ChartHover.Line> tooltipLines(Series series, double x, double y,
-                                                AxisRange xRange, AxisRange yRange) {
+                                               AxisRange xRange, AxisRange yRange) {
         List<ChartHover.Line> lines = new ArrayList<>(2);
         lines.add(new ChartHover.Line(axisLabel(xRange), config.formatter().format(x, xRange)));
         String seriesLabel = series.name();
@@ -175,10 +180,6 @@ public final class ChartInteraction {
         return lines;
     }
 
-    private static String axisLabel(AxisRange range) {
-        if (range.name().isBlank()) {
-            return range.unit().isBlank() ? "值" : range.unit();
-        }
-        return range.unit().isBlank() ? range.name() : range.name() + " (" + range.unit() + ")";
+    private record Pointer(float x, float y) {
     }
 }

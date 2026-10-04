@@ -22,7 +22,7 @@ final class ChartDataFixtures {
         }
         return new ArrayChartData(
                 new AxisRange[]{AxisRange.of(0, Math.max(1, values.length)),
-                                AxisRange.of(-1, 1)},
+                        AxisRange.of(-1, 1)},
                 new double[][]{xs, values});
     }
 }

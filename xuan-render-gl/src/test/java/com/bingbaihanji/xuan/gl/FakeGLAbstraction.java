@@ -34,20 +34,12 @@ import java.util.Map;
  */
 public final class FakeGLAbstraction implements GLAbstraction {
 
-    /** 分配出的 ID 从这里递增，便于断言「确实拿去用了」而不是默认值 0。 */
-    private int nextId = 100;
-
-    /** 当前绑定的 FBO。初值刻意非 0，模拟 openglfx 渲染到自己的 FBO。 */
-    public int boundFramebuffer = 7;
-
     /** 每次 bindFramebuffer 的入参，用来断言「恢复了原绑定」。 */
     public final List<Integer> bindCalls = new ArrayList<>();
 
-    /** framebufferStatus() 的返回值，测试可改。 */
-    public int statusToReturn = FRAMEBUFFER_COMPLETE;
-
     /** 删除调用的记录。 */
     public final List<Integer> deletedFramebuffers = new ArrayList<>();
+
     public final List<Integer> deletedTextures = new ArrayList<>();
 
     /**
@@ -58,24 +50,33 @@ public final class FakeGLAbstraction implements GLAbstraction {
      * 删除记录依然是空的，断言恒真。
      */
     public final List<Integer> createdFramebuffers = new ArrayList<>();
+
     public final List<Integer> createdTextures = new ArrayList<>();
 
-    /** 置为 true 后，所有整数读回与整数清空都抛异常，用于验证「抛错时仍恢复绑定」。 */
-    public boolean throwOnIntegerCall = false;
+    public final List<Integer> createdPixelPackBuffers = new ArrayList<>();
 
-    /** 裁剪测试是否启用。默认关。 */
-    public boolean scissorEnabled = false;
+    public final List<Integer> deletedPixelPackBuffers = new ArrayList<>();
 
-    private void maybeThrow() {
-        if (throwOnIntegerCall) {
-            throw new IllegalStateException("注入的 GL 故障");
-        }
-    }
+    /** 按纹理 ID 记录的虚拟图集内容，用于断言上传落在正确的区域。 */
+    public final java.util.Map<Integer, byte[]> r8Textures = new java.util.HashMap<>();
 
-    /** 虚拟屏幕，<strong>GL 行序</strong>：下标 0 对应最下面一行。 */
-    private int[] screen = new int[0];
-    private int screenWidth;
-    private int screenHeight;
+    /** 每次 uploadR8SubImage 的调用记录。 */
+    public final java.util.List<String> r8Uploads = new java.util.ArrayList<>();
+
+    /** 创建的 VBO 名字。 */
+    public final List<Integer> createdVbos = new ArrayList<>();
+
+    /** 删除的 VBO 名字。 */
+    public final List<Integer> deletedVbos = new ArrayList<>();
+
+    /**
+     * 每次 uploadVboSubData 的记录："VBO名@偏移:字节数"。
+     *
+     * <p>第一个字段是<strong>目标 VBO</strong>，不是多余的：Task 11 之后会同时存在多个
+     * VBO（一个系列一个），而"上传落到了别的系列的缓冲上"是画面正常、只是数据错的一类
+     * 缺陷——记录里必须能问出这件事。
+     */
+    public final List<String> vboSubDataCalls = new ArrayList<>();
 
     /** PBO 名 → 已提交的像素值；模拟 GPU 完成前数据只属于缓冲而不交给 CPU。 */
     private final Map<Integer, Integer> pixelPackValues = new HashMap<>();
@@ -83,12 +84,59 @@ public final class FakeGLAbstraction implements GLAbstraction {
     /** fence 名 → 是否已完成。测试可关闭自动完成来覆盖「不阻塞」分支。 */
     private final Map<Long, Boolean> syncStates = new HashMap<>();
 
-    private long nextSync = 1L;
+    /**
+     * 每张 R8 纹理的宽度，用作 {@code uploadR8SubImage} 的行跨距。
+     *
+     * <p><strong>必须按纹理 ID 记录，不能只留一个标量。</strong>标量记的是"最后一次
+     * {@code createR8Texture} 的宽度"，一旦同时存在两张<em>宽度不同</em>的 R8 纹理，
+     * 往先建那张上传时行偏移就会按错误的跨距算——假实现会悄悄污染自己的虚拟纹理，
+     * 于是所有建立在其上的断言都失去意义（本项目最警惕的「静默错误输出」形状）。
+     */
+    private final java.util.Map<Integer, Integer> r8Widths = new java.util.HashMap<>();
+
+    /**
+     * 每个 VBO 的已分配字节数，由定容调用（{@code uploadVboData(float[])}）记录。
+     *
+     * <p><strong>必须按 VBO 名字记，不能只留一个标量</strong>——理由与
+     * {@code r8Widths} 完全相同：标量记的是"最后一次调用"，一旦同时存在多个 VBO，
+     * 检查就会按错误的容量算，于是假实现悄悄放过真正的越界。
+     */
+    private final Map<Integer, Integer> vboCapacityBytes = new HashMap<>();
+
+    /** 当前绑定的 FBO。初值刻意非 0，模拟 openglfx 渲染到自己的 FBO。 */
+    public int boundFramebuffer = 7;
+
+    /** framebufferStatus() 的返回值，测试可改。 */
+    public int statusToReturn = FRAMEBUFFER_COMPLETE;
+
+    /** 置为 true 后，所有整数读回与整数清空都抛异常，用于验证「抛错时仍恢复绑定」。 */
+    public boolean throwOnIntegerCall = false;
+
+    /** 裁剪测试是否启用。默认关。 */
+    public boolean scissorEnabled = false;
 
     public boolean autoSignalPixelPackFences = true;
 
-    public final List<Integer> createdPixelPackBuffers = new ArrayList<>();
-    public final List<Integer> deletedPixelPackBuffers = new ArrayList<>();
+    /** 当前绑定的 VBO。越界检查要靠它判断这次上传落在哪个缓冲上。 */
+    public int boundVbo = 0;
+
+    /** 分配出的 ID 从这里递增，便于断言「确实拿去用了」而不是默认值 0。 */
+    private int nextId = 100;
+
+    /** 虚拟屏幕，<strong>GL 行序</strong>：下标 0 对应最下面一行。 */
+    private int[] screen = new int[0];
+
+    private int screenWidth;
+
+    private int screenHeight;
+
+    private long nextSync = 1L;
+
+    private void maybeThrow() {
+        if (throwOnIntegerCall) {
+            throw new IllegalStateException("注入的 GL 故障");
+        }
+    }
 
     /** 令所有已提交的异步读回完成。 */
     public void signalPixelPackFences() {
@@ -141,22 +189,6 @@ public final class FakeGLAbstraction implements GLAbstraction {
     public void deleteTexture(int texture) {
         deletedTextures.add(texture);
     }
-
-    /** 按纹理 ID 记录的虚拟图集内容，用于断言上传落在正确的区域。 */
-    public final java.util.Map<Integer, byte[]> r8Textures = new java.util.HashMap<>();
-
-    /** 每次 uploadR8SubImage 的调用记录。 */
-    public final java.util.List<String> r8Uploads = new java.util.ArrayList<>();
-
-    /**
-     * 每张 R8 纹理的宽度，用作 {@code uploadR8SubImage} 的行跨距。
-     *
-     * <p><strong>必须按纹理 ID 记录，不能只留一个标量。</strong>标量记的是"最后一次
-     * {@code createR8Texture} 的宽度"，一旦同时存在两张<em>宽度不同</em>的 R8 纹理，
-     * 往先建那张上传时行偏移就会按错误的跨距算——假实现会悄悄污染自己的虚拟纹理，
-     * 于是所有建立在其上的断言都失去意义（本项目最警惕的「静默错误输出」形状）。
-     */
-    private final java.util.Map<Integer, Integer> r8Widths = new java.util.HashMap<>();
 
     @Override
     public int createR8Texture(int width, int height) {
@@ -244,6 +276,14 @@ public final class FakeGLAbstraction implements GLAbstraction {
         pixelPackValues.remove(buffer);
     }
 
+    // —— 顶点缓冲路径（图表后端用）——
+    //
+    // 这一组原本是抛 UnsupportedOperationException 的（"真调到了说明走偏了"）。
+    // 图表后端确实要建自己的 VBO，所以其中几个改成记录。
+    //
+    // **只放开 Task 8 真正会用到的那些。** 计划对"放开抛异常的方法"要求按需放开，
+    // 同一条纪律对"新增字段"一样适用——预先加字段，就是预先卸掉护栏。
+
     @Override
     public void enqueueUnsignedIntPixelRead(int x, int y, int buffer) {
         maybeThrow();
@@ -282,41 +322,6 @@ public final class FakeGLAbstraction implements GLAbstraction {
         }
         return value;
     }
-
-    // —— 顶点缓冲路径（图表后端用）——
-    //
-    // 这一组原本是抛 UnsupportedOperationException 的（"真调到了说明走偏了"）。
-    // 图表后端确实要建自己的 VBO，所以其中几个改成记录。
-    //
-    // **只放开 Task 8 真正会用到的那些。** 计划对"放开抛异常的方法"要求按需放开，
-    // 同一条纪律对"新增字段"一样适用——预先加字段，就是预先卸掉护栏。
-
-    /** 创建的 VBO 名字。 */
-    public final List<Integer> createdVbos = new ArrayList<>();
-
-    /** 删除的 VBO 名字。 */
-    public final List<Integer> deletedVbos = new ArrayList<>();
-
-    /** 当前绑定的 VBO。越界检查要靠它判断这次上传落在哪个缓冲上。 */
-    public int boundVbo = 0;
-
-    /**
-     * 每个 VBO 的已分配字节数，由定容调用（{@code uploadVboData(float[])}）记录。
-     *
-     * <p><strong>必须按 VBO 名字记，不能只留一个标量</strong>——理由与
-     * {@code r8Widths} 完全相同：标量记的是"最后一次调用"，一旦同时存在多个 VBO，
-     * 检查就会按错误的容量算，于是假实现悄悄放过真正的越界。
-     */
-    private final Map<Integer, Integer> vboCapacityBytes = new HashMap<>();
-
-    /**
-     * 每次 uploadVboSubData 的记录："VBO名@偏移:字节数"。
-     *
-     * <p>第一个字段是<strong>目标 VBO</strong>，不是多余的：Task 11 之后会同时存在多个
-     * VBO（一个系列一个），而"上传落到了别的系列的缓冲上"是画面正常、只是数据错的一类
-     * 缺陷——记录里必须能问出这件事。
-     */
-    public final List<String> vboSubDataCalls = new ArrayList<>();
 
     @Override
     public int createVbo() {
@@ -384,32 +389,79 @@ public final class FakeGLAbstraction implements GLAbstraction {
 
     // —— 以下与拾取路径无关，真调到了说明走偏了 ——
 
-    @Override public void initialize() { throw new UnsupportedOperationException(); }
-    @Override public void clear(Color color) { throw new UnsupportedOperationException(); }
-    @Override public void setViewport(int x, int y, int w, int h) { throw new UnsupportedOperationException(); }
-    @Override public int createVao() { throw new UnsupportedOperationException(); }
-    @Override public void bindVao(int vao) { throw new UnsupportedOperationException(); }
-    @Override public void uploadVboData(int[] data) { throw new UnsupportedOperationException(); }
-    @Override public void uploadVboBytes(ByteBuffer data) { throw new UnsupportedOperationException(); }
-    @Override public void deleteVao(int vao) { throw new UnsupportedOperationException(); }
-    @Override public void drawArrays(int mode, int offset, int count) { throw new UnsupportedOperationException(); }
-    @Override public void drawElements(int mode, int count) { throw new UnsupportedOperationException(); }
-    @Override public void enableBlend() { throw new UnsupportedOperationException(); }
-    @Override public void disableBlend() { throw new UnsupportedOperationException(); }
-    @Override public void setBlendFunc(int s, int d) { throw new UnsupportedOperationException(); }
-    @Override public ShaderProgram createShader(String v, String f) { throw new UnsupportedOperationException(); }
-    @Override public int createTexture(int w, int h, int[] p) { throw new UnsupportedOperationException(); }
-    @Override public void setVertexAttribDivisor(int index, int divisor) { throw new UnsupportedOperationException(); }
-    @Override public void drawArraysInstancedBaseInstance(int mode, int first, int count,
-                                                          int instanceCount, int baseInstance) { throw new UnsupportedOperationException(); }
+    @Override
+    public void initialize() {throw new UnsupportedOperationException();}
+
+    @Override
+    public void clear(Color color) {throw new UnsupportedOperationException();}
+
+    @Override
+    public void setViewport(int x, int y, int w, int h) {throw new UnsupportedOperationException();}
+
+    @Override
+    public int createVao() {throw new UnsupportedOperationException();}
+
+    @Override
+    public void bindVao(int vao) {throw new UnsupportedOperationException();}
+
+    @Override
+    public void uploadVboData(int[] data) {throw new UnsupportedOperationException();}
+
+    @Override
+    public void uploadVboBytes(ByteBuffer data) {throw new UnsupportedOperationException();}
+
+    @Override
+    public void deleteVao(int vao) {throw new UnsupportedOperationException();}
+
+    @Override
+    public void drawArrays(int mode, int offset, int count) {throw new UnsupportedOperationException();}
+
+    @Override
+    public void drawElements(int mode, int count) {throw new UnsupportedOperationException();}
+
+    @Override
+    public void enableBlend() {throw new UnsupportedOperationException();}
+
+    @Override
+    public void disableBlend() {throw new UnsupportedOperationException();}
+
+    @Override
+    public void setBlendFunc(int s, int d) {throw new UnsupportedOperationException();}
+
+    @Override
+    public ShaderProgram createShader(String v, String f) {throw new UnsupportedOperationException();}
+
+    @Override
+    public int createTexture(int w, int h, int[] p) {throw new UnsupportedOperationException();}
+
+    @Override
+    public void setVertexAttribDivisor(int index, int divisor) {throw new UnsupportedOperationException();}
+
+    @Override
+    public void drawArraysInstancedBaseInstance(int mode, int first, int count,
+                                                int instanceCount, int baseInstance) {throw new UnsupportedOperationException();}
+
     // SSBO 一组（compute 用）。**一个都不放开**：当前没有任何单测会碰它们
     // （D-③-1 的下一个任务是纯算术，再往后的都要真 GL 上下文）。每多放开一个方法，
     // 就少一处"走偏了就报错"的护栏，而收益是零——后面哪个任务真的需要，那时再放开那一个。
-    @Override public int createBuffer() { throw new UnsupportedOperationException(); }
-    @Override public void bindShaderStorageBuffer(int buffer) { throw new UnsupportedOperationException(); }
-    @Override public void allocateBufferStorage(long sizeBytes) { throw new UnsupportedOperationException(); }
-    @Override public void uploadBufferSubData(long offsetBytes, ByteBuffer data) { throw new UnsupportedOperationException(); }
-    @Override public void bindBufferBase(int bindingIndex, int buffer) { throw new UnsupportedOperationException(); }
-    @Override public void deleteBuffer(int buffer) { throw new UnsupportedOperationException(); }
-    @Override public void dispose() { /* 无资源可释放 */ }
+    @Override
+    public int createBuffer() {throw new UnsupportedOperationException();}
+
+    @Override
+    public void bindShaderStorageBuffer(int buffer) {throw new UnsupportedOperationException();}
+
+    @Override
+    public void allocateBufferStorage(long sizeBytes) {throw new UnsupportedOperationException();}
+
+    @Override
+    public void uploadBufferSubData(long offsetBytes, ByteBuffer data) {throw new UnsupportedOperationException();}
+
+    @Override
+    public void bindBufferBase(int bindingIndex, int buffer) {throw new UnsupportedOperationException();}
+
+    @Override
+    public void deleteBuffer(int buffer) {throw new UnsupportedOperationException();}
+
+    @Override
+    public void dispose() { /* 无资源可释放 */ }
 }

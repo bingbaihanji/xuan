@@ -151,7 +151,7 @@ internal fun selfCheckShapeMath(): Int {
         // 关键：把异常变成**一条失败**，而不是让它穿出去变成退出码 0。
         System.err.println(
             "[自检] 在「$lastName」之后、下一条断言求值时抛异常：" +
-                "${t::class.simpleName}: ${t.message}"
+                    "${t::class.simpleName}: ${t.message}"
         )
         failures++
     }
@@ -205,13 +205,17 @@ private fun runChecks(check: (String, Boolean, String) -> Unit) {
 
     // ④ 多边形：2 点必须被拒（不是画一个零面积图形）
     val twoPoints = floatArrayOf(0f, 0f, 10f, 10f)
-    check("polygonFrom 两点应为 null", ShapeMath.polygonFrom(twoPoints) == null,
-        "得到 ${ShapeMath.polygonFrom(twoPoints)?.size ?: "null"}")
+    check(
+        "polygonFrom 两点应为 null", ShapeMath.polygonFrom(twoPoints) == null,
+        "得到 ${ShapeMath.polygonFrom(twoPoints)?.size ?: "null"}"
+    )
 
     // ⑤ 多边形：3 点应被接受
     val threePoints = floatArrayOf(0f, 0f, 10f, 0f, 5f, 8f)
-    check("polygonFrom 三点应通过", ShapeMath.polygonFrom(threePoints)?.size == 6,
-        "得到 ${ShapeMath.polygonFrom(threePoints)?.size ?: "null"} 个 float")
+    check(
+        "polygonFrom 三点应通过", ShapeMath.polygonFrom(threePoints)?.size == 6,
+        "得到 ${ShapeMath.polygonFrom(threePoints)?.size ?: "null"} 个 float"
+    )
 
     // ⑤b ★★ 多边形：**共线**的三点必须被拒（不是画一个零面积图形）。
     //
@@ -231,13 +235,17 @@ private fun runChecks(check: (String, Boolean, String) -> Unit) {
     )
 
     // ⑥ 曲线：2 点刚好够（一条直线段）
-    check("bezierFrom 两点应通过", ShapeMath.bezierFrom(twoPoints)?.size == 4,
-        "得到 ${ShapeMath.bezierFrom(twoPoints)?.size ?: "null"} 个 float")
+    check(
+        "bezierFrom 两点应通过", ShapeMath.bezierFrom(twoPoints)?.size == 4,
+        "得到 ${ShapeMath.bezierFrom(twoPoints)?.size ?: "null"} 个 float"
+    )
 
     // ⑦ boundsOf 取的是外接框
     val b = boundsOf(floatArrayOf(5f, 9f, -3f, 2f, 8f, -1f))
-    check("boundsOf 外接框", b.x == -3f && b.y == -1f && b.width == 11f && b.height == 10f,
-        "x=${b.x} y=${b.y} w=${b.width} h=${b.height}（期望 -3,-1,11,10）")
+    check(
+        "boundsOf 外接框", b.x == -3f && b.y == -1f && b.width == 11f && b.height == 10f,
+        "x=${b.x} y=${b.y} w=${b.width} h=${b.height}（期望 -3,-1,11,10）"
+    )
     // ⑧ ★ **这一条也要标号**：它一直没编号，于是"照标号数断言"会数出 10 条（而实际 11 条），
     //    下面 ⑨ 的说明里也是按"⑦⑧ 查的是 boundsOf"来数的——编号补齐才对得上。
     check("boundsOf 空输入为零矩形", boundsOf(FloatArray(0)).width == 0f, "w=${boundsOf(FloatArray(0)).width}")

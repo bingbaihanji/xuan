@@ -157,6 +157,22 @@ public final class Series {
         this.type = type;
     }
 
+    /**
+     * 拒绝 NaN 与 ±Infinity，而<b>不</b>拒绝越界但有限的量。
+     *
+     * <p>分界判据见类文档："渲染侧对这份输入有没有一个明确、可预期的处置"。
+     * 故意不用 {@code requirePositive} 之类：那会把 {@code lineWidth(-1)}
+     * （一个有确定含义的样式值）一起拒掉，与 {@link #lineWidth} 的文档打架。
+     */
+    private static void requireFinite(float value, String what) {
+        if (!Float.isFinite(value)) {
+            throw new IllegalArgumentException(
+                    what + "必须是有限数（NaN 与 ±Infinity 都不是样式值），实际为 " + value
+                            + "。越界但有限的量（负线宽、fillAlpha > 1）照旧收下，"
+                            + "由渲染侧钳住或退化——那里有一个确定的处置，而 NaN 没有。");
+        }
+    }
+
     /** 系列名。 */
     public String name() {
         return name;
@@ -316,21 +332,5 @@ public final class Series {
         requireFinite(gap, "柱间距");
         this.barGap = gap;
         return this;
-    }
-
-    /**
-     * 拒绝 NaN 与 ±Infinity，而<b>不</b>拒绝越界但有限的量。
-     *
-     * <p>分界判据见类文档："渲染侧对这份输入有没有一个明确、可预期的处置"。
-     * 故意不用 {@code requirePositive} 之类：那会把 {@code lineWidth(-1)}
-     * （一个有确定含义的样式值）一起拒掉，与 {@link #lineWidth} 的文档打架。
-     */
-    private static void requireFinite(float value, String what) {
-        if (!Float.isFinite(value)) {
-            throw new IllegalArgumentException(
-                    what + "必须是有限数（NaN 与 ±Infinity 都不是样式值），实际为 " + value
-                            + "。越界但有限的量（负线宽、fillAlpha > 1）照旧收下，"
-                            + "由渲染侧钳住或退化——那里有一个确定的处置，而 NaN 没有。");
-        }
     }
 }

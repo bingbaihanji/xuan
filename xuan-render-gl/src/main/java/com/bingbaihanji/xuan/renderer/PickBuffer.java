@@ -4,8 +4,8 @@ import com.bingbaihanji.xuan.gl.Framebuffer;
 import com.bingbaihanji.xuan.gl.GLAbstraction;
 import com.bingbaihanji.xuan.util.Disposable;
 
-import java.util.ArrayList;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.TreeMap;
@@ -33,42 +33,16 @@ public final class PickBuffer implements Disposable {
     /** GL 抽象层。 */
     private final GLAbstraction gl;
 
-    /** 底层帧缓冲，尺寸变化时会被替换。 */
-    private Framebuffer framebuffer;
-
     /** 异步读回槽位按提交顺序排队，不能按 GPU 完成顺序乱序返回。 */
     private final Deque<PixelPackSlot> pendingPixelReads = new ArrayDeque<>();
 
     private final PixelPackSlot[] pixelPackSlots = new PixelPackSlot[PIXEL_PACK_BUFFER_COUNT];
 
+    /** 底层帧缓冲，尺寸变化时会被替换。 */
+    private Framebuffer framebuffer;
+
     /** 是否已释放。 */
     private boolean disposed = false;
-
-    /** 异步点读的提交状态。 */
-    public enum AsyncReadStatus {
-        QUEUED,
-        OUT_OF_BOUNDS,
-        NO_PICK_CONTENT,
-        NO_FREE_SLOT
-    }
-
-    /** 已完成读回的令牌与拾取 ID。 */
-    public record AsyncReadResult(long token, int id) {
-    }
-
-    private static final class PixelPackSlot {
-        final int buffer;
-        long token;
-        long sync;
-
-        PixelPackSlot(int buffer) {
-            this.buffer = buffer;
-        }
-
-        boolean isBusy() {
-            return sync != 0L;
-        }
-    }
 
     /**
      * 创建拾取缓冲。
@@ -360,5 +334,34 @@ public final class PickBuffer implements Disposable {
         pendingPixelReads.clear();
         framebuffer.dispose();
         disposed = true;
+    }
+
+    /** 异步点读的提交状态。 */
+    public enum AsyncReadStatus {
+        QUEUED,
+        OUT_OF_BOUNDS,
+        NO_PICK_CONTENT,
+        NO_FREE_SLOT
+    }
+
+    /** 已完成读回的令牌与拾取 ID。 */
+    public record AsyncReadResult(long token, int id) {
+    }
+
+    private static final class PixelPackSlot {
+
+        final int buffer;
+
+        long token;
+
+        long sync;
+
+        PixelPackSlot(int buffer) {
+            this.buffer = buffer;
+        }
+
+        boolean isBusy() {
+            return sync != 0L;
+        }
     }
 }

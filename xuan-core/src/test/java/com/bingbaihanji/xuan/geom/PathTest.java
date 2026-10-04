@@ -1,7 +1,10 @@
 package com.bingbaihanji.xuan.geom;
 
 import org.junit.jupiter.api.Test;
-import static org.junit.jupiter.api.Assertions.*;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link Path} 的单元测试：验证命令记录、坐标存取、容量增长与实例复用行为。

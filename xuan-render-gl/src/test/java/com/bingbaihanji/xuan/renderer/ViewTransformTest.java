@@ -3,11 +3,7 @@ package com.bingbaihanji.xuan.renderer;
 import com.bingbaihanji.xuan.math.Vec2;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * {@link ViewTransform} 的单测。
@@ -49,6 +45,37 @@ class ViewTransformTest {
     // 基础矩阵
     // ------------------------------------------------------------------
 
+    /** 把用户原点变换到设备像素 x，便于直接和用户坐标下的平移量比较。 */
+    private static float deviceXOfUserOrigin(ViewTransform t) {
+        return (ndc(t, 0f, 0f).x() + 1f) * 0.5f * t.getViewportWidth();
+    }
+
+    /** 用户坐标点 → 设备像素 x。跨 y 轴的比较必须在设备像素下做，见 rotateIsClockwiseOnScreen。 */
+    private static float deviceXOf(ViewTransform t, float x, float y) {
+        return t.deviceX(t.transformX(x, y));
+    }
+
+    /** 用户坐标点 → 设备像素 y（y 向下）。 */
+    private static float deviceYOf(ViewTransform t, float x, float y) {
+        return t.deviceY(t.transformY(x, y));
+    }
+
+    /** 逐点比较 {@link ViewTransform#transformX}/{@link ViewTransform#transformY} 与 {@code Mat3.transform}。 */
+    private static void assertMatchesMat3(ViewTransform t, String message) {
+        float[] points = {0f, 0f, 1f, 0f, 0f, 1f, 123.5f, -45.25f, -800f, 600f};
+        for (int i = 0; i < points.length; i += 2) {
+            float x = points[i];
+            float y = points[i + 1];
+            Vec2 m = ndc(t, x, y);
+            assertEquals(m.x(), t.transformX(x, y), 1e-4f, message + " (" + x + "," + y + ")");
+            assertEquals(m.y(), t.transformY(x, y), 1e-4f, message + " (" + x + "," + y + ")");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // NDC ↔ 设备像素
+    // ------------------------------------------------------------------
+
     @Test
     void baseMatrixMapsUserOriginToNdcTopLeft() {
         ViewTransform t = frame();
@@ -81,7 +108,7 @@ class ViewTransformTest {
     }
 
     // ------------------------------------------------------------------
-    // NDC ↔ 设备像素
+    // 裁剪
     // ------------------------------------------------------------------
 
     @Test
@@ -120,10 +147,6 @@ class ViewTransformTest {
         t.toDeviceBounds(-1f, -1f, 1f, 0f, out);
         assertArrayEquals(new float[]{0f, 300f, 800f, 600f}, out, EPS);
     }
-
-    // ------------------------------------------------------------------
-    // 裁剪
-    // ------------------------------------------------------------------
 
     @Test
     void freshFrameClipCoversWholeFramebuffer() {
@@ -178,6 +201,10 @@ class ViewTransformTest {
         assertEquals(0, t.getClipDeviceWidth(), "交集为空时宽度必须为 0，不能是负数");
         assertEquals(0, t.getClipDeviceHeight());
     }
+
+    // ------------------------------------------------------------------
+    // 变换与栈
+    // ------------------------------------------------------------------
 
     @Test
     void clipIsClampedToFramebuffer() {
@@ -253,10 +280,6 @@ class ViewTransformTest {
             }
         }
     }
-
-    // ------------------------------------------------------------------
-    // 变换与栈
-    // ------------------------------------------------------------------
 
     @Test
     void translateAccumulatesAfterCurrentTransform() {
@@ -341,6 +364,10 @@ class ViewTransformTest {
         assertEquals(1f, origin.y(), EPS);
     }
 
+    // ------------------------------------------------------------------
+    // 热路径辅助
+    // ------------------------------------------------------------------
+
     @Test
     void unbalancedRestoreThrowsAndKeepsState() {
         ViewTransform t = frame();
@@ -361,6 +388,10 @@ class ViewTransformTest {
         assertEquals(0, t.getStackDepth());
         assertEquals(0, t.clearStack());
     }
+
+    // ------------------------------------------------------------------
+    // 缩放因子
+    // ------------------------------------------------------------------
 
     @Test
     void beginFrameResetsEverything() {
@@ -383,10 +414,6 @@ class ViewTransformTest {
         assertThrows(IllegalArgumentException.class, () -> t.beginFrame(0, 600));
         assertThrows(IllegalArgumentException.class, () -> t.beginFrame(800, 0));
     }
-
-    // ------------------------------------------------------------------
-    // 热路径辅助
-    // ------------------------------------------------------------------
 
     @Test
     void componentTransformMatchesMat3Transform() {
@@ -415,10 +442,6 @@ class ViewTransformTest {
         assertEquals(-1f, t.transformY(1024f, 768f), EPS);
     }
 
-    // ------------------------------------------------------------------
-    // 缩放因子
-    // ------------------------------------------------------------------
-
     @Test
     void matrixScaleIsOneForIdentityTransform() {
         // 恒等变换下"一个用户单位就是一个设备像素"，与视口尺寸无关
@@ -433,6 +456,10 @@ class ViewTransformTest {
         ViewTransform t = frame(200, 200);
         assertEquals(1f, t.matrixScale(), EPS, "基础矩阵把 2/w 的缩放抵消掉了");
     }
+
+    // ------------------------------------------------------------------
+    // 「当前变换是不是本帧的基础变换」
+    // ------------------------------------------------------------------
 
     @Test
     void matrixScaleFollowsUserScale() {
@@ -466,7 +493,7 @@ class ViewTransformTest {
     }
 
     // ------------------------------------------------------------------
-    // 「当前变换是不是本帧的基础变换」
+    // 辅助
     // ------------------------------------------------------------------
 
     /**
@@ -526,36 +553,5 @@ class ViewTransformTest {
         t.scale(3f, 3f);
         t.beginFrame(400, 300);
         assertTrue(t.isBaseTransform(), "新一帧从基础变换开始，与上一帧做过什么无关");
-    }
-
-    // ------------------------------------------------------------------
-    // 辅助
-    // ------------------------------------------------------------------
-
-    /** 把用户原点变换到设备像素 x，便于直接和用户坐标下的平移量比较。 */
-    private static float deviceXOfUserOrigin(ViewTransform t) {
-        return (ndc(t, 0f, 0f).x() + 1f) * 0.5f * t.getViewportWidth();
-    }
-
-    /** 用户坐标点 → 设备像素 x。跨 y 轴的比较必须在设备像素下做，见 rotateIsClockwiseOnScreen。 */
-    private static float deviceXOf(ViewTransform t, float x, float y) {
-        return t.deviceX(t.transformX(x, y));
-    }
-
-    /** 用户坐标点 → 设备像素 y（y 向下）。 */
-    private static float deviceYOf(ViewTransform t, float x, float y) {
-        return t.deviceY(t.transformY(x, y));
-    }
-
-    /** 逐点比较 {@link ViewTransform#transformX}/{@link ViewTransform#transformY} 与 {@code Mat3.transform}。 */
-    private static void assertMatchesMat3(ViewTransform t, String message) {
-        float[] points = {0f, 0f, 1f, 0f, 0f, 1f, 123.5f, -45.25f, -800f, 600f};
-        for (int i = 0; i < points.length; i += 2) {
-            float x = points[i];
-            float y = points[i + 1];
-            Vec2 m = ndc(t, x, y);
-            assertEquals(m.x(), t.transformX(x, y), 1e-4f, message + " (" + x + "," + y + ")");
-            assertEquals(m.y(), t.transformY(x, y), 1e-4f, message + " (" + x + "," + y + ")");
-        }
     }
 }

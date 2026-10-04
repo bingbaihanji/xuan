@@ -29,14 +29,19 @@ final class TestFonts {
     /** 与 `xuan-javafx` 侧 `TextFont.kt` 的 `FONT_PROPERTY` 是**同一个名字**，故意如此。 */
     static final String PROPERTY = "xuan.text.font";
 
-    private TestFonts() {
-    }
+    /** 没设属性时该说的那句话。 */
+    static final String HINT =
+            "需要字体：-D" + PROPERTY + "=<某个 .ttf 的路径>"
+                    + "（本库不再自带字体——原先那份 simhei.ttf 是专有字体，与 MIT 声明冲突）";
 
     /**
      * 取字体路径；**没设属性时跳过当前测试类**。
      *
      * @return 属性指向的路径（不校验存在性——那交给 {@link FontFile#load}）
      */
+    private TestFonts() {
+    }
+
     /** 没设属性时抛断言失败（**只在 {@code @BeforeEach} 里调**，理由见那里）。 */
     static void require() {
         Assumptions.assumeTrue(isSet(), HINT);
@@ -56,9 +61,4 @@ final class TestFonts {
         String p = System.getProperty(PROPERTY);
         return p != null && !p.isBlank();
     }
-
-    /** 没设属性时该说的那句话。 */
-    static final String HINT =
-            "需要字体：-D" + PROPERTY + "=<某个 .ttf 的路径>"
-                    + "（本库不再自带字体——原先那份 simhei.ttf 是专有字体，与 MIT 声明冲突）";
 }

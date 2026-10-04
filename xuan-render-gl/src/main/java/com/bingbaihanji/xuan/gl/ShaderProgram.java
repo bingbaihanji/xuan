@@ -21,11 +21,6 @@ import static org.lwjgl.opengl.GL20.*;
  */
 public class ShaderProgram implements Disposable {
 
-    /** 着色器程序 ID */
-    private int programId;
-
-    private boolean disposed;
-
     /**
      * uniform 名字 → 位置。程序链接后位置就固定了，不必每次现查。
      *
@@ -35,6 +30,11 @@ public class ShaderProgram implements Disposable {
      * 去设值，症状是"uniform 设了但没生效"，画面只是不对，不报任何错。
      */
     private final Map<String, Integer> uniformLocations = new HashMap<>();
+
+    /** 着色器程序 ID */
+    private int programId;
+
+    private boolean disposed;
 
     /** 顶点着色器 ID */
     private int vertexShaderId;

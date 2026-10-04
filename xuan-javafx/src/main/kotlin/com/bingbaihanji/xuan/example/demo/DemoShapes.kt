@@ -101,6 +101,7 @@ sealed interface Shape {
             if (style != ShapeStyle.STROKE) gc.fillRect(x, y, w, h)
             if (style != ShapeStyle.FILL) gc.strokeRect(x, y, w, h)
         }
+
         override fun bounds() = Rect(x, y, w, h)
         override fun describe() = "矩形 ${w.toInt()}x${h.toInt()} @(${x.toInt()},${y.toInt()})"
     }
@@ -113,6 +114,7 @@ sealed interface Shape {
             if (style != ShapeStyle.STROKE) gc.fillCircle(cx, cy, r)
             if (style != ShapeStyle.FILL) gc.strokeCircle(cx, cy, r)
         }
+
         override fun bounds() = Rect(cx - r, cy - r, r * 2f, r * 2f)
         override fun describe() = "圆 r=${r.toInt()} @(${cx.toInt()},${cy.toInt()})"
     }
@@ -125,6 +127,7 @@ sealed interface Shape {
             if (style != ShapeStyle.STROKE) gc.fillEllipse(cx, cy, rx, ry)
             if (style != ShapeStyle.FILL) gc.strokeEllipse(cx, cy, rx, ry)
         }
+
         override fun bounds() = Rect(cx - rx, cy - ry, rx * 2f, ry * 2f)
         override fun describe() = "椭圆 ${rx.toInt()}x${ry.toInt()} @(${cx.toInt()},${cy.toInt()})"
     }
@@ -171,6 +174,7 @@ sealed interface Shape {
             if (style != ShapeStyle.STROKE) gc.fillPolygon(points)
             if (style != ShapeStyle.FILL) gc.strokePolyline(points, closed = true)
         }
+
         override fun bounds() = boundsOf(points)
         override fun describe() = "多边形 ${points.size / 2} 顶点"
     }
@@ -207,12 +211,18 @@ sealed interface Shape {
             // 只描边不填充——一条开放曲线的"内部"没有定义。
             var i = 2
             while (i + 3 < points.size) {
-                gc.quadraticCurveTo(points[i], points[i + 1], (points[i] + points[i + 2]) / 2f, (points[i + 1] + points[i + 3]) / 2f)
+                gc.quadraticCurveTo(
+                    points[i],
+                    points[i + 1],
+                    (points[i] + points[i + 2]) / 2f,
+                    (points[i + 1] + points[i + 3]) / 2f
+                )
                 i += 2
             }
             gc.lineTo(points[points.size - 2], points[points.size - 1])
             gc.strokePath()
         }
+
         override fun bounds() = boundsOf(points)
         override fun describe() = "贝塞尔曲线 ${points.size / 2} 控制点"
     }
@@ -357,8 +367,10 @@ private inline fun strokeWith(gc: Gc, color: Int, lineWidth: Float, body: () -> 
  */
 internal fun boundsOf(points: FloatArray): Rect {
     if (points.size < 2) return Rect(0f, 0f, 0f, 0f)
-    var minX = points[0]; var maxX = points[0]
-    var minY = points[1]; var maxY = points[1]
+    var minX = points[0];
+    var maxX = points[0]
+    var minY = points[1];
+    var maxY = points[1]
     var i = 2
     while (i + 1 < points.size) {
         if (points[i] < minX) minX = points[i]

@@ -142,6 +142,26 @@ public final class Chart {
         }
     }
 
+    private static void requirePositiveFinite(float value, String what) {
+        if (!Float.isFinite(value) || value <= 0f) {
+            throw new IllegalArgumentException(what + "必须是正的有限数，实际为 " + value);
+        }
+    }
+
+    /**
+     * 非负且有限。
+     *
+     * <p>非有限数一并拒掉的理由与 {@link Series} 那边相同：{@code Infinity} 的间隙会让
+     * 绘图区缩成 0（在画面上等于"这张图没数据"），而 {@code NaN} 会一路传进矩形的算术里，
+     * 那些 {@code Math.max(0f, ...)} 的兜底都拦不住它——两者都没有一个"明确的处置"。
+     */
+    private static void requireNonNegative(float value, String what) {
+        if (!Float.isFinite(value) || value < 0f) {
+            throw new IllegalArgumentException(
+                    what + "必须是非负的有限数，实际为 " + value);
+        }
+    }
+
     /**
      * 追加一根轴（多一个维度）。
      *
@@ -203,6 +223,10 @@ public final class Chart {
         return Collections.unmodifiableList(layers);
     }
 
+    // ------------------------------------------------------------------
+    // 标题
+    // ------------------------------------------------------------------
+
     /**
      * 全部系列，按绘制顺序（层序优先、层内其次）。
      *
@@ -223,10 +247,6 @@ public final class Chart {
     public ChartInteraction interaction() {
         return interaction;
     }
-
-    // ------------------------------------------------------------------
-    // 标题
-    // ------------------------------------------------------------------
 
     /** 标题；空串表示不显示。 */
     public String title() {
@@ -290,6 +310,10 @@ public final class Chart {
         return this;
     }
 
+    // ------------------------------------------------------------------
+    // 图例
+    // ------------------------------------------------------------------
+
     /** 标题带与它下面那块之间的间隙（像素）。 */
     public float titleGap() {
         return titleGap;
@@ -301,10 +325,6 @@ public final class Chart {
         this.titleGap = px;
         return this;
     }
-
-    // ------------------------------------------------------------------
-    // 图例
-    // ------------------------------------------------------------------
 
     /** 是否显示图例。 */
     public boolean legendVisible() {
@@ -360,6 +380,10 @@ public final class Chart {
         return this;
     }
 
+    // ------------------------------------------------------------------
+    // 轴标题与刻度文字的预留带
+    // ------------------------------------------------------------------
+
     /** 图例带与绘图区之间的间隙（像素）。 */
     public float legendGap() {
         return legendGap;
@@ -371,10 +395,6 @@ public final class Chart {
         this.legendGap = px;
         return this;
     }
-
-    // ------------------------------------------------------------------
-    // 轴标题与刻度文字的预留带
-    // ------------------------------------------------------------------
 
     /** 是否显示轴标题（{@code AxisRange} 的 name / unit）。默认 {@code false}，理由见字段说明。 */
     public boolean axisTitlesVisible() {
@@ -494,6 +514,10 @@ public final class Chart {
                         + "预留带——收下它然后什么也不做，就是「设了但没用」这种静默失效。");
     }
 
+    // ------------------------------------------------------------------
+    // 外边距
+    // ------------------------------------------------------------------
+
     /**
      * 设置某一侧的刻度文字预留量。
      *
@@ -527,10 +551,6 @@ public final class Chart {
         return this;
     }
 
-    // ------------------------------------------------------------------
-    // 外边距
-    // ------------------------------------------------------------------
-
     /** 外边距。 */
     public ChartInsets padding() {
         return padding;
@@ -548,25 +568,5 @@ public final class Chart {
         }
         this.padding = insets;
         return this;
-    }
-
-    private static void requirePositiveFinite(float value, String what) {
-        if (!Float.isFinite(value) || value <= 0f) {
-            throw new IllegalArgumentException(what + "必须是正的有限数，实际为 " + value);
-        }
-    }
-
-    /**
-     * 非负且有限。
-     *
-     * <p>非有限数一并拒掉的理由与 {@link Series} 那边相同：{@code Infinity} 的间隙会让
-     * 绘图区缩成 0（在画面上等于"这张图没数据"），而 {@code NaN} 会一路传进矩形的算术里，
-     * 那些 {@code Math.max(0f, ...)} 的兜底都拦不住它——两者都没有一个"明确的处置"。
-     */
-    private static void requireNonNegative(float value, String what) {
-        if (!Float.isFinite(value) || value < 0f) {
-            throw new IllegalArgumentException(
-                    what + "必须是非负的有限数，实际为 " + value);
-        }
     }
 }

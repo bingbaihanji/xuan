@@ -18,11 +18,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.lwjgl.opengl.GL11.GL_FLOAT;
-import static org.lwjgl.opengl.GL11.GL_ONE;
-import static org.lwjgl.opengl.GL11.GL_ONE_MINUS_SRC_ALPHA;
-import static org.lwjgl.opengl.GL11.GL_TRIANGLE_STRIP;
-import static org.lwjgl.opengl.GL11.glScissor;
+import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL20.glEnableVertexAttribArray;
 import static org.lwjgl.opengl.GL20.glVertexAttribPointer;
 
@@ -150,6 +146,94 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
 
         gl.bindVbo(0);
         gl.bindVao(0);
+    }
+
+    /**
+     * 本渲染器只画 {@link ChartType#SPECTRUM}，其余明确报错。
+     *
+     * <p>{@code ChartRenderer} 已经按图型分派到本类，这道检查是第二道闸：
+     * 它挡的是"分派表被改坏"（比如把 {@code LINE} 也路由到这里）——那时频谱渲染器会拿
+     * 折线的样本当幅度画出来，<b>画面上是一条形状完全合理的曲线</b>。
+     */
+    private static void requireSupported(ChartType type) {
+        if (type == ChartType.SPECTRUM) {
+            return;
+        }
+        throw new IllegalArgumentException(
+                "SpectrumSeriesRenderer 不支持图型 " + type + "。明确报错而不是静默不画/画错："
+                        + "把时域样本当成频谱幅度画出来，是一条形状完全合理的假曲线。");
+    }
+
+    /**
+     * 本次变换用的长度 N：{@code min(默认长度, 环容量)}。
+     *
+     * <p>取值与 {@link #DEFAULT_FFT_LENGTH} 一样必须是 2 的幂——两者都是 2 的幂，
+     * 所以 {@code min} 也是。被容量压住时用容量本身：<b>环里拿不出比它自己容量更多的样本</b>，
+     * 硬要 N &gt; 容量就会把已经被覆盖的槽位当成有效样本，谱形照旧正常、内容是错的。
+     *
+     * <p><b>配置错误响亮报错</b>（与"预热期不画"是两回事，见 {@link #render}）：
+     * 容量小于最小变换长度时这个系列<b>永远</b>算不出频谱，抛异常而不是每帧安静地不画。
+     *
+     * @throws IllegalArgumentException 环容量小于 {@link FftKernel#MIN_N}
+     */
+    private static int transformLength(int ringCapacity) {
+        if (ringCapacity < FftKernel.MIN_N) {
+            throw new IllegalArgumentException(
+                    "频谱系列的环形缓冲容量是 " + ringCapacity + "，小于 FFT 的最小变换长度 "
+                            + FftKernel.MIN_N + "。这个系列永远算不出频谱，因此明确报错："
+                            + "继续画只能画出一条假的谱。");
+        }
+        return Math.min(DEFAULT_FFT_LENGTH, ringCapacity);
+    }
+
+    /**
+     * 实例化绘制用的"环容量"参数：{@code binCount} 向上取到的<b>下一个 2 的幂</b>。
+     *
+     * <h2>★ 这里有个必须交代清楚的口径：缓冲实际有多大、容量参数是多少</h2>
+     * <p>{@link WindowRange#compute} 用容量做槽位算术（{@code 下标 & (容量-1)}），
+     * 所以它<strong>必须是 2 的幂</strong>。而 {@code FftKernel} 的输出缓冲只分配了
+     * {@code binCount = N/2 + 1} 个 float（{@code N = 2048} 时是 1025）——
+     * <strong>比它的下一个 2 的幂（2048）小</strong>。于是本类这样安排：
+     *
+     * <ul>
+     *   <li><b>缓冲实际有</b> {@code binCount} 个 float（4·binCount 字节）；</li>
+     *   <li><b>传给 compute 的 writeIndex 是</b> {@code binCount}——它是"有效数据的上界"，
+     *       与缓冲大小不是一回事；</li>
+     *   <li><b>传给 compute 的 capacity 是</b> {@code binCapacityFor(binCount)}——
+     *       只用于槽位算术，<b>不是</b>缓冲的大小。</li>
+     * </ul>
+     *
+     * <p><b>为什么这样不会越界读</b>（这是越界读的经典入口，而越界读在 GL 里不报错）：
+     * 容量 ≥ binCount，于是 {@code validStart = max(0, binCount - 容量) = 0}、
+     * 上界 {@code binCount - 1}，且 {@code firstSlot = lo & (容量-1) = lo}
+     * （因为 {@code lo ≤ binCount-2 < 容量}）——<b>永不跨环绕，下标恒等于 bin 索引</b>。
+     * 最后一个实例读的字节是偏移 {@code (binCount-1)·4} 与 {@code binCount·4}，
+     * 正好落在缓冲的最后一个 float 内。<b>容量取小了才会出事</b>：那时
+     * {@code bin k} 与 {@code bin (k-容量)} 会共用槽位，画出来的是**错位的谱**——
+     * 谱形完全正常，所以那条路必须是"取下一个 2 的幂"这一种。
+     *
+     * <p>另一条路（让 {@code FftKernel} 按下一个 2 的幂分配输出缓冲、多出来的当余量）
+     * 更省事，但 {@code gpu/} 在本任务里已收口、不许改；而且它会把"缓冲多大"与
+     * "槽位算术的容量"这两个概念继续绑在一起——分开之后，
+     * {@code WindowRange} 收到的容量就纯粹是算术参数了。
+     */
+    static int binCapacityFor(int binCount) {
+        int highest = Integer.highestOneBit(binCount);
+        return highest == binCount ? binCount : highest << 1;
+    }
+
+    /**
+     * 把裁剪盒设到绘图区。
+     *
+     * <p>{@code glScissor} 的原点在帧缓冲<b>左下角</b>、y 向上，而本管线的用户空间是
+     * "像素、原点左上、y 向下"，{@code plot} 记的是矩形<strong>上边缘</strong>。
+     * 因此 GL 侧的下边 = {@code viewportHeight - plot.y - plot.height}。
+     * 漏掉这一步的后果是裁剪区上下镜像——数据在绘图区下半部分被裁掉、上半部分却画到
+     * 了绘图区外面，而顶点本身是对的。
+     */
+    private static void setScissorTo(Rect plot, int viewportHeight) {
+        int y = viewportHeight - (int) plot.y - (int) plot.height;
+        glScissor((int) plot.x, y, (int) plot.width, (int) plot.height);
     }
 
     /**
@@ -341,80 +425,6 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
         gl.setScissorEnabled(scissorWasOn);
     }
 
-    /**
-     * 本渲染器只画 {@link ChartType#SPECTRUM}，其余明确报错。
-     *
-     * <p>{@code ChartRenderer} 已经按图型分派到本类，这道检查是第二道闸：
-     * 它挡的是"分派表被改坏"（比如把 {@code LINE} 也路由到这里）——那时频谱渲染器会拿
-     * 折线的样本当幅度画出来，<b>画面上是一条形状完全合理的曲线</b>。
-     */
-    private static void requireSupported(ChartType type) {
-        if (type == ChartType.SPECTRUM) {
-            return;
-        }
-        throw new IllegalArgumentException(
-                "SpectrumSeriesRenderer 不支持图型 " + type + "。明确报错而不是静默不画/画错："
-                        + "把时域样本当成频谱幅度画出来，是一条形状完全合理的假曲线。");
-    }
-
-    /**
-     * 本次变换用的长度 N：{@code min(默认长度, 环容量)}。
-     *
-     * <p>取值与 {@link #DEFAULT_FFT_LENGTH} 一样必须是 2 的幂——两者都是 2 的幂，
-     * 所以 {@code min} 也是。被容量压住时用容量本身：<b>环里拿不出比它自己容量更多的样本</b>，
-     * 硬要 N &gt; 容量就会把已经被覆盖的槽位当成有效样本，谱形照旧正常、内容是错的。
-     *
-     * <p><b>配置错误响亮报错</b>（与"预热期不画"是两回事，见 {@link #render}）：
-     * 容量小于最小变换长度时这个系列<b>永远</b>算不出频谱，抛异常而不是每帧安静地不画。
-     *
-     * @throws IllegalArgumentException 环容量小于 {@link FftKernel#MIN_N}
-     */
-    private static int transformLength(int ringCapacity) {
-        if (ringCapacity < FftKernel.MIN_N) {
-            throw new IllegalArgumentException(
-                    "频谱系列的环形缓冲容量是 " + ringCapacity + "，小于 FFT 的最小变换长度 "
-                            + FftKernel.MIN_N + "。这个系列永远算不出频谱，因此明确报错："
-                            + "继续画只能画出一条假的谱。");
-        }
-        return Math.min(DEFAULT_FFT_LENGTH, ringCapacity);
-    }
-
-    /**
-     * 实例化绘制用的"环容量"参数：{@code binCount} 向上取到的<b>下一个 2 的幂</b>。
-     *
-     * <h2>★ 这里有个必须交代清楚的口径：缓冲实际有多大、容量参数是多少</h2>
-     * <p>{@link WindowRange#compute} 用容量做槽位算术（{@code 下标 & (容量-1)}），
-     * 所以它<strong>必须是 2 的幂</strong>。而 {@code FftKernel} 的输出缓冲只分配了
-     * {@code binCount = N/2 + 1} 个 float（{@code N = 2048} 时是 1025）——
-     * <strong>比它的下一个 2 的幂（2048）小</strong>。于是本类这样安排：
-     *
-     * <ul>
-     *   <li><b>缓冲实际有</b> {@code binCount} 个 float（4·binCount 字节）；</li>
-     *   <li><b>传给 compute 的 writeIndex 是</b> {@code binCount}——它是"有效数据的上界"，
-     *       与缓冲大小不是一回事；</li>
-     *   <li><b>传给 compute 的 capacity 是</b> {@code binCapacityFor(binCount)}——
-     *       只用于槽位算术，<b>不是</b>缓冲的大小。</li>
-     * </ul>
-     *
-     * <p><b>为什么这样不会越界读</b>（这是越界读的经典入口，而越界读在 GL 里不报错）：
-     * 容量 ≥ binCount，于是 {@code validStart = max(0, binCount - 容量) = 0}、
-     * 上界 {@code binCount - 1}，且 {@code firstSlot = lo & (容量-1) = lo}
-     * （因为 {@code lo ≤ binCount-2 < 容量}）——<b>永不跨环绕，下标恒等于 bin 索引</b>。
-     * 最后一个实例读的字节是偏移 {@code (binCount-1)·4} 与 {@code binCount·4}，
-     * 正好落在缓冲的最后一个 float 内。<b>容量取小了才会出事</b>：那时
-     * {@code bin k} 与 {@code bin (k-容量)} 会共用槽位，画出来的是**错位的谱**——
-     * 谱形完全正常，所以那条路必须是"取下一个 2 的幂"这一种。
-     *
-     * <p>另一条路（让 {@code FftKernel} 按下一个 2 的幂分配输出缓冲、多出来的当余量）
-     * 更省事，但 {@code gpu/} 在本任务里已收口、不许改；而且它会把"缓冲多大"与
-     * "槽位算术的容量"这两个概念继续绑在一起——分开之后，
-     * {@code WindowRange} 收到的容量就纯粹是算术参数了。
-     */
-    static int binCapacityFor(int binCount) {
-        int highest = Integer.highestOneBit(binCount);
-        return highest == binCount ? binCount : highest << 1;
-    }
-
     /** 取（必要时创建）该环容量的 FFT 核。只在 GL 线程上调用。 */
     private FftKernel kernelFor(int ringCapacity, int n) {
         FftKernel kernel = kernels.get(ringCapacity);
@@ -423,20 +433,6 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
             kernels.put(ringCapacity, kernel);
         }
         return kernel;
-    }
-
-    /**
-     * 把裁剪盒设到绘图区。
-     *
-     * <p>{@code glScissor} 的原点在帧缓冲<b>左下角</b>、y 向上，而本管线的用户空间是
-     * "像素、原点左上、y 向下"，{@code plot} 记的是矩形<strong>上边缘</strong>。
-     * 因此 GL 侧的下边 = {@code viewportHeight - plot.y - plot.height}。
-     * 漏掉这一步的后果是裁剪区上下镜像——数据在绘图区下半部分被裁掉、上半部分却画到
-     * 了绘图区外面，而顶点本身是对的。
-     */
-    private static void setScissorTo(Rect plot, int viewportHeight) {
-        int y = viewportHeight - (int) plot.y - (int) plot.height;
-        glScissor((int) plot.x, y, (int) plot.width, (int) plot.height);
     }
 
     /** 释放本类持有的 GL 资源（VAO、单位四边形 VBO、全部 FFT 核）。幂等。 */

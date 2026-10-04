@@ -15,7 +15,6 @@ import javafx.scene.input.MouseButton
 import javafx.scene.input.MouseEvent
 import javafx.stage.Stage
 import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.system.exitProcess
@@ -582,10 +581,12 @@ class ClickVerifierApp : Application() {
                 gc.lineWidth = 6f
                 gc.strokeRect(s.x, s.y, s.w, s.h)
             }
+
             "A_FILL_RECT", "UNDER", "OVER", "VANISH", "P_TARGET", "Q_TARGET", "ORIGIN_DOT", "FAR_DOT" -> {
                 gc.fill = t.fillHex
                 gc.fillRect(s.x, s.y, s.w, s.h)
             }
+
             "ROUND_RECT" -> {
                 val r = minOf(s.w, s.h) * 0.2f
                 gc.fill = t.fillHex
@@ -594,20 +595,24 @@ class ClickVerifierApp : Application() {
                 gc.lineWidth = 4f
                 gc.strokeRect(s.x, s.y, s.w, s.h, r)
             }
+
             "CIRCLE" -> {
                 gc.fill = t.fillHex
                 gc.fillCircle(s.x + s.w / 2f, s.y + s.h / 2f, minOf(s.w, s.h) / 2f)
             }
+
             "TEXT_BIG" -> {
                 gc.fontSize = t.fontSize
                 gc.fill = t.fillHex
                 gc.drawText(TEXT_BIG_CONTENT, s.x, s.y)
             }
+
             "TEXT_SMALL" -> {
                 gc.fontSize = t.fontSize
                 gc.fill = t.fillHex
                 gc.drawText(TEXT_SMALL_CONTENT, s.x, s.y)
             }
+
             else -> error("场景里有一个没写画法的对象：${t.name}")
         }
     }
@@ -899,14 +904,18 @@ class ClickVerifierApp : Application() {
                 }
                 for (k in 0 until OVERFLOW_ORIGIN) {
                     fireSynthetic(
-                        Probe("ovf$k", "溢出前 $k（目标 ORIGIN_DOT）", origin.localX, origin.localY,
-                            true, "ORIGIN_DOT", origin.deviceX, origin.deviceY, false)
+                        Probe(
+                            "ovf$k", "溢出前 $k（目标 ORIGIN_DOT）", origin.localX, origin.localY,
+                            true, "ORIGIN_DOT", origin.deviceX, origin.deviceY, false
+                        )
                     )
                 }
                 for (k in 0 until OVERFLOW_FAR) {
                     fireSynthetic(
-                        Probe("ovf${OVERFLOW_ORIGIN + k}", "溢出后 $k（目标 FAR_DOT）", far.localX, far.localY,
-                            true, "FAR_DOT", far.deviceX, far.deviceY, false)
+                        Probe(
+                            "ovf${OVERFLOW_ORIGIN + k}", "溢出后 $k（目标 FAR_DOT）", far.localX, far.localY,
+                            true, "FAR_DOT", far.deviceX, far.deviceY, false
+                        )
                     )
                 }
             }
@@ -1053,8 +1062,10 @@ class ClickVerifierApp : Application() {
         probe("D_EDGE", "纯描边矩形的上边框上", 0.105 * w, 0.04 * h, "D_STROKE_RECT")
         probe("D_INNER", "纯描边矩形的内部（不填充 → 不命中）", 0.105 * w, 0.10 * h, null)
         probe("C_IN", "实心圆内部", 0.56 * w, 0.10 * h, "CIRCLE")
-        probe("C_OUT", "圆的**外接框**角上（圆外 → 不命中）",
-            0.56 * w - 0.05 * w + 3.0, 0.10 * h - 0.05 * w + 3.0, null)
+        probe(
+            "C_OUT", "圆的**外接框**角上（圆外 → 不命中）",
+            0.56 * w - 0.05 * w + 3.0, 0.10 * h - 0.05 * w + 3.0, null
+        )
         // 重叠：后画的赢
         probe("U_UNDER", "重叠区的下层独占部分", 0.07 * w, 0.70 * h, "UNDER")
         probe("U_OVER", "重叠区（后画的赢）", 0.13 * w, 0.70 * h, "OVER")
@@ -1062,11 +1073,15 @@ class ClickVerifierApp : Application() {
         probe("ORIGIN", "画面左上角（原点处无偏移）", 7.0, 7.0, "ORIGIN_DOT")
         probe("FAR", "画面右下角（远端缩放正确）", (w - 9).toDouble(), (h - 9).toDouble(), "FAR_DOT")
         // ★ 换算与不换算：同一个局部坐标，两条路
-        probe("STAR_CONVERTED", "★ 同一局部坐标（换算后）→ 点中 P",
-            0.62 * w, 0.42 * h, "P_TARGET")
-        probe("STAR_RAW", "★ 同一局部坐标（**不换算**）→ 点中 Q",
+        probe(
+            "STAR_CONVERTED", "★ 同一局部坐标（换算后）→ 点中 P",
+            0.62 * w, 0.42 * h, "P_TARGET"
+        )
+        probe(
+            "STAR_RAW", "★ 同一局部坐标（**不换算**）→ 点中 Q",
             0.62 * w, 0.42 * h, "Q_TARGET", convert = false,
-            altX = 0.62 * w, altY = 0.42 * h)
+            altX = 0.62 * w, altY = 0.42 * h
+        )
         // Q 的落点是 P ÷ 缩放，缩放越大它越靠近原点。本校验器为 1.15~2.05 留了空带；
         // 超出这个范围时 P/Q 可能与别的对象重叠，那两个探针的判据就不再是"换算对不对"了，
         // 于是明确跳过并打印原因——**不是静默跳过**，报告里有 [SKIP] 行。
@@ -1149,8 +1164,10 @@ class ClickVerifierApp : Application() {
         if (total == 0) {
             println("=== 全部通过 ===")
         } else {
-            println("=== 失败 $total 项（坐标约定 $calibrationFailures 项，探针 ${failures.size} 项）：" +
-                    "${failures.joinToString("；")} ===")
+            println(
+                "=== 失败 $total 项（坐标约定 $calibrationFailures 项，探针 ${failures.size} 项）：" +
+                        "${failures.joinToString("；")} ==="
+            )
         }
         Platform.exit()
         exitProcess(if (total == 0) 0 else 1)
@@ -1179,8 +1196,10 @@ class ClickVerifierApp : Application() {
 
         for (p in planList) {
             if (p.tag == "STAR_RAW" && starSkipped) {
-                println("  [SKIP] ${p.label} — 本机窗口缩放 ${metrics?.scaleY} 不在本校验器覆盖的范围内" +
-                        "（P/Q 会与别的对象重叠），该条未执行")
+                println(
+                    "  [SKIP] ${p.label} — 本机窗口缩放 ${metrics?.scaleY} 不在本校验器覆盖的范围内" +
+                            "（P/Q 会与别的对象重叠），该条未执行"
+                )
                 continue
             }
             if (p.tag == "STAR_CONVERTED" && starSkipped) {
@@ -1197,7 +1216,11 @@ class ClickVerifierApp : Application() {
                 p.expect ?: "未命中", one?.payload ?: "未交付", one?.id ?: -1
             )
             if (one == null) {
-                report(p.label, false, detail + if (got.isEmpty() && notDelivered.contains(p.tag)) "（超时未交付）" else "")
+                report(
+                    p.label,
+                    false,
+                    detail + if (got.isEmpty() && notDelivered.contains(p.tag)) "（超时未交付）" else ""
+                )
                 continue
             }
             // 未命中必须是 id==0 且 payload==null 两者同时成立：
@@ -1231,7 +1254,13 @@ class ClickVerifierApp : Application() {
         report(
             "圆角矩形：填充且带边框（两个色都记着）",
             round != null && round.filled && round.fillHex == 0xFFFFA726.toInt() && round.strokeHex == 0xFF6D4C41.toInt(),
-            "filled=${round?.filled} fill=0x${round?.fillHex?.let { Integer.toHexString(it) }} stroke=0x${round?.strokeHex?.let { Integer.toHexString(it) }}"
+            "filled=${round?.filled} fill=0x${round?.fillHex?.let { Integer.toHexString(it) }} stroke=0x${
+                round?.strokeHex?.let {
+                    Integer.toHexString(
+                        it
+                    )
+                }
+            }"
         )
         val strokeOnly = payloadOf("D_EDGE")
         report(
@@ -1395,7 +1424,11 @@ class ClickVerifierApp : Application() {
         )
         // 移动那条是同一帧里最后提交的，**必须**至少交付一次：它要是也没到，
         // 说明这一节连"事件确实发出去了"这个前提都没成立。
-        report("移动（hover）至少交付过一次（证明事件路径本身通）", moves >= 1, "交付 $moves/$FIFO_ROUNDS 条（hover 语义：只留最新一条）")
+        report(
+            "移动（hover）至少交付过一次（证明事件路径本身通）",
+            moves >= 1,
+            "交付 $moves/$FIFO_ROUNDS 条（hover 语义：只留最新一条）"
+        )
     }
 
     /**

@@ -6,7 +6,9 @@ import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
-import static org.junit.jupiter.api.Assertions.*;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link Tessellator} 的几何回归测试。
@@ -137,6 +139,29 @@ class TessellatorRegressionTest {
         return pts;
     }
 
+    /**
+     * 把 logback 的收集器挂到 {@link Tessellator} 的日志上执行动作，返回收集到的告警文本。
+     *
+     * @param action 要执行的动作
+     * @return 期间产生的日志文本（每条一行）
+     */
+    private static String captureWarnings(Runnable action) {
+        Logger logger = (Logger) LoggerFactory.getLogger(Tessellator.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            action.run();
+        } finally {
+            logger.detachAppender(appender);
+        }
+        StringBuilder sb = new StringBuilder();
+        for (ILoggingEvent event : appender.list) {
+            sb.append(event.getFormattedMessage()).append('\n');
+        }
+        return sb.toString();
+    }
+
     @Test
     void 矩形挖去方形洞与圆形洞后面积守恒() {
         // 圆形洞的最右顶点 (37,30) 到外轮廓任意顶点的连线，要么穿过圆形洞自身，
@@ -263,29 +288,6 @@ class TessellatorRegressionTest {
         t.tessellateWithHoles(outer, 4, holes, holeCounts);
 
         assertAreaConserved(expectedArea(outer, 4, holes, holeCounts), t);
-    }
-
-    /**
-     * 把 logback 的收集器挂到 {@link Tessellator} 的日志上执行动作，返回收集到的告警文本。
-     *
-     * @param action 要执行的动作
-     * @return 期间产生的日志文本（每条一行）
-     */
-    private static String captureWarnings(Runnable action) {
-        Logger logger = (Logger) LoggerFactory.getLogger(Tessellator.class);
-        ListAppender<ILoggingEvent> appender = new ListAppender<>();
-        appender.start();
-        logger.addAppender(appender);
-        try {
-            action.run();
-        } finally {
-            logger.detachAppender(appender);
-        }
-        StringBuilder sb = new StringBuilder();
-        for (ILoggingEvent event : appender.list) {
-            sb.append(event.getFormattedMessage()).append('\n');
-        }
-        return sb.toString();
     }
 
     @Test

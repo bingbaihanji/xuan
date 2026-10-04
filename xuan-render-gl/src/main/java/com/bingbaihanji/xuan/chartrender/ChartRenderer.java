@@ -84,6 +84,23 @@ import java.util.function.Consumer;
  */
 public final class ChartRenderer implements Disposable {
 
+    /**
+     * 回收的宽限代数：一个系列<b>连续这么多代（= 这么多帧）没被画过</b>才回收。
+     *
+     * <h2>为什么不是 1（"上一帧没画就收"）</h2>
+     * <p>取 1 的话，"<b>每隔一帧画一次</b>"这种用法会<b>每画一次就销毁并重建一次缓冲</b>
+     * ——而重建意味着把整个环<b>重传</b>（1M 点就是 4 MB）。它不是错误用法，
+     * 只是帧率与数据节奏对不齐，<b>症状还完全看不出来</b>：画面逐像素相同，
+     * 只有 GPU 上传量悄悄翻了几百倍。取 2 之后，那种用法的最大间隔恰好是 1 代
+     * （见 {@link #releaseUnused} 的算例），于是它一次都不回收；
+     * 而"真的不再画了"仍然在<b>连续两帧</b>之内释放。
+     *
+     * <p>取 3 或更大没有好处：宽限越长，"不再画的系列"占着显存与拾取号的时间越久，
+     * 而它换来的只是让间隔更长的用法也不抖——那种用法的间隔是任意的，
+     * 加多少都不够。
+     */
+    private static final long GRACE_GENERATIONS = 2;
+
     private final GLAbstraction gl;
 
     /** 每个系列的 GPU 常驻缓冲。用 IdentityHashMap：Series 没有值语义。 */
@@ -206,16 +223,6 @@ public final class ChartRenderer implements Disposable {
     private final BooleanSupplier antialias;
 
     /**
-     * 当前的"代"：每调用一次 {@link #releaseUnused()} 加一，也就是<b>一帧一代</b>。
-     *
-     * <p>{@link #draw} 把每个画到的系列标记成<b>当前代</b>（见 {@link #lastSeen}），
-     * 回收则按"距今几代"判断。用代而不是帧号是因为本类<b>不知道帧号</b>——
-     * 它只在 {@code Gc.beginFrame} 与 {@code draw} 两个时机被碰到，
-     * 中间隔着多少帧对它没有意义。
-     */
-    private long generation = 0;
-
-    /**
      * 系列 → 它最后一次被 {@link #draw} 画到的那一代。
      *
      * <p>同样用 {@link IdentityHashMap}：{@code Series} 没有值语义，
@@ -230,21 +237,14 @@ public final class ChartRenderer implements Disposable {
     private final Map<Series, Long> lastSeen = new IdentityHashMap<>();
 
     /**
-     * 回收的宽限代数：一个系列<b>连续这么多代（= 这么多帧）没被画过</b>才回收。
+     * 当前的"代"：每调用一次 {@link #releaseUnused()} 加一，也就是<b>一帧一代</b>。
      *
-     * <h2>为什么不是 1（"上一帧没画就收"）</h2>
-     * <p>取 1 的话，"<b>每隔一帧画一次</b>"这种用法会<b>每画一次就销毁并重建一次缓冲</b>
-     * ——而重建意味着把整个环<b>重传</b>（1M 点就是 4 MB）。它不是错误用法，
-     * 只是帧率与数据节奏对不齐，<b>症状还完全看不出来</b>：画面逐像素相同，
-     * 只有 GPU 上传量悄悄翻了几百倍。取 2 之后，那种用法的最大间隔恰好是 1 代
-     * （见 {@link #releaseUnused} 的算例），于是它一次都不回收；
-     * 而"真的不再画了"仍然在<b>连续两帧</b>之内释放。
-     *
-     * <p>取 3 或更大没有好处：宽限越长，"不再画的系列"占着显存与拾取号的时间越久，
-     * 而它换来的只是让间隔更长的用法也不抖——那种用法的间隔是任意的，
-     * 加多少都不够。
+     * <p>{@link #draw} 把每个画到的系列标记成<b>当前代</b>（见 {@link #lastSeen}），
+     * 回收则按"距今几代"判断。用代而不是帧号是因为本类<b>不知道帧号</b>——
+     * 它只在 {@code Gc.beginFrame} 与 {@code draw} 两个时机被碰到，
+     * 中间隔着多少帧对它没有意义。
      */
-    private static final long GRACE_GENERATIONS = 2;
+    private long generation = 0;
 
     private boolean disposed = false;
 
@@ -305,6 +305,111 @@ public final class ChartRenderer implements Disposable {
         this.stepRenderer = new StepSeriesRenderer(gl);
         this.barRenderer = new BarSeriesRenderer(gl);
         this.spectrumRenderer = new SpectrumSeriesRenderer(gl);
+    }
+
+    private static void drawTooltip(ChartPainter painter,
+                                    com.bingbaihanji.xuan.chart.ChartHover hover,
+                                    Rect plot,
+                                    com.bingbaihanji.xuan.chart.ChartInteractionConfig config) {
+        float width = 0f;
+        float lineHeight = config.tooltipFontSize() * 1.4f;
+        for (var line : hover.lines()) {
+            width = Math.max(width, painter.width(line.label() + ": " + line.value(),
+                    config.tooltipFontSize()));
+        }
+        width += config.tooltipPadding() * 2f;
+        float height = hover.lines().size() * lineHeight + config.tooltipPadding() * 2f;
+        float x = hover.screenX() + config.tooltipOffset();
+        float y = hover.screenY() - height - config.tooltipOffset();
+        if (x + width > plot.x + plot.width) {
+            x = hover.screenX() - width - config.tooltipOffset();
+        }
+        if (y < plot.y) {
+            y = hover.screenY() + config.tooltipOffset();
+        }
+        x = Math.max(plot.x, Math.min(x, plot.x + plot.width - width));
+        y = Math.max(plot.y, Math.min(y, plot.y + plot.height - height));
+
+        painter.fillRect(x, y, width, height, config.tooltipBackground());
+        painter.strokeRect(x, y, width, height, 1f, config.tooltipBorder());
+        float baseline = y + config.tooltipPadding() + config.tooltipFontSize();
+        for (var line : hover.lines()) {
+            painter.drawText(line.label() + ": " + line.value(),
+                    x + config.tooltipPadding(), baseline,
+                    config.tooltipFontSize(), config.tooltipText());
+            baseline += lineHeight;
+        }
+    }
+
+    /**
+     * 数出本层里有几个柱状系列，并检查它们的间距配置一致。
+     *
+     * <h2>为什么"一共几根"必须在这里算</h2>
+     * <p>{@link SeriesRenderer#render} 的签名里只有自己那一个系列，<b>看不到兄弟系列</b>，
+     * 而柱宽的分母（{@code n + (n-1)·barGap}）与柱心的偏移都要用到"一共几根"。
+     * 让渲染器去猜（恒当第 0 根、总数 1）的后果是同层多个柱状系列<b>完全重叠</b>：
+     * 画面上只剩最后画的那一个，而它看起来就是一张正常的单系列柱状图。
+     *
+     * <h2>为什么间距必须一致</h2>
+     * <p>柱宽同时取决于 {@code categoryGap}、{@code barGap} 与系列数，而这三样是
+     * <b>逐系列</b>配置的。同层里各配一套的话，并排的柱子会宽窄不一——
+     * 那看起来像数据本身的差别，不像配置冲突。<b>不静默容忍</b>（与"不支持的图型
+     * 抛异常"同一条纪律），也不自作主张取第一个系列的值（那会让另一些系列的配置
+     * 静默失效）。
+     *
+     * @return 本层里柱状系列的个数（0 表示这一层没有柱状图）
+     * @throws IllegalArgumentException 同层里并排的柱状系列间距配置不一致时
+     */
+    private static int requireSameBarGaps(Layer layer) {
+        Series first = null;
+        int count = 0;
+        for (Series series : layer.series()) {
+            if (!series.type().drawsBars()) {
+                continue;
+            }
+            count++;
+            if (first == null) {
+                first = series;
+                continue;
+            }
+            // 用 Float.compare 而不是 !=：NaN != NaN 会让"两个系列都配了 NaN"报成一个
+            // 与真正原因（间距算不出柱宽）无关的错。
+            if (Float.compare(first.categoryGap(), series.categoryGap()) != 0
+                    || Float.compare(first.barGap(), series.barGap()) != 0) {
+                throw new IllegalArgumentException(
+                        "同一层里并排的柱状系列必须用同一组 categoryGap/barGap："
+                                + "「" + first.name() + "」是 (" + first.categoryGap() + ", "
+                                + first.barGap() + ")，「" + series.name() + "」是 ("
+                                + series.categoryGap() + ", " + series.barGap() + ")。"
+                                + "柱宽同时取决于这两项与系列数，各自一套的话同格里的柱子会"
+                                + "宽窄不一，而\"柱子有点胖瘦\"看起来像数据本身的差别。"
+                                + "确实想要不同的柱宽，请把它们放进不同的层。");
+            }
+        }
+        return count;
+    }
+
+    /**
+     * 这个系列要不要<b>平滑布局</b>的缓冲（= 它的折线会不会被画成曲线）。
+     *
+     * <p>判据是"系列开了平滑"<b>且</b>图型真的会画线：{@link ChartType#LINE}、
+     * {@link ChartType#LINE_AND_MARKERS}、{@link ChartType#AREA}。
+     * 其余图型（阶梯 / 散点 / 柱状 / 频谱）忽略这个开关——理由见
+     * {@code Series.smooth()} 的文档；在这里判一次，是为了让它们的缓冲
+     * <b>连布局都不变</b>（白多两个镜像的写入没有任何意义）。
+     *
+     * <p>它与渲染器侧的判据是同一件事的两半：渲染器读的是<b>缓冲的布局</b>
+     * （{@code SeriesBuffer.smoothLayout()}），而本方法保证布局与
+     * {@code series.smooth()} 一致。两者必须成对——只改一处的话，
+     * 属性偏移与 {@code uSmooth} 会各说各话。
+     */
+    private static boolean wantsSmoothLayout(Series series) {
+        if (!series.smooth()) {
+            return false;
+        }
+        ChartType type = series.type();
+        return type == ChartType.LINE || type == ChartType.LINE_AND_MARKERS
+                || type == ChartType.AREA;
     }
 
     /**
@@ -406,36 +511,6 @@ public final class ChartRenderer implements Disposable {
         }
     }
 
-    private static void drawTooltip(ChartPainter painter,
-                                    com.bingbaihanji.xuan.chart.ChartHover hover,
-                                    Rect plot,
-                                    com.bingbaihanji.xuan.chart.ChartInteractionConfig config) {
-        float width = 0f;
-        float lineHeight = config.tooltipFontSize() * 1.4f;
-        for (var line : hover.lines()) {
-            width = Math.max(width, painter.width(line.label() + ": " + line.value(),
-                    config.tooltipFontSize()));
-        }
-        width += config.tooltipPadding() * 2f;
-        float height = hover.lines().size() * lineHeight + config.tooltipPadding() * 2f;
-        float x = hover.screenX() + config.tooltipOffset();
-        float y = hover.screenY() - height - config.tooltipOffset();
-        if (x + width > plot.x + plot.width) x = hover.screenX() - width - config.tooltipOffset();
-        if (y < plot.y) y = hover.screenY() + config.tooltipOffset();
-        x = Math.max(plot.x, Math.min(x, plot.x + plot.width - width));
-        y = Math.max(plot.y, Math.min(y, plot.y + plot.height - height));
-
-        painter.fillRect(x, y, width, height, config.tooltipBackground());
-        painter.strokeRect(x, y, width, height, 1f, config.tooltipBorder());
-        float baseline = y + config.tooltipPadding() + config.tooltipFontSize();
-        for (var line : hover.lines()) {
-            painter.drawText(line.label() + ": " + line.value(),
-                    x + config.tooltipPadding(), baseline,
-                    config.tooltipFontSize(), config.tooltipText());
-            baseline += lineHeight;
-        }
-    }
-
     /**
      * 在给定的绘图区里画数据系列（不管外面的标题与图例）。
      *
@@ -507,54 +582,6 @@ public final class ChartRenderer implements Disposable {
     }
 
     /**
-     * 数出本层里有几个柱状系列，并检查它们的间距配置一致。
-     *
-     * <h2>为什么"一共几根"必须在这里算</h2>
-     * <p>{@link SeriesRenderer#render} 的签名里只有自己那一个系列，<b>看不到兄弟系列</b>，
-     * 而柱宽的分母（{@code n + (n-1)·barGap}）与柱心的偏移都要用到"一共几根"。
-     * 让渲染器去猜（恒当第 0 根、总数 1）的后果是同层多个柱状系列<b>完全重叠</b>：
-     * 画面上只剩最后画的那一个，而它看起来就是一张正常的单系列柱状图。
-     *
-     * <h2>为什么间距必须一致</h2>
-     * <p>柱宽同时取决于 {@code categoryGap}、{@code barGap} 与系列数，而这三样是
-     * <b>逐系列</b>配置的。同层里各配一套的话，并排的柱子会宽窄不一——
-     * 那看起来像数据本身的差别，不像配置冲突。<b>不静默容忍</b>（与"不支持的图型
-     * 抛异常"同一条纪律），也不自作主张取第一个系列的值（那会让另一些系列的配置
-     * 静默失效）。
-     *
-     * @return 本层里柱状系列的个数（0 表示这一层没有柱状图）
-     * @throws IllegalArgumentException 同层里并排的柱状系列间距配置不一致时
-     */
-    private static int requireSameBarGaps(Layer layer) {
-        Series first = null;
-        int count = 0;
-        for (Series series : layer.series()) {
-            if (!series.type().drawsBars()) {
-                continue;
-            }
-            count++;
-            if (first == null) {
-                first = series;
-                continue;
-            }
-            // 用 Float.compare 而不是 !=：NaN != NaN 会让"两个系列都配了 NaN"报成一个
-            // 与真正原因（间距算不出柱宽）无关的错。
-            if (Float.compare(first.categoryGap(), series.categoryGap()) != 0
-                    || Float.compare(first.barGap(), series.barGap()) != 0) {
-                throw new IllegalArgumentException(
-                        "同一层里并排的柱状系列必须用同一组 categoryGap/barGap："
-                                + "「" + first.name() + "」是 (" + first.categoryGap() + ", "
-                                + first.barGap() + ")，「" + series.name() + "」是 ("
-                                + series.categoryGap() + ", " + series.barGap() + ")。"
-                                + "柱宽同时取决于这两项与系列数，各自一套的话同格里的柱子会"
-                                + "宽窄不一，而\"柱子有点胖瘦\"看起来像数据本身的差别。"
-                                + "确实想要不同的柱宽，请把它们放进不同的层。");
-            }
-        }
-        return count;
-    }
-
-    /**
      * 取（必要时创建、必要时<b>重建</b>）某个系列的 GPU 常驻缓冲。
      *
      * <h2>为什么平滑开关变了要重建，而不是下一帧换个 uniform</h2>
@@ -584,29 +611,6 @@ public final class ChartRenderer implements Disposable {
             buffers.put(series, buffer);
         }
         return buffer;
-    }
-
-    /**
-     * 这个系列要不要<b>平滑布局</b>的缓冲（= 它的折线会不会被画成曲线）。
-     *
-     * <p>判据是"系列开了平滑"<b>且</b>图型真的会画线：{@link ChartType#LINE}、
-     * {@link ChartType#LINE_AND_MARKERS}、{@link ChartType#AREA}。
-     * 其余图型（阶梯 / 散点 / 柱状 / 频谱）忽略这个开关——理由见
-     * {@code Series.smooth()} 的文档；在这里判一次，是为了让它们的缓冲
-     * <b>连布局都不变</b>（白多两个镜像的写入没有任何意义）。
-     *
-     * <p>它与渲染器侧的判据是同一件事的两半：渲染器读的是<b>缓冲的布局</b>
-     * （{@code SeriesBuffer.smoothLayout()}），而本方法保证布局与
-     * {@code series.smooth()} 一致。两者必须成对——只改一处的话，
-     * 属性偏移与 {@code uSmooth} 会各说各话。
-     */
-    private static boolean wantsSmoothLayout(Series series) {
-        if (!series.smooth()) {
-            return false;
-        }
-        ChartType type = series.type();
-        return type == ChartType.LINE || type == ChartType.LINE_AND_MARKERS
-                || type == ChartType.AREA;
     }
 
     /**
@@ -740,7 +744,7 @@ public final class ChartRenderer implements Disposable {
         // 三个键集虽然同步，但"同步"是靠纪律维持的，而漏删一个键的症状
         // 是回收之后仍有一个活着的缓冲/号悬在那里，只能靠别的实验发现。
         for (Iterator<Map.Entry<Series, Long>> it = lastSeen.entrySet().iterator();
-                it.hasNext(); ) {
+             it.hasNext(); ) {
             Map.Entry<Series, Long> entry = it.next();
             if (generation - entry.getValue() < GRACE_GENERATIONS) {
                 continue;

@@ -2,9 +2,22 @@ package com.bingbaihanji.xuan.geom;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import static org.junit.jupiter.api.Assertions.*;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StrokeDashTest {
+
+    private static float area(float[] tris) {
+        float sum = 0f;
+        for (int i = 0; i < tris.length; i += 6) {
+            float x0 = tris[i], y0 = tris[i + 1];
+            float x1 = tris[i + 2], y1 = tris[i + 3];
+            float x2 = tris[i + 4], y2 = tris[i + 5];
+            sum += Math.abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)) * 0.5f;
+        }
+        return sum;
+    }
 
     /**
      * ★ **每一项都小于那个阈值**的模式（而总和恰好大于它）必须"什么都不画"，
@@ -33,17 +46,6 @@ class StrokeDashTest {
 
         assertEquals(0, g.triangleCount(),
                 "一格实线都发不出来 ⇒ 应当是空的，而不是卡在那儿");
-    }
-
-    private static float area(float[] tris) {
-        float sum = 0f;
-        for (int i = 0; i < tris.length; i += 6) {
-            float x0 = tris[i], y0 = tris[i + 1];
-            float x1 = tris[i + 2], y1 = tris[i + 3];
-            float x2 = tris[i + 4], y2 = tris[i + 5];
-            sum += Math.abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)) * 0.5f;
-        }
-        return sum;
     }
 
     @Test

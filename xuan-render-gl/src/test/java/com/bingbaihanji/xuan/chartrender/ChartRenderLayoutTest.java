@@ -6,7 +6,9 @@ import com.bingbaihanji.xuan.chart.AxisType;
 import com.bingbaihanji.xuan.util.Rect;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link ChartRenderLayout} 的单元测试。

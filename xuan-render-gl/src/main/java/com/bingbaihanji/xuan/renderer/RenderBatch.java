@@ -144,7 +144,7 @@ public final class RenderBatch implements Disposable {
                                                       float ac = (wc > 0.0) ? clamp(0.5 - (abs(vEdge.x) - 1.0) / wc, 0.0, 1.0) : 1.0;
                                                       float wa = fwidth(vEdge.y);
                                                       float aa = (wa > 0.0) ? clamp(0.5 + vEdge.y / wa, 0.0, 1.0) : 1.0;
-
+                                                  
                                                       // 调试探针（setEdgeProbe）：把两个边距直接当颜色输出，
                                                       // 红 = (横向 + 1) / 2、绿 = (沿向 + 1) / 2。
                                                       // uProbe 默认 0 ⇒ 这一支在生产里永不生效，默认行为与本 uniform
@@ -154,7 +154,7 @@ public final class RenderBatch implements Disposable {
                                                           fragColor = vec4((vEdge.x + 1.0) * 0.5, (vEdge.y + 1.0) * 0.5, 0.0, 1.0);
                                                           return;
                                                       }
-
+                                                  
                                                       fragColor = texture(uTex, vUV) * vColor * (ac * aa);
                                                   }
                                                   """;

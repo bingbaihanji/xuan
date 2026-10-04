@@ -13,12 +13,7 @@ import javafx.scene.SnapshotParameters
 import javafx.scene.image.PixelFormat
 import javafx.scene.transform.Scale
 import javafx.stage.Stage
-import org.lwjgl.opengl.GL11.GL_NO_ERROR
-import org.lwjgl.opengl.GL11.GL_RGBA
-import org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE
-import org.lwjgl.opengl.GL11.glGetError
-import org.lwjgl.opengl.GL11.glGetInteger
-import org.lwjgl.opengl.GL11.glReadPixels
+import org.lwjgl.opengl.GL11.*
 import java.nio.ByteBuffer
 import kotlin.math.floor
 import kotlin.math.min
@@ -178,11 +173,11 @@ internal fun readRequestedMsaa(): Int = System.getProperty(MSAA_PROPERTY, "0").t
 internal fun requirePixelReadback(bridge: FXGLTransfer) {
     check(bridge.canReadPixels) {
         "画布是 msaa=${bridge.msaa} 的多采样 FBO——本仓库的六个像素校验器一律要求在 msaa=0 下跑" +
-            "（第七个 FftVerifier 不画像素、本来不受影响，但它也走这条口径）：" +
-            "多采样 FBO 上 glReadPixels 是非法操作（实测 GL_INVALID_OPERATION，由 MsaaVerifier 钉着），" +
-            "读回来的像素全是 0，会让每一条像素断言报「画面全黑」式的假失败——" +
-            "而真因在配置里，不在渲染里。请用 msaa=0 跑（默认值就是 0；" +
-            "想要细线质量请用 Gc.antialias，那是运行期开关、且不牺牲回读）。"
+                "（第七个 FftVerifier 不画像素、本来不受影响，但它也走这条口径）：" +
+                "多采样 FBO 上 glReadPixels 是非法操作（实测 GL_INVALID_OPERATION，由 MsaaVerifier 钉着），" +
+                "读回来的像素全是 0，会让每一条像素断言报「画面全黑」式的假失败——" +
+                "而真因在配置里，不在渲染里。请用 msaa=0 跑（默认值就是 0；" +
+                "想要细线质量请用 Gc.antialias，那是运行期开关、且不牺牲回读）。"
     }
 }
 
@@ -302,12 +297,16 @@ class MsaaVerifierApp : Application() {
         done = true
         val w = bridge.scaledWidth
         val h = bridge.scaledHeight
-        if (w <= 0 || h <= 0) { done = false; return }
+        if (w <= 0 || h <= 0) {
+            done = false; return
+        }
 
         println("=== MSAA 校验 ===")
         println("requested msaa            = $requestedMsaa")
-        println("bridge.msaa（实际生效）    = ${bridge.msaa}" +
-            (if (bridge.msaa != requestedMsaa) "  ← ★ 与请求值不一致（配置没生效）" else ""))
+        println(
+            "bridge.msaa（实际生效）    = ${bridge.msaa}" +
+                    (if (bridge.msaa != requestedMsaa) "  ← ★ 与请求值不一致（配置没生效）" else "")
+        )
         println("framebuffer               = ${w}x$h")
         // 0x8CA6 = GL_FRAMEBUFFER_BINDING（在 GL30 里，GL11 没有这个常量）
         println("GL_FRAMEBUFFER_BINDING    = ${glGetInteger(0x8CA6)}")
@@ -333,9 +332,9 @@ class MsaaVerifierApp : Application() {
             "★ 回读守卫的前提：canReadPixels == (glReadPixels 无错误)",
             bridge.canReadPixels == (err == GL_NO_ERROR),
             "canReadPixels=${bridge.canReadPixels}，glGetError=$err" +
-                (if (bridge.canReadPixels) "（本进程 msaa=0：回读合法，读数可用）"
-                else "（本进程 msaa=${bridge.msaa}：多采样 FBO 上 glReadPixels 非法，读数全是 0。" +
-                    "注意 **负数也算多采样**：openglfx 的约定是 `-1 = 最大采样数`）")
+                    (if (bridge.canReadPixels) "（本进程 msaa=0：回读合法，读数可用）"
+                    else "（本进程 msaa=${bridge.msaa}：多采样 FBO 上 glReadPixels 非法，读数全是 0。" +
+                            "注意 **负数也算多采样**：openglfx 的约定是 `-1 = 最大采样数`）")
         )
         if (bridge.canReadPixels) {
             printProfile("A glReadPixels", w, h, buf, bottomUp = true)
@@ -395,13 +394,16 @@ class MsaaVerifierApp : Application() {
             val b = buf.get(i + 2).toInt() and 0xFF
             return (r * 299 + g * 587 + b * 114) / 1000          // 亮度，0..255
         }
+
         val hist = HashMap<Int, Int>()
         for (y in 0 until h) for (x in 0 until w) hist.merge(lum(x, y), 1, Int::plus)
         // 背景是 0x333333（亮度 51）、图元是纯白（255）。除这两者之外的都算"边缘中间值"。
         val edge = hist.entries.filter { it.key != 51 && it.key != 255 && it.key >= 0 }
             .sumOf { it.value }
-        println("[$tag] 不同亮度值 ${hist.size} 个；背景(51)=${hist[51] ?: 0}  纯白(255)=${hist[255] ?: 0}" +
-            "  ★ 既非背景也非纯白的像素=$edge")
+        println(
+            "[$tag] 不同亮度值 ${hist.size} 个；背景(51)=${hist[51] ?: 0}  纯白(255)=${hist[255] ?: 0}" +
+                    "  ★ 既非背景也非纯白的像素=$edge"
+        )
         val top = hist.entries.sortedByDescending { it.value }.take(6)
             .joinToString("  ") { "lum${it.key}×${it.value}" }
         println("[$tag] 出现最多的亮度值：$top")
@@ -411,10 +413,12 @@ class MsaaVerifierApp : Application() {
         val ri = (min(w, h) * 0.30).toInt()
         val from = (cxi - ri - 5).coerceAtLeast(0)
         val to = (cxi - ri + 5).coerceAtMost(w - 1)
-        println("[$tag] 圆心行左缘剖面 x=$from..$to : " +
-            (from..to).joinToString(" ") { lum(it, cyi).toString().padStart(3) })
-        println("[$tag] 圆心行右缘剖面 x=${cxi + ri - 5}..${cxi + ri + 5} : " +
-            ((cxi + ri - 5)..(cxi + ri + 5)).joinToString(" ") { lum(it, cyi).toString().padStart(3) })
+        println(
+            "[$tag] 圆心行左缘剖面 x=$from..$to : " +
+                    (from..to).joinToString(" ") { lum(it, cyi).toString().padStart(3) })
+        println(
+            "[$tag] 圆心行右缘剖面 x=${cxi + ri - 5}..${cxi + ri + 5} : " +
+                    ((cxi + ri - 5)..(cxi + ri + 5)).joinToString(" ") { lum(it, cyi).toString().padStart(3) })
     }
 
     /**
@@ -467,10 +471,13 @@ class MsaaVerifierApp : Application() {
         for (p in pixels) hist.merge(p and 0xFFFFFF, 1, Int::plus)
         // （原式还带一个 `it.key >= 0`——那是**恒真**的：`lum()` 只返回 0..255。已删。）
         val edge = hist.entries.filter { it.key != BG_RGB && it.key != LINE_RGB }.sumOf { it.value }
-        println("  整幅图：不同 RGB 值 ${hist.size} 个；背景=${hist[BG_RGB] ?: 0}  纯白=${hist[LINE_RGB] ?: 0}" +
-            "  ★ 既非两者之一的像素=$edge")
-        println("  出现最多的颜色：" + hist.entries.sortedByDescending { it.value }.take(6)
-            .joinToString("  ") { "#%06X×%d".format(it.key, it.value) })
+        println(
+            "  整幅图：不同 RGB 值 ${hist.size} 个；背景=${hist[BG_RGB] ?: 0}  纯白=${hist[LINE_RGB] ?: 0}" +
+                    "  ★ 既非两者之一的像素=$edge"
+        )
+        println(
+            "  出现最多的颜色：" + hist.entries.sortedByDescending { it.value }.take(6)
+                .joinToString("  ") { "#%06X×%d".format(it.key, it.value) })
 
         // 探针窗：x 取 [0.1W, 0.9W)，y 取 floor(线心) 的 [-3, +4) 行。
         // ★ 打印的窗**就是**被断言的窗（本仓库的规矩）。
@@ -488,8 +495,10 @@ class MsaaVerifierApp : Application() {
         val y0 = wantedY0.coerceIn(0, snapH)
         val y1 = wantedY1.coerceIn(y0, snapH)
         val winW = x1 - x0
-        println("  探针线线心 y = $lineYdev（小数相位 ${"%.2f".format(lineYdev - floor(lineYdev))}），" +
-            "带 = [${lineYdev - 2}, ${lineYdev + 2})")
+        println(
+            "  探针线线心 y = $lineYdev（小数相位 ${"%.2f".format(lineYdev - floor(lineYdev))}），" +
+                    "带 = [${lineYdev - 2}, ${lineYdev + 2})"
+        )
         println("  探针窗 x∈[$x0,$x1) y∈[$y0,$y1)  宽 W=$winW，共 ${winW * (y1 - y0)} 个像素")
         if (y0 != wantedY0 || y1 != wantedY1) {
             println("  ★ 窗被收窄到快照范围内（快照与帧缓冲尺寸不一致——见上面那条 1:1 断言）")
@@ -513,9 +522,17 @@ class MsaaVerifierApp : Application() {
             for (x in x0 until x1) {
                 val rgb = pixels[y * snapW + x] and 0xFFFFFF
                 when (rgb) {
-                    LINE_RGB -> { white++; rowWhite++ }
-                    BG_RGB -> { bg++; rowBg++ }
-                    else -> { fringe++; rowFringe++ }
+                    LINE_RGB -> {
+                        white++; rowWhite++
+                    }
+
+                    BG_RGB -> {
+                        bg++; rowBg++
+                    }
+
+                    else -> {
+                        fringe++; rowFringe++
+                    }
                 }
             }
             if (isCore) coreWhite += rowWhite
@@ -524,8 +541,9 @@ class MsaaVerifierApp : Application() {
         }
         // 每列横向剖面（取窗中线那一列，看斜坡形状）。
         val midX = (x0 + x1) / 2
-        println("  第 $midX 列纵向剖面 y∈[$y0,$y1)：" +
-            (y0 until y1).joinToString(" ") { "y$it=#%06X".format(pixels[it * snapW + midX] and 0xFFFFFF) })
+        println(
+            "  第 $midX 列纵向剖面 y∈[$y0,$y1)：" +
+                    (y0 until y1).joinToString(" ") { "y$it=#%06X".format(pixels[it * snapW + midX] and 0xFFFFFF) })
 
         println("\n-- ★ MSAA 四条判据（W = 窗宽 = $winW） --")
         // ★ 先决条件：窗必须**非空**。它不是形式上的一句话——上面那个限幅会把一个
@@ -543,8 +561,8 @@ class MsaaVerifierApp : Application() {
             "★ MSAA① 过渡像素数 = ${if (bridge.msaa == 0) "0（硬边，没有部分覆盖）" else "2W（两个过渡行各 W 个）"}",
             fringe == expFringe,
             "实测 $fringe 个，期望 $expFringe" +
-                (if (bridge.msaa == 0) "（msaa=0：像素中心采样 ⇒ 只有满覆盖与不覆盖两种）"
-                else "（msaa>0：行 n−2 覆盖率 0.75、行 n+2 覆盖率 0.25 ⇒ 两行都是中间值）")
+                    (if (bridge.msaa == 0) "（msaa=0：像素中心采样 ⇒ 只有满覆盖与不覆盖两种）"
+                    else "（msaa>0：行 n−2 覆盖率 0.75、行 n+2 覆盖率 0.25 ⇒ 两行都是中间值）")
         )
         // ② 线心 3 行：两种模式下都必须恰好 3W 个纯色像素。它是"线心没移位、没变淡"。
         report(
@@ -568,14 +586,14 @@ class MsaaVerifierApp : Application() {
             "★ MSAA④ 三类像素之和 == 窗的解析像素数（W × $WINDOW_ROWS）",
             white + bg + fringe == expWindowPixels,
             "纯白 $white + 背景 $bg + 过渡 $fringe = ${white + bg + fringe}，期望 $expWindowPixels" +
-                "（= W $winW × 行数 $WINDOW_ROWS；窗声明 ${y1 - y0} 行，" +
-                "计数循环实际扫过 $scannedRows 行）"
+                    "（= W $winW × 行数 $WINDOW_ROWS；窗声明 ${y1 - y0} 行，" +
+                    "计数循环实际扫过 $scannedRows 行）"
         )
 
         // 机器可读读数：跨进程那两条（fringe 变大、core 不变）由 msaa-verify.sh 解析它来判。
         println(
             "\nMSAA_READING msaa=${bridge.msaa} fringe=$fringe core=$coreWhite white=$white " +
-                "bg=$bg width=$winW snap=${snapW}x$snapH"
+                    "bg=$bg width=$winW snap=${snapW}x$snapH"
         )
     }
 

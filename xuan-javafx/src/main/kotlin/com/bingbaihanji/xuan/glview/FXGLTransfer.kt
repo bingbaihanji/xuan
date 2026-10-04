@@ -1,7 +1,8 @@
 package com.bingbaihanji.xuan.glview
 
-import com.bingbaihanji.xuan.gl.LwjglGLAbstraction
 import com.bingbaihanji.xuan.chart.Chart
+import com.bingbaihanji.xuan.gl.LwjglGLAbstraction
+import com.bingbaihanji.xuan.glview.FXGLTransfer.Companion.CLICK_QUEUE_CAPACITY
 import com.bingbaihanji.xuan.renderer.Gc
 import com.bingbaihanji.xuan.renderer.PickHit
 import com.bingbaihanji.xuan.renderer.RenderBatch
@@ -13,14 +14,13 @@ import com.huskerdev.openglfx.canvas.GLCanvas
 import com.huskerdev.openglfx.canvas.events.GLRenderEvent
 import com.huskerdev.openglfx.internal.GLInteropType
 import com.huskerdev.openglfx.lwjgl.LWJGLExecutor.Companion.LWJGL_MODULE
-import java.util.HashMap
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
 import javafx.application.Platform
 import javafx.scene.Node
 import javafx.scene.input.MouseEvent
 import org.lwjgl.opengl.GL11.*
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * JavaFX 与 OpenGL 的桥接封装，提供可配置的 GLCanvas 及事件管理。
@@ -90,6 +90,24 @@ class FXGLTransfer(
      * 而 `font` 恰好在尾部），所以这里显式开一个。
      */
     constructor(fontFile: FontFile?) : this(font = fontFile)
+
+    /**
+     * 字体 + MSAA 的便捷构造——**同样给 Java 用**。
+     *
+     * <p>理由与上一条完全相同，而且这一条更绕不出来：`msaa` 是**第 3 个**参数、
+     * `font` 是**第 13 个**，`@JvmOverloads` 只从尾部丢参数，所以给不出"只填这两个"的重载。
+     * Java 侧要开 MSAA 就只能逐个填满 13 个参数（还要拿到 `LWJGL_MODULE` 与
+     * `GLCanvas.Defaults`），而那两个的可见性随 openglfx 版本变。
+     *
+     * <p>**为什么值得开**：`Gc.antialias` 管的是"几何知道自己的中心线在哪"的那一类
+     * （描边、图表系列），而**填充**——圆角矩形、圆——没有解析式抗锯齿
+     * （`Tessellator` 的三角形汤里"内部顶点到边界的距离"没有定义）。那一半只有 MSAA 能给。
+     *
+     * <p>代价见 [canReadPixels]：`msaa` 非 0 之后画布 FBO 上 `glReadPixels` 非法
+     * （靠它回读的校验器会读回全 0）。**`snapshot` 那条路不受影响**，所以用快照的校验器
+     * 可以照常开 MSAA。
+     */
+    constructor(fontFile: FontFile?, msaa: Int) : this(msaa = msaa, font = fontFile)
 
     /** 批处理提交器。只有在 GL 上下文就绪之后才能构造，因此是在初始化回调里创建的。 */
     private var renderBatch: RenderBatch? = null
@@ -306,7 +324,9 @@ class FXGLTransfer(
     // 可选：修改帧率（动态）
     var fps: Double
         get() = canvas.fps
-        set(value) { canvas.fps = value }
+        set(value) {
+            canvas.fps = value
+        }
 
     // 可选：添加自定义渲染监听（保留原有事件链）
     fun addRenderListener(listener: (GLRenderEvent) -> Unit) {
@@ -682,6 +702,7 @@ class FXGLTransfer(
                     takeFromClickQueue(request)
                 }
             }
+
             com.bingbaihanji.xuan.renderer.PickBuffer.AsyncReadStatus.NO_FREE_SLOT -> {
                 // 点击：留在队里下帧再试（上面的 peek 已经保证了这一点）。
                 // hover：新请求已经抵达时保留它；否则把本次最新请求留到下一帧。
@@ -689,6 +710,7 @@ class FXGLTransfer(
                     pendingPick.compareAndSet(null, request)
                 }
             }
+
             com.bingbaihanji.xuan.renderer.PickBuffer.AsyncReadStatus.OUT_OF_BOUNDS,
             com.bingbaihanji.xuan.renderer.PickBuffer.AsyncReadStatus.NO_PICK_CONTENT -> {
                 // 不需要 GPU 就能回答（越界 / 本帧没有 ID pass）：直接交付"未命中"，

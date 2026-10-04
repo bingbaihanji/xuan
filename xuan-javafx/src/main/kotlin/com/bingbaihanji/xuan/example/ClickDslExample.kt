@@ -1,6 +1,7 @@
 package com.bingbaihanji.xuan.example
 
 import com.bingbaihanji.xuan.dsl.xuan
+import com.bingbaihanji.xuan.example.DslScene.status
 import com.bingbaihanji.xuan.renderer.Gc
 import com.bingbaihanji.xuan.renderer.PickHit
 import javafx.application.Platform
@@ -246,11 +247,13 @@ private object DslScene {
                 gc.fill = item.color
                 gc.fillRect(x, y, w, h)
             }
+
             "描边矩形" -> {
                 gc.stroke = item.color
                 gc.lineWidth = 5f
                 gc.strokeRect(x, y, w, h)
             }
+
             "圆角矩形" -> {
                 val r = minOf(w, h) * 0.2f
                 gc.fill = item.color
@@ -259,15 +262,18 @@ private object DslScene {
                 gc.lineWidth = 5f
                 gc.strokeRect(x, y, w, h, r)
             }
+
             "实心圆" -> {
                 gc.fill = item.color
                 gc.fillCircle(x + w / 2f, y + h / 2f, minOf(w, h) / 2f)
             }
+
             "椭圆" -> {
                 gc.stroke = item.color
                 gc.lineWidth = 5f
                 gc.strokeEllipse(x + w / 2f, y + h / 2f, w / 2f, h / 2f)
             }
+
             "多边形" -> {
                 gc.fill = item.color
                 gc.fillPolygon(
@@ -280,6 +286,7 @@ private object DslScene {
                     )
                 )
             }
+
             else -> error("示例里有一个没写画法的对象：${item.name}")
         }
     }

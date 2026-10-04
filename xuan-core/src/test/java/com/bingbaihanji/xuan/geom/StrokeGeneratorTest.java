@@ -1,6 +1,7 @@
 package com.bingbaihanji.xuan.geom;
 
 import org.junit.jupiter.api.Test;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class StrokeGeneratorTest {
@@ -41,25 +42,33 @@ class StrokeGeneratorTest {
 
     private static float minX(float[] tris) {
         float m = Float.MAX_VALUE;
-        for (int i = 0; i < tris.length; i += 2) m = Math.min(m, tris[i]);
+        for (int i = 0; i < tris.length; i += 2) {
+            m = Math.min(m, tris[i]);
+        }
         return m;
     }
 
     private static float maxX(float[] tris) {
         float m = -Float.MAX_VALUE;
-        for (int i = 0; i < tris.length; i += 2) m = Math.max(m, tris[i]);
+        for (int i = 0; i < tris.length; i += 2) {
+            m = Math.max(m, tris[i]);
+        }
         return m;
     }
 
     private static float minY(float[] tris) {
         float m = Float.MAX_VALUE;
-        for (int i = 1; i < tris.length; i += 2) m = Math.min(m, tris[i]);
+        for (int i = 1; i < tris.length; i += 2) {
+            m = Math.min(m, tris[i]);
+        }
         return m;
     }
 
     private static float maxY(float[] tris) {
         float m = -Float.MAX_VALUE;
-        for (int i = 1; i < tris.length; i += 2) m = Math.max(m, tris[i]);
+        for (int i = 1; i < tris.length; i += 2) {
+            m = Math.max(m, tris[i]);
+        }
         return m;
     }
 
@@ -79,7 +88,9 @@ class StrokeGeneratorTest {
             float d3 = (ax - cx) * (py - cy) - (ay - cy) * (px - cx);
             boolean neg = d1 < -1e-6f || d2 < -1e-6f || d3 < -1e-6f;
             boolean pos = d1 > 1e-6f || d2 > 1e-6f || d3 > 1e-6f;
-            if (!(neg && pos)) return true;
+            if (!(neg && pos)) {
+                return true;
+            }
         }
         return false;
     }
@@ -102,7 +113,9 @@ class StrokeGeneratorTest {
             float d3 = (ax - cx) * (py - cy) - (ay - cy) * (px - cx);
             boolean neg = d1 < -1e-6f || d2 < -1e-6f || d3 < -1e-6f;
             boolean pos = d1 > 1e-6f || d2 > 1e-6f || d3 > 1e-6f;
-            if (!(neg && pos)) n++;
+            if (!(neg && pos)) {
+                n++;
+            }
         }
         return n;
     }
@@ -118,6 +131,18 @@ class StrokeGeneratorTest {
             assertTrue(Float.isFinite(tris[i]),
                     "顶点坐标不应出现非有限值：第 " + (i / 2) + " 个顶点 分量 " + (i % 2) + " = " + tris[i]);
         }
+    }
+
+    /** 统计横向边距**恰好为 0** 的顶点个数。 */
+    private static int countZeroCross(StrokeGenerator g) {
+        float[] e = g.rawEdges();
+        int n = 0;
+        for (int v = 0; v < g.triangleCount() * 3; v++) {
+            if (e[v * 2] == 0f) {
+                n++;
+            }
+        }
+        return n;
     }
 
     @Test
@@ -976,8 +1001,12 @@ class StrokeGeneratorTest {
                 tip++;
             }
             if (Math.abs(x) < 1e-4f) {
-                if (Math.abs(Math.abs(y) - 4f) < 1e-4f) quadAtFour++;
-                if (Math.abs(Math.abs(y) - 3f) < 1e-4f) quadAtThree++;
+                if (Math.abs(Math.abs(y) - 4f) < 1e-4f) {
+                    quadAtFour++;
+                }
+                if (Math.abs(Math.abs(y) - 3f) < 1e-4f) {
+                    quadAtThree++;
+                }
             }
         }
         assertEquals(1, tip, "接头尖角应按 joinHalf=3 落在 (13,-3)，实测 " + tip + " 个");
@@ -986,18 +1015,6 @@ class StrokeGeneratorTest {
         assertEquals(3, quadAtFour,
                 "段四边形的角点必须留在 width/2 = 4 上（(0,4) 被两个三角形共用所以是 3 个），实测 " + quadAtFour + " 个");
         assertEquals(0, quadAtThree, "joinHalf=3 不该漏给段四边形——x=0 处不该出现 |y|=3 的角点");
-    }
-
-    /** 统计横向边距**恰好为 0** 的顶点个数。 */
-    private static int countZeroCross(StrokeGenerator g) {
-        float[] e = g.rawEdges();
-        int n = 0;
-        for (int v = 0; v < g.triangleCount() * 3; v++) {
-            if (e[v * 2] == 0f) {
-                n++;
-            }
-        }
-        return n;
     }
 
     @Test

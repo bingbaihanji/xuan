@@ -1,16 +1,6 @@
 package com.bingbaihanji.xuan.example
 
-import com.bingbaihanji.xuan.chart.ArrayChartData
-import com.bingbaihanji.xuan.chart.Axis
-import com.bingbaihanji.xuan.chart.AxisRange
-import com.bingbaihanji.xuan.chart.AxisStyle
-import com.bingbaihanji.xuan.chart.AxisType
-import com.bingbaihanji.xuan.chart.Chart
-import com.bingbaihanji.xuan.chart.ChartInsets
-import com.bingbaihanji.xuan.chart.ChartLayout
-import com.bingbaihanji.xuan.chart.ChartTextMetrics
-import com.bingbaihanji.xuan.chart.ChartType
-import com.bingbaihanji.xuan.chart.Series
+import com.bingbaihanji.xuan.chart.*
 import com.bingbaihanji.xuan.glview.FXGLTransfer
 import com.bingbaihanji.xuan.renderer.Gc
 import com.bingbaihanji.xuan.util.Rect
@@ -19,9 +9,7 @@ import javafx.application.Application
 import javafx.application.Platform
 import javafx.scene.Scene
 import javafx.stage.Stage
-import org.lwjgl.opengl.GL11.GL_RGBA
-import org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE
-import org.lwjgl.opengl.GL11.glReadPixels
+import org.lwjgl.opengl.GL11.*
 import java.nio.ByteBuffer
 import kotlin.system.exitProcess
 
@@ -155,9 +143,11 @@ class AxisVerifierApp : Application() {
 
         // ---- 0. 纯计算：默认关 ----
         println("\n-- 0. 默认值 --")
-        report("★ 前提：AxisStyle 的默认是**关**", !AxisStyle.defaults().visible,
+        report(
+            "★ 前提：AxisStyle 的默认是**关**", !AxisStyle.defaults().visible,
             "defaults().visible()=${AxisStyle.defaults().visible}（改成 true 会让 ChartVerifier 的" +
-                    "现有像素断言整批倒下——那是这次改动唯一的非破坏性保证）")
+                    "现有像素断言整批倒下——那是这次改动唯一的非破坏性保证）"
+        )
 
         // ---- 1. 关轴那一帧：三个轴色一个像素都没有 ----
         println("\n-- 1. 默认关是逐像素无操作 --")
@@ -173,17 +163,25 @@ class AxisVerifierApp : Application() {
         chart.axis(1).setDisplayLength(plot.height.toDouble())
 
         // 开启轴之后绘图区**必须变小**（预留真的扣掉了）。
-        val offPlot = ChartLayout.compute(buildChart(axisOn = false, metrics = metrics),
-            FRAME, metrics).plotRect()
+        val offPlot = ChartLayout.compute(
+            buildChart(axisOn = false, metrics = metrics),
+            FRAME, metrics
+        ).plotRect()
         val style = AxisStyle.defaults()
         val expectReserve = style.tickLength() + style.tickLabelFontSize() * ChartLayout.LINE_HEIGHT_FACTOR
-        report("★ 开轴后绘图区在下方让出预留", kotlin.math.abs(
-            (offPlot.height - plot.height) - expectReserve) < 0.01f,
+        report(
+            "★ 开轴后绘图区在下方让出预留", kotlin.math.abs(
+                (offPlot.height - plot.height) - expectReserve
+            ) < 0.01f,
             "关轴高 ${offPlot.height}、开轴高 ${plot.height}，差 ${offPlot.height - plot.height}，" +
-                    "期望 $expectReserve（tickLength + 字号 × LINE_HEIGHT_FACTOR）")
-        report("★ 开轴后绘图区在左侧让出预留", kotlin.math.abs(
-            (plot.x - offPlot.x) - expectReserve) < 0.01f,
-            "左边多出 ${plot.x - offPlot.x}，期望 $expectReserve")
+                    "期望 $expectReserve（tickLength + 字号 × LINE_HEIGHT_FACTOR）"
+        )
+        report(
+            "★ 开轴后绘图区在左侧让出预留", kotlin.math.abs(
+                (plot.x - offPlot.x) - expectReserve
+            ) < 0.01f,
+            "左边多出 ${plot.x - offPlot.x}，期望 $expectReserve"
+        )
 
         val shot = Shot(frameOf(bridge))
         // ---- 2.5 诊断：把"画面里到底有什么颜色"印出来 ----
@@ -193,10 +191,13 @@ class AxisVerifierApp : Application() {
         // 就是把画面里的颜色直接印出来——上面那张直方图里 `394452:4913` 明明白白，
         // 而断言那边读到 0（原因是比较的两边一个是 ARGB、一个是 RGB，见 [Shot.key]）。
         // 换句话说：**这两行是把"假失败"和"真缺陷"分开的那件工具**，删了下次还得重写。
-        println("  [诊断] 画面颜色计数：BG=${shot.count(BG)} SERIES=${shot.count(SERIES)} " +
-                "GRID=${shot.count(GRID)} AXIS=${shot.count(AXIS)} LABEL=${shot.count(LABEL)}")
-        println("  [诊断] 最多的 6 种颜色：" +
-                shot.topColors(6).joinToString(" ") { "%06X:%d".format(it.first, it.second) })
+        println(
+            "  [诊断] 画面颜色计数：BG=${shot.count(BG)} SERIES=${shot.count(SERIES)} " +
+                    "GRID=${shot.count(GRID)} AXIS=${shot.count(AXIS)} LABEL=${shot.count(LABEL)}"
+        )
+        println(
+            "  [诊断] 最多的 6 种颜色：" +
+                    shot.topColors(6).joinToString(" ") { "%06X:%d".format(it.first, it.second) })
         val xTicks = chart.axis(0).ticks()
         val yTicks = chart.axis(1).ticks()
         val xLen = chart.axis(0).displayLength()
@@ -205,9 +206,11 @@ class AxisVerifierApp : Application() {
         // 绘图区**内部**的主刻度（两个端点上的与坐标轴重合，本库不画）
         val innerX = xTicks.filter { it.isMajor && it.position() > 0.0 && it.position() < xLen }
         val innerY = yTicks.filter { it.isMajor && it.position() > 0.0 && it.position() < yLen }
-        report("前提：两种方向都至少各有 2 条内部主刻度（否则下面的扫描没意义）",
+        report(
+            "前提：两种方向都至少各有 2 条内部主刻度（否则下面的扫描没意义）",
             innerX.size >= 2 && innerY.size >= 2,
-            "内部主刻度 x=${innerX.size} y=${innerY.size}")
+            "内部主刻度 x=${innerX.size} y=${innerY.size}"
+        )
 
         shoot@ if (innerX.size >= 2 && innerY.size >= 2) {
             // ---- 3. 网格：竖线数 == 内部主 x 刻度数 ----
@@ -217,8 +220,10 @@ class AxisVerifierApp : Application() {
             val y1 = plot.y + (plot.height - (innerY[1].position() / yLen).toFloat() * plot.height)
             val scanRow = ((y0 + y1) * 0.5f).toInt()
             val cols = shot.countInRow(GRID, scanRow, plot.x.toInt(), (plot.x + plot.width).toInt())
-            report("★ 网格竖线数 == 内部主 x 刻度数", cols == innerX.size,
-                "扫第 $scanRow 行：网格色 $cols 列，期望 ${innerX.size}（线宽 ${style.gridWidth()}）")
+            report(
+                "★ 网格竖线数 == 内部主 x 刻度数", cols == innerX.size,
+                "扫第 $scanRow 行：网格色 $cols 列，期望 ${innerX.size}（线宽 ${style.gridWidth()}）"
+            )
 
             // ---- 4. 网格：横线数 == 内部主 y 刻度数 ----
             // 扫的那一列取"相邻两条**竖**网格线的中点"，理由同上。
@@ -226,8 +231,10 @@ class AxisVerifierApp : Application() {
             val x1 = plot.x + (innerX[1].position() / xLen).toFloat() * plot.width
             val scanCol = ((x0 + x1) * 0.5f).toInt()
             val rows = shot.countInCol(GRID, scanCol, plot.y.toInt(), (plot.y + plot.height).toInt())
-            report("★ 网格横线数 == 内部主 y 刻度数", rows == innerY.size,
-                "扫第 $scanCol 列：网格色 $rows 行，期望 ${innerY.size}")
+            report(
+                "★ 网格横线数 == 内部主 y 刻度数", rows == innerY.size,
+                "扫第 $scanCol 列：网格色 $rows 行，期望 ${innerY.size}"
+            )
 
             // ---- 5. 箭头：轴端**上方**有轴线色的像素 ----
             //
@@ -237,15 +244,21 @@ class AxisVerifierApp : Application() {
             val right = (plot.x + plot.width).toInt()
             val bottom = (plot.y + plot.height).toInt()
             val arm = shot.countInBox(AXIS, right - 8, bottom - 4, 8, 3)
-            report("★ x 轴末端**上方**有箭头像素（轴线本身伸不到那里）", arm > 0,
-                "轴端左上方 8x3 的盒子里轴线色 $arm px")
+            report(
+                "★ x 轴末端**上方**有箭头像素（轴线本身伸不到那里）", arm > 0,
+                "轴端左上方 8x3 的盒子里轴线色 $arm px"
+            )
 
             // ---- 6. 刻度文字：落在预留带里 ----
             println("\n-- 6. 刻度文字 --")
-            val band = shot.countInBox(LABEL, plot.x.toInt(), bottom + 1,
-                plot.width.toInt(), expectReserve.toInt())
-            report("★ 绘图区下方的预留带里真的有刻度文字", band > 0,
-                "预留带里文字色 $band px（带高 $expectReserve）")
+            val band = shot.countInBox(
+                LABEL, plot.x.toInt(), bottom + 1,
+                plot.width.toInt(), expectReserve.toInt()
+            )
+            report(
+                "★ 绘图区下方的预留带里真的有刻度文字", band > 0,
+                "预留带里文字色 $band px（带高 $expectReserve）"
+            )
         }
 
         println()
@@ -275,11 +288,13 @@ class AxisVerifierApp : Application() {
         val ys = DoubleArray(12) { 12.0 }
         val data = ArrayChartData(
             arrayOf(AxisRange(0.0, 11.0, "下标", ""), AxisRange(0.0, 100.0, "数值", "")),
-            arrayOf(xs, ys))
+            arrayOf(xs, ys)
+        )
 
         val chart = Chart(
             Axis(AxisType.LINEAR, data.axisRange(0)),
-            Axis(AxisType.LINEAR, data.axisRange(1)))
+            Axis(AxisType.LINEAR, data.axisRange(1))
+        )
 
         // 不用标题与图例：它们的文字色与刻度文字色都是浅灰，会把"文字色像素"的计数搅浑。
         chart.legendVisible(false)

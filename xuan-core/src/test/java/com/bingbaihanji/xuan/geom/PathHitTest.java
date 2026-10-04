@@ -2,7 +2,8 @@ package com.bingbaihanji.xuan.geom;
 
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link PathHit} 的单元测试。
@@ -15,19 +16,23 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class PathHitTest {
 
+    /** 一条轮廓的偏移表与顶点数表（只有一条）。 */
+    private static final int[] ONE = {0};
+
+    private static final int[] ONE_COUNT = {4};
+
+    /** 一个边长 10 的正方形轮廓（顺时针或逆时针都一样——奇偶规则不看方向）。 */
+    private static final float[] SQUARE = {0f, 0f, 10f, 0f, 10f, 10f, 0f, 10f};
+
+    // ------------------------------------------------------------------
+    // isPointInTriangles
+    // ------------------------------------------------------------------
+
     /** 一个三角形的扁平数组。 */
     private static float[] tri(float x0, float y0, float x1, float y1,
                                float x2, float y2) {
         return new float[]{x0, y0, x1, y1, x2, y2};
     }
-
-    /** 一条轮廓的偏移表与顶点数表（只有一条）。 */
-    private static final int[] ONE = {0};
-    private static final int[] ONE_COUNT = {4};
-
-    // ------------------------------------------------------------------
-    // isPointInTriangles
-    // ------------------------------------------------------------------
 
     @Test
     void 三角形内部命中外部不命中() {
@@ -83,6 +88,10 @@ class PathHitTest {
         assertFalse(PathHit.isPointInTriangles(t, 6, 5f, -1f), "下方同样不该命中");
     }
 
+    // ------------------------------------------------------------------
+    // isPointInContours
+    // ------------------------------------------------------------------
+
     @Test
     void 三角形判定的空输入与非有限查询点() {
         assertFalse(PathHit.isPointInTriangles(null, 6, 0f, 0f));
@@ -92,13 +101,6 @@ class PathHitTest {
         assertFalse(PathHit.isPointInTriangles(t, 6, Float.NaN, 2f), "NaN 查询点");
         assertFalse(PathHit.isPointInTriangles(t, 6, 2f, Float.POSITIVE_INFINITY), "+Inf 查询点");
     }
-
-    // ------------------------------------------------------------------
-    // isPointInContours
-    // ------------------------------------------------------------------
-
-    /** 一个边长 10 的正方形轮廓（顺时针或逆时针都一样——奇偶规则不看方向）。 */
-    private static final float[] SQUARE = {0f, 0f, 10f, 0f, 10f, 10f, 0f, 10f};
 
     @Test
     void 正方形轮廓的内部命中外部不命中() {

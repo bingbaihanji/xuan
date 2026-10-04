@@ -12,10 +12,10 @@ import com.bingbaihanji.xuan.chart.ChartLayout;
 import com.bingbaihanji.xuan.chart.ChartTextMetrics;
 import com.bingbaihanji.xuan.chart.ChartType;
 import com.bingbaihanji.xuan.chart.Series;
-import com.bingbaihanji.xuan.example.TextFontKt;
 import com.bingbaihanji.xuan.glview.FXGLTransfer;
 import com.bingbaihanji.xuan.renderer.Gc;
 import com.bingbaihanji.xuan.renderer.PickHit;
+import com.bingbaihanji.xuan.text.FontFile;
 import com.bingbaihanji.xuan.util.Rect;
 import javafx.application.Application;
 import javafx.collections.FXCollections;
@@ -34,6 +34,9 @@ import javafx.scene.layout.HBox;
 import javafx.stage.Stage;
 import kotlin.Unit;
 
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -127,8 +130,8 @@ public final class Main extends Application {
     /** 圆心十字的臂长（设备像素）。 */
     private static final float CENTER_CROSS = 10f;
 
-    /** JavaFX 线程修改，GL 线程读取。 */
-    private volatile DemoMode selectedMode = DemoMode.GEOMETRY;
+    /** JavaFX 线程写入、GL 线程在下一帧排空。 */
+    private final Queue<Circle> pendingCircles = new ConcurrentLinkedQueue<>();
 
     // ------------------------------------------------------------------
     // 绘制状态
@@ -139,6 +142,12 @@ public final class Main extends Application {
     //    （并发队列）与 clearRequested（volatile 标志）把意图交过去。
     //    这样 unregister 与列表增删都只发生在 GL 线程上。
     // ------------------------------------------------------------------
+
+    /** 已落地的圆。**只有 GL 线程读写**（见上面的分工说明）。 */
+    private final List<Circle> circles = new ArrayList<>();
+
+    /** JavaFX 线程修改，GL 线程读取。 */
+    private volatile DemoMode selectedMode = DemoMode.GEOMETRY;
 
     /** 两点式的第一点（圆心）；NaN 表示"手上没有已定的圆心"。 */
     private volatile float anchorX = Float.NaN;
@@ -156,12 +165,6 @@ public final class Main extends Application {
     /** JavaFX 线程置位、GL 线程消费：请求清空画布。 */
     private volatile boolean clearRequested = false;
 
-    /** JavaFX 线程写入、GL 线程在下一帧排空。 */
-    private final Queue<Circle> pendingCircles = new ConcurrentLinkedQueue<>();
-
-    /** 已落地的圆。**只有 GL 线程读写**（见上面的分工说明）。 */
-    private final List<Circle> circles = new ArrayList<>();
-
     private FXGLTransfer bridge;
 
     private Chart chart;
@@ -174,11 +177,106 @@ public final class Main extends Application {
         Application.launch(Main.class, args);
     }
 
+    /** 清理当前帧背景，保证切换下拉框后不会残留上一种组件。 */
+    private static void clearBackground(Gc gc) {
+        gc.setPickId(0);        // 背景不属于任何可拾取对象
+        gc.setFill(BG);
+        gc.fillRect(0f, 0f, gc.getWidth(), gc.getHeight());
+    }
+
+    // ------------------------------------------------------------------
+    // 鼠标接线
+    // ------------------------------------------------------------------
+
+    /** 画一个已落地的圆：半透明填充 + 实线描边。 */
+    private static void drawOneCircle(Gc gc, Circle circle) {
+        gc.setFill(CIRCLE_FILL);
+        gc.fillCircle(circle.cx, circle.cy, circle.r);
+        gc.setStroke(CIRCLE_STROKE);
+        gc.setLineWidth(2f);
+        gc.strokeCircle(circle.cx, circle.cy, circle.r);
+    }
+
+    /** 绘制文字，y 坐标是文本基线。 */
+    public static void drawText(Gc gc) {
+        gc.setFill(0xFFF4F7FB);
+        gc.setFontSize(34f);
+        gc.drawText("Xuan Java API", 90f, 180f);
+
+        gc.setFill(0xFFB7C4D3);
+        gc.setFontSize(18f);
+        gc.drawText("SDF Text Rendering", 90f, 225f);
+        gc.drawText("中文文本 / Unicode / GPU Atlas", 90f, 280f);
+    }
+
+    /** 构造粉色面积图及其 tooltip 配置。 */
+    private static Chart createChart() {
+        double[] xValues = new double[12];
+        double[] values = {42, 48, 51, 47, 62, 75, 81, 78, 88, 95, 102, 118};
+        for (int i = 0; i < xValues.length; i++) {
+            xValues[i] = i;
+        }
+
+        AxisRange xRange = new AxisRange(0, 11, "月份", "月");
+        AxisRange yRange = new AxisRange(0, 130, "数量", "件");
+        ArrayChartData data = new ArrayChartData(
+                new AxisRange[]{xRange, yRange},
+                new double[][]{xValues, values});
+
+        Chart chart = new Chart(
+                new Axis(AxisType.LINEAR, xRange),
+                new Axis(AxisType.LINEAR, yRange));
+
+        chart.title("月度数量统计")
+                .axisTitlesVisible(true)
+                .legendVisible(true)
+                .padding(ChartInsets.uniform(8f))
+                // ★ 网格 / 轴线 / 箭头 / 刻度线 / 刻度文字**全部由库画**。
+                //   `AxisStyle.defaults()` 的 visible 是 false（默认关是承重约束，
+                //   见它的类文档），所以要显式打开。
+                //
+                //   打开之后**刻度预留也由库自己算**，`chart.tickLabelReserve(...)` 会被
+                //   覆盖——所以这里不需要（也不应该）再声明一次。
+                //   以前这里没声明过预留，于是刻度文字是画在没留过位置的绘图区之外的。
+                .axisStyle(AxisStyle.defaults().visible(true));
+
+        chart.addLayer("统计")
+                .add(new Series("数量", data, ChartType.AREA)
+                        .color(0xFFFF5C9A)
+                        .lineWidth(2f)
+                        .baseline(0f)
+                        .fillAlpha(0.42f)
+                        // ★ 平滑曲线：框架里已有（着色器侧 Catmull-Rom），不是应用层要画的东西。
+                        //   对 AREA 而言**只有顶边**平滑，基线那一条照旧是直的。
+                        //   认它的图型：LINE / LINE_AND_MARKERS / AREA；
+                        //   忽略它的是 STEP / SPECTRUM / SCATTER / BAR（不报错，
+                        //   因为"阶梯的平滑该长什么样"没有答案）。
+                        .smooth(true));
+
+        chart.interaction().setConfig(
+                ChartInteractionConfig.defaults()
+                        .crosshairColor(0xC8FF9BC0)
+                        .tooltipColors(0xF02D1F2B, 0xFFFF7CAB, 0xFFFFF3F8)
+                        .tooltipFontSize(18)
+                        .formatter((value, range) -> String.format(Locale.ROOT, "%.2f", value))
+
+        );
+        // 设置文字大小
+        chart.axisTitleFontSize(18);
+
+        return chart;
+    }
+
     @Override
     public void start(Stage stage) {
         // 字体由本库**不再自带**（2026-09-28）：从 `-Dxuan.text.font=<路径>` 取。
         // 没设就传 null —— 那时 drawText 会抛出并说明怎么补（不是静默不画）。
-        bridge = new FXGLTransfer(TextFontKt.textFont());
+        try (InputStream fontInputstream = new FileInputStream("D:\\字体\\Fira_Code_v6.2\\ttf\\FiraCode-Light.ttf")) {
+            bridge = new FXGLTransfer(FontFile.load(fontInputstream));
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
         chart = createChart();
 
         // GL 线程每帧只执行当前下拉框对应的绘制方法。
@@ -275,10 +373,6 @@ public final class Main extends Application {
         stage.show();
     }
 
-    // ------------------------------------------------------------------
-    // 鼠标接线
-    // ------------------------------------------------------------------
-
     /**
      * 把鼠标事件接到画布上。
      *
@@ -297,6 +391,10 @@ public final class Main extends Application {
         });
         node.addEventHandler(MouseEvent.MOUSE_CLICKED, this::onClick);
     }
+
+    // ------------------------------------------------------------------
+    // 帧内的请求兑现
+    // ------------------------------------------------------------------
 
     /**
      * 鼠标移动：更新预览位置。
@@ -317,6 +415,10 @@ public final class Main extends Application {
             bridge.repaint();
         }
     }
+
+    // ------------------------------------------------------------------
+    // 绘制
+    // ------------------------------------------------------------------
 
     /**
      * 鼠标点击：左键画圆（两点式），右键拾取。
@@ -405,10 +507,6 @@ public final class Main extends Application {
         anchorY = Float.NaN;
     }
 
-    // ------------------------------------------------------------------
-    // 帧内的请求兑现
-    // ------------------------------------------------------------------
-
     /**
      * 把 JavaFX 线程交过来的意图**在 GL 线程上**兑现。每帧开头调一次。
      *
@@ -441,17 +539,6 @@ public final class Main extends Application {
             arrived.pickId = gc.getPickRegistry().register(arrived);
             circles.add(arrived);
         }
-    }
-
-    // ------------------------------------------------------------------
-    // 绘制
-    // ------------------------------------------------------------------
-
-    /** 清理当前帧背景，保证切换下拉框后不会残留上一种组件。 */
-    private static void clearBackground(Gc gc) {
-        gc.setPickId(0);        // 背景不属于任何可拾取对象
-        gc.setFill(BG);
-        gc.fillRect(0f, 0f, gc.getWidth(), gc.getHeight());
     }
 
     /**
@@ -492,15 +579,6 @@ public final class Main extends Application {
         }
 
         drawPreview(gc);
-    }
-
-    /** 画一个已落地的圆：半透明填充 + 实线描边。 */
-    private static void drawOneCircle(Gc gc, Circle circle) {
-        gc.setFill(CIRCLE_FILL);
-        gc.fillCircle(circle.cx, circle.cy, circle.r);
-        gc.setStroke(CIRCLE_STROKE);
-        gc.setLineWidth(2f);
-        gc.strokeCircle(circle.cx, circle.cy, circle.r);
     }
 
     /**
@@ -552,18 +630,6 @@ public final class Main extends Application {
         gc.restore();
     }
 
-    /** 绘制文字，y 坐标是文本基线。 */
-    public static void drawText(Gc gc) {
-        gc.setFill(0xFFF4F7FB);
-        gc.setFontSize(34f);
-        gc.drawText("Xuan Java API", 90f, 180f);
-
-        gc.setFill(0xFFB7C4D3);
-        gc.setFontSize(18f);
-        gc.drawText("SDF Text Rendering", 90f, 225f);
-        gc.drawText("中文文本 / Unicode / GPU Atlas", 90f, 280f);
-    }
-
     /**
      * 绘制粉色面积图。
      *
@@ -611,66 +677,26 @@ public final class Main extends Application {
         gc.getCharts().drawChart(chart, frame, gc.getWidth(), gc.getHeight());
     }
 
-    /** 构造粉色面积图及其 tooltip 配置。 */
-    private static Chart createChart() {
-        double[] xValues = new double[12];
-        double[] values = {42, 48, 51, 47, 62, 75, 81, 78, 88, 95, 102, 118};
-        for (int i = 0; i < xValues.length; i++) {
-            xValues[i] = i;
+    /** 下拉框中的三个演示模块。 */
+    private enum DemoMode {
+        GEOMETRY("几何图形"),
+        TEXT("文字"),
+        CHART("粉色面积图");
+
+        private final String label;
+
+        DemoMode(String label) {
+            this.label = label;
         }
 
-        AxisRange xRange = new AxisRange(0, 11, "月份", "月");
-        AxisRange yRange = new AxisRange(0, 130, "数量", "件");
-        ArrayChartData data = new ArrayChartData(
-                new AxisRange[]{xRange, yRange},
-                new double[][]{xValues, values});
-
-        Chart chart = new Chart(
-                new Axis(AxisType.LINEAR, xRange),
-                new Axis(AxisType.LINEAR, yRange));
-
-        chart.title("月度数量统计")
-                .axisTitlesVisible(true)
-                .legendVisible(true)
-                .padding(ChartInsets.uniform(8f))
-                // ★ 网格 / 轴线 / 箭头 / 刻度线 / 刻度文字**全部由库画**。
-                //   `AxisStyle.defaults()` 的 visible 是 false（默认关是承重约束，
-                //   见它的类文档），所以要显式打开。
-                //
-                //   打开之后**刻度预留也由库自己算**，`chart.tickLabelReserve(...)` 会被
-                //   覆盖——所以这里不需要（也不应该）再声明一次。
-                //   以前这里没声明过预留，于是刻度文字是画在没留过位置的绘图区之外的。
-                .axisStyle(AxisStyle.defaults().visible(true));
-
-        chart.addLayer("统计")
-                .add(new Series("数量", data, ChartType.AREA)
-                        .color(0xFFFF5C9A)
-                        .lineWidth(2f)
-                        .baseline(0f)
-                        .fillAlpha(0.42f)
-                        // ★ 平滑曲线：框架里已有（着色器侧 Catmull-Rom），不是应用层要画的东西。
-                        //   对 AREA 而言**只有顶边**平滑，基线那一条照旧是直的。
-                        //   认它的图型：LINE / LINE_AND_MARKERS / AREA；
-                        //   忽略它的是 STEP / SPECTRUM / SCATTER / BAR（不报错，
-                        //   因为"阶梯的平滑该长什么样"没有答案）。
-                        .smooth(true));
-
-        chart.interaction().setConfig(
-                ChartInteractionConfig.defaults()
-                        .crosshairColor(0xC8FF9BC0)
-                        .tooltipColors(0xF02D1F2B, 0xFFFF7CAB, 0xFFFFF3F8)
-                        .tooltipFontSize(18)
-                        .formatter((value, range) -> String.format(Locale.ROOT, "%.2f", value))
-
-        );
-        // 设置文字大小
-        chart.axisTitleFontSize(18);
-
-        return chart;
+        @Override
+        public String toString() {
+            return label;
+        }
     }
 
     /**
-     * 一个已落地的圆。
+     * 一个已落地的圆
      *
      * <p>{@code pickId} **由 GL 线程在排空队列时写入**（见 {@link #drainRequests}），
      * 所以它是个可变字段而不是 record 的成员：注册要拿到 {@code Gc}，
@@ -695,24 +721,6 @@ public final class Main extends Application {
 
         String describe() {
             return String.format(Locale.ROOT, "圆 r=%.0f @(%.0f,%.0f)", r, cx, cy);
-        }
-    }
-
-    /** 下拉框中的三个演示模块。 */
-    private enum DemoMode {
-        GEOMETRY("几何图形"),
-        TEXT("文字"),
-        CHART("粉色面积图");
-
-        private final String label;
-
-        DemoMode(String label) {
-            this.label = label;
-        }
-
-        @Override
-        public String toString() {
-            return label;
         }
     }
 }

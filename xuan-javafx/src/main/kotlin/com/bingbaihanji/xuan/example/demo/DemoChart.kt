@@ -1,6 +1,9 @@
 package com.bingbaihanji.xuan.example.demo
 
 import com.bingbaihanji.xuan.chart.*
+import com.bingbaihanji.xuan.example.demo.DemoChart.build
+import com.bingbaihanji.xuan.example.demo.DemoChart.cachedCharts
+import com.bingbaihanji.xuan.example.demo.DemoChart.chart
 import com.bingbaihanji.xuan.renderer.Gc
 import com.bingbaihanji.xuan.util.Rect
 
@@ -98,8 +101,10 @@ internal object DemoChart {
     var smoothOn: Boolean = false
 
     /** JavaFX 线程写入、GL 线程在 [chart] 取用的设备像素 hover 坐标。 */
-    @Volatile private var hoverX: Float = Float.NaN
-    @Volatile private var hoverY: Float = Float.NaN
+    @Volatile
+    private var hoverX: Float = Float.NaN
+    @Volatile
+    private var hoverY: Float = Float.NaN
 
     /** 更新图表 hover 指针；坐标单位是设备像素。 */
     fun updateHoverPointer(x: Float, y: Float) {

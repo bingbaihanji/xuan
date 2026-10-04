@@ -10,11 +10,15 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SeriesBufferTest {
 
     private FakeGLAbstraction gl;
+
     private RingChartData data;
 
     /**
@@ -347,8 +351,9 @@ class SeriesBufferTest {
     /** 写入总数会倒退的假数据源，用来走**生产路径**验证那句守卫。 */
     private static final class BackwardSource implements SeriesSource {
 
-        long written;
         private final int capacity;
+
+        long written;
 
         BackwardSource(int capacity) {
             this.capacity = capacity;
@@ -373,9 +378,11 @@ class SeriesBufferTest {
     /** 记下被请求过哪些绝对号的假数据源。 */
     private static final class RecordingSource implements SeriesSource {
 
-        long written;
         final List<Long> requested = new ArrayList<>();
+
         private final int capacity;
+
+        long written;
 
         RecordingSource(int capacity) {
             this.capacity = capacity;

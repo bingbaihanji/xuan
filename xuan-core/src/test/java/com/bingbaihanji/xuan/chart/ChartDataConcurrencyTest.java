@@ -5,7 +5,9 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link RingChartData} 的并发冒烟测试：一个写者、一个读者，跑一段时间。
@@ -92,14 +94,6 @@ class ChartDataConcurrencyTest {
     private static RingChartData freshRing() {
         return new RingChartData(
                 new AxisRange[]{AxisRange.of(0, 1), AxisRange.of(-1, 0)}, CAPACITY);
-    }
-
-    /** 读者一侧的统计。两个测试各用一个，读者是单线程，不需要同步。 */
-    private static final class Tally {
-        /** 读到的撕裂对数：{@code dim0 != -dim1}。 */
-        long torn;
-        /** 真正比对过的对数（NaN 与被闸门拦下的不计）。 */
-        long checked;
     }
 
     /**
@@ -240,5 +234,15 @@ class ChartDataConcurrencyTest {
                 + "单调递增是 SPSC 的全部前提，回退意味着读者会读到已经作废的下标");
         assertTrue(observations > 1000, "只观察了 " + observations + " 次，覆盖太薄");
         assertTrue(previous > 4L * CAPACITY, "写者没跑起来，上面的断言是恒真的");
+    }
+
+    /** 读者一侧的统计。两个测试各用一个，读者是单线程，不需要同步。 */
+    private static final class Tally {
+
+        /** 读到的撕裂对数：{@code dim0 != -dim1}。 */
+        long torn;
+
+        /** 真正比对过的对数（NaN 与被闸门拦下的不计）。 */
+        long checked;
     }
 }

@@ -793,8 +793,10 @@ class PipelineVerifierApp : Application() {
 
         // 一次全图扫描，同时得到每色像素数与包围盒。
         val counts = HashMap<Int, Int>()
-        val minX = HashMap<Int, Int>(); val minY = HashMap<Int, Int>()
-        val maxX = HashMap<Int, Int>(); val maxY = HashMap<Int, Int>()
+        val minX = HashMap<Int, Int>();
+        val minY = HashMap<Int, Int>()
+        val maxX = HashMap<Int, Int>();
+        val maxY = HashMap<Int, Int>()
         for (y in 0 until h) {
             for (x in 0 until w) {
                 val c = pixelAt(x, y)
@@ -817,9 +819,12 @@ class PipelineVerifierApp : Application() {
         }
 
         fun approx(label: String, actual: Int, expected: Double, tol: Double = TOLERANCE) {
-            val lo = expected * (1 - tol); val hi = expected * (1 + tol)
-            report(label, actual.toDouble() in lo..hi,
-                "实际 $actual，期望 ${expected.toInt()} ±${(tol * 100).toInt()}%")
+            val lo = expected * (1 - tol);
+            val hi = expected * (1 + tol)
+            report(
+                label, actual.toDouble() in lo..hi,
+                "实际 $actual，期望 ${expected.toInt()} ±${(tol * 100).toInt()}%"
+            )
         }
 
         // Gc.width/height 是用户查询绘制区大小的唯一途径（逻辑窗口尺寸在高 DPI 下不等于它），
@@ -852,26 +857,40 @@ class PipelineVerifierApp : Application() {
         //     斜边是无理斜率），因此它不依赖光栅化的 tie 规则，**不需要留余量**。
         // 收紧之后它能分辨的最小变化就是 1 px（MITER 缺陷那种是 16 px）。
         val blueCount = counts[blue] ?: 0
-        report("蓝圆角矩形描边恰好 3084 px（8 次运行极差 0；旧的 ±154 px 容差会放过 3068）",
-            blueCount == 3084, "实际 $blueCount，期望 3084")
+        report(
+            "蓝圆角矩形描边恰好 3084 px（8 次运行极差 0；旧的 ±154 px 容差会放过 3068）",
+            blueCount == 3084, "实际 $blueCount，期望 3084"
+        )
         report("品红贝塞尔描边存在", (counts[magenta] ?: 0) > 200, "实际 ${counts[magenta] ?: 0} px")
         // 7 种 = 主场景的 6 种（背景 + 红绿蓝青品红）+ flush 探针的后画色。
         // 探针的**先画色**不在里面，正是因为它一个像素都不该剩下（见下面的 z 序断言）。
-        report("画面只有 7 种颜色（无杂散像素）", counts.size == 7, "实际 ${counts.size} 种：${counts.keys.sorted().joinToString { "#%06X".format(it) }}")
+        report(
+            "画面只有 7 种颜色（无杂散像素）",
+            counts.size == 7,
+            "实际 ${counts.size} 种：${counts.keys.sorted().joinToString { "#%06X".format(it) }}"
+        )
         // "只有 7 种颜色"管不住**数量**：多画一块或少画一块，颜色种数都照样是 7。
         // 三个探针各 120x120，所以这里要求**恰好** 43200——多一个像素说明有别的东西在用
         // 这个颜色，少一个像素说明某个探针没铺满。实测这条失败时是**少**了一块：
         // 把 flush() 掏空会让情况三的探针缺 14400 px（不是"别处多画了"）。
-        report("后画色恰好铺满三个探针矩形（不多不少）", (counts[probeOverRgb] ?: 0) == 3 * 120 * 120,
-            "实际 ${counts[probeOverRgb] ?: 0}，期望 ${3 * 120 * 120}")
+        report(
+            "后画色恰好铺满三个探针矩形（不多不少）", (counts[probeOverRgb] ?: 0) == 3 * 120 * 120,
+            "实际 ${counts[probeOverRgb] ?: 0}，期望 ${3 * 120 * 120}"
+        )
 
         println("\n-- 形状：包围盒 --")
         fun bbox(label: String, argb: Int, ex: Int, ey: Int, ew: Int, eh: Int) {
-            if ((counts[argb] ?: 0) == 0) { report(label, false, "无像素"); return }
-            val ax = minX[argb]!!; val ay = minY[argb]!!
-            val aw = maxX[argb]!! - ax + 1; val ah = maxY[argb]!! - ay + 1
-            report(label, ax == ex && ay == ey && aw == ew && ah == eh,
-                "实际 ($ax,$ay) ${aw}x$ah，期望 ($ex,$ey) ${ew}x$eh")
+            if ((counts[argb] ?: 0) == 0) {
+                report(label, false, "无像素"); return
+            }
+            val ax = minX[argb]!!;
+            val ay = minY[argb]!!
+            val aw = maxX[argb]!! - ax + 1;
+            val ah = maxY[argb]!! - ay + 1
+            report(
+                label, ax == ex && ay == ey && aw == ew && ah == eh,
+                "实际 ($ax,$ay) ${aw}x$ah，期望 ($ex,$ey) ${ew}x$eh"
+            )
         }
         bbox("红矩形位置尺寸", red, 50, 50, 200, 120)
         bbox("绿圆位置尺寸", green, 420, 120, 160, 160)
@@ -887,8 +906,10 @@ class PipelineVerifierApp : Application() {
         val left = countIn(94, 316, 106, 434, blue)
         val right = countIn(344, 316, 356, 434, blue)
         println("  上=$top 下=$bottom 左=$left 右=$right")
-        report("描边无缺边（每条边都 > 300 px）", top > 300 && bottom > 300 && left > 300 && right > 300,
-            "上=$top 下=$bottom 左=$left 右=$right")
+        report(
+            "描边无缺边（每条边都 > 300 px）", top > 300 && bottom > 300 && left > 300 && right > 300,
+            "上=$top 下=$bottom 左=$left 右=$right"
+        )
         // 上下边、左右边各应等长；不对称就说明有一段几何被丢掉或重复。
         report("上下边对称", Math.abs(top - bottom) <= top * 0.05, "上=$top 下=$bottom")
         report("左右边对称", Math.abs(left - right) <= left * 0.05, "左=$left 右=$right")
@@ -908,15 +929,21 @@ class PipelineVerifierApp : Application() {
             val cx = x0 + 60
             val cy = y0 + 60
             val center = pixelAt(cx, cy)
-            report("z 序（${probeLabels[i]}）：后画的盖住先画的", center == probeOverRgb,
-                "中心 ($cx,$cy) = #%06X，期望 #%06X".format(center, probeOverRgb))
-            approx("z 序（${probeLabels[i]}）：后画色铺满 120x120",
-                countIn(x0, y0, x0 + 119, y0 + 119, probeOverRgb), 120.0 * 120, 0.01)
+            report(
+                "z 序（${probeLabels[i]}）：后画的盖住先画的", center == probeOverRgb,
+                "中心 ($cx,$cy) = #%06X，期望 #%06X".format(center, probeOverRgb)
+            )
+            approx(
+                "z 序（${probeLabels[i]}）：后画色铺满 120x120",
+                countIn(x0, y0, x0 + 119, y0 + 119, probeOverRgb), 120.0 * 120, 0.01
+            )
         }
         // probeUnder 只出现在这三个探针里，所以"一个像素都不剩"是一条覆盖整幅画面的不变量：
         // 顺序反了会留下它，后画的那层没盖全（位置/尺寸错了）也会留下它。
-        report("z 序：先画的那层被完全盖住（全画面无残影）", (counts[probeUnderRgb] ?: 0) == 0,
-            "先画色像素 ${counts[probeUnderRgb] ?: 0}")
+        report(
+            "z 序：先画的那层被完全盖住（全画面无残影）", (counts[probeUnderRgb] ?: 0) == 0,
+            "先画色像素 ${counts[probeUnderRgb] ?: 0}"
+        )
         return true
     }
 
@@ -961,20 +988,30 @@ class PipelineVerifierApp : Application() {
         report("探针一 restore 回到外层（内层改了不该影响外层）", afterRestore1, "restore 之后读到 $afterRestore1")
         report("探针一 restore 回到默认的关闭状态", !afterRestore2, "再 restore 之后读到 $afterRestore2")
 
-        val a = f.snapshot(LINE_WINDOW_X0, LINE_A_Y.toInt() + LINE_WINDOW_DY0,
-            LINE_WINDOW_X1, LINE_A_Y.toInt() + LINE_WINDOW_DY1)
-        val b = f.snapshot(LINE_WINDOW_X0, LINE_B_Y.toInt() + LINE_WINDOW_DY0,
-            LINE_WINDOW_X1, LINE_B_Y.toInt() + LINE_WINDOW_DY1)
-        val c = f.snapshot(LINE_WINDOW_X0, LINE_C_Y.toInt() + LINE_WINDOW_DY0,
-            LINE_WINDOW_X1, LINE_C_Y.toInt() + LINE_WINDOW_DY1)
+        val a = f.snapshot(
+            LINE_WINDOW_X0, LINE_A_Y.toInt() + LINE_WINDOW_DY0,
+            LINE_WINDOW_X1, LINE_A_Y.toInt() + LINE_WINDOW_DY1
+        )
+        val b = f.snapshot(
+            LINE_WINDOW_X0, LINE_B_Y.toInt() + LINE_WINDOW_DY0,
+            LINE_WINDOW_X1, LINE_B_Y.toInt() + LINE_WINDOW_DY1
+        )
+        val c = f.snapshot(
+            LINE_WINDOW_X0, LINE_C_Y.toInt() + LINE_WINDOW_DY0,
+            LINE_WINDOW_X1, LINE_C_Y.toInt() + LINE_WINDOW_DY1
+        )
         val diffAB = differingPixels(a, b)
         val diffAC = differingPixels(a, c)
-        report("探针一 A≡B：save 内开的那次 AA 被 restore 关了回去", diffAB == 0,
-            "A 与 B 相差 $diffAB 个像素")
+        report(
+            "探针一 A≡B：save 内开的那次 AA 被 restore 关了回去", diffAB == 0,
+            "A 与 B 相差 $diffAB 个像素"
+        )
         // ★ 反证：少了它，上面那条就是恒真的——把 antialias 整个删掉、让描边永远当它是 false，
         //   A 与 B 照样逐像素相同。
-        report("探针一 C≠A：这条开关真的会改变像素（反证）", diffAC > 0,
-            "A 与 C 相差 $diffAC 个像素")
+        report(
+            "探针一 C≠A：这条开关真的会改变像素（反证）", diffAC > 0,
+            "A 与 C 相差 $diffAC 个像素"
+        )
         // 读数：两条线各印**过线心的 6 行**（含上下各一行背景）。其中线内的 5 行是
         // **墨量守恒**最直接的证据——线心取 y=60.25 时解析覆盖率是
         // 0.75 / 1 / 1 / 1 / 0.25，合计恰好 4.00 px（= lineWidth）；
@@ -1020,10 +1057,12 @@ class PipelineVerifierApp : Application() {
         println("\n-- ★ 探针二：aEdge 的偏移（片段着色器把 vEdge 当颜色输出） --")
         // 先打两行读数：断言失败时，报告里得有"实际是多少"，
         // 否则一次 FAIL 只会留下一句"不对"，排查方向反而指向着色器本身。
-        println("  横向剖面（第 300 列，行 296..304）："
-                + (296..304).joinToString(" ") { "r$it=${f.r(300, it)}" })
-        println("  沿向剖面（第 300 行，列 97..103 / 397..403 / 697..703）："
-                + ((97..103) + (397..403) + (697..703)).joinToString(" ") { "c$it=${f.g(it, 300)}" })
+        println(
+            "  横向剖面（第 300 列，行 296..304）："
+                    + (296..304).joinToString(" ") { "r$it=${f.r(300, it)}" })
+        println(
+            "  沿向剖面（第 300 行，列 97..103 / 397..403 / 697..703）："
+                    + ((97..103) + (397..403) + (697..703)).joinToString(" ") { "c$it=${f.g(it, 300)}" })
 
         // 横向：五个解析读数（`byte = (v + 1) / 2 * 255`）
         //
@@ -1035,15 +1074,19 @@ class PipelineVerifierApp : Application() {
         val crossChecks = mapOf(298 to 0, 299 to 64, 300 to 128, 301 to 191, 302 to 255)
         for ((row, expected) in crossChecks) {
             val actual = f.r(300, row)
-            report("探针二 横向：第 $row 行 red=$actual，即 vEdge.x=${"%.2f".format(actual / 127.5 - 1)}"
-                    + "（期望 $expected = ${"%.2f".format(expected / 127.5 - 1)}）",
-                Math.abs(actual - expected) <= CHANNEL_TOLERANCE, "实际 $actual，期望 $expected")
+            report(
+                "探针二 横向：第 $row 行 red=$actual，即 vEdge.x=${"%.2f".format(actual / 127.5 - 1)}"
+                        + "（期望 $expected = ${"%.2f".format(expected / 127.5 - 1)}）",
+                Math.abs(actual - expected) <= CHANNEL_TOLERANCE, "实际 $actual，期望 $expected"
+            )
         }
         // 沿向。中段单列一条：沿向在那里是 100，映射后**饱和**到 1.0，
         // 所以"回映射"只能给出下界——写成"恰好等于 255"是拿一个饱和值当精确读数用。
         val midGreen = f.g(400, 300)
-        report("探针二 沿向：中段（第 400 列）green=$midGreen，沿向远大于 0（映射后饱和）",
-            midGreen >= 250, "实际 $midGreen，期望 ≥ 250")
+        report(
+            "探针二 沿向：中段（第 400 列）green=$midGreen，沿向远大于 0（映射后饱和）",
+            midGreen >= 250, "实际 $midGreen，期望 ≥ 250"
+        )
         val alongChecks = mapOf(
             100 to 149,   // 端线**内侧**一格：+1/6
             99 to 106,    // 端帽外扩那一圈：**−1/6**（带外为负，端帽羽化的全部来路）
@@ -1052,9 +1095,11 @@ class PipelineVerifierApp : Application() {
         )
         for ((col, expected) in alongChecks) {
             val actual = f.g(col, 300)
-            report("探针二 沿向：第 $col 列 green=$actual，即 vEdge.y=${"%.2f".format(actual / 127.5 - 1)}"
-                    + "（期望 $expected = ${"%.2f".format(expected / 127.5 - 1)}）",
-                Math.abs(actual - expected) <= CHANNEL_TOLERANCE, "实际 $actual，期望 $expected")
+            report(
+                "探针二 沿向：第 $col 列 green=$actual，即 vEdge.y=${"%.2f".format(actual / 127.5 - 1)}"
+                        + "（期望 $expected = ${"%.2f".format(expected / 127.5 - 1)}）",
+                Math.abs(actual - expected) <= CHANNEL_TOLERANCE, "实际 $actual，期望 $expected"
+            )
         }
         return true
     }
@@ -1092,9 +1137,10 @@ class PipelineVerifierApp : Application() {
         println("  AA 关 被断言的 4x4（x 97..100 × y 97..100）：\n" + f.boxColors(97, 97, 101, 101))
         println("  AA 开 被断言的 4x4（x 297..300 × y 97..100）：\n" + f.boxColors(297, 97, 301, 101))
         // 外沿那三个像素（也是被断言的，见 ③）
-        println("  AA 开 拐角外沿三点："
-                + listOf(296 to 96, 296 to 97, 297 to 96)
-            .joinToString(" ") { "(${it.first},${it.second})=#%06X".format(f.rgb(it.first, it.second)) })
+        println(
+            "  AA 开 拐角外沿三点："
+                    + listOf(296 to 96, 296 to 97, 297 to 96)
+                .joinToString(" ") { "(${it.first},${it.second})=#%06X".format(f.rgb(it.first, it.second)) })
 
         // ① 横向外扩对闭合路径同样生效：真外缘之外 0.25 像素处必须有片元。
         //    AA 关时那一列是背景（几何止于真外缘），这是**对照**，必须有——
@@ -1104,12 +1150,16 @@ class PipelineVerifierApp : Application() {
         //      joinHalf，与外扩量无关）。
         val outsideNoAa = f.rgb(96, row)
         val outsideAa = f.rgb(296, row)
-        report("探针三 对照组：AA 关时真外缘之外那一列就是背景", outsideNoAa == background,
-            "x=96 = #%06X，期望 #%06X".format(outsideNoAa, background))
+        report(
+            "探针三 对照组：AA 关时真外缘之外那一列就是背景", outsideNoAa == background,
+            "x=96 = #%06X，期望 #%06X".format(outsideNoAa, background)
+        )
         val r = f.r(296, row)
-        report("探针三 闭合描边的真外缘之外也有片元（横向外扩没被 !closed 挡掉）",
+        report(
+            "探针三 闭合描边的真外缘之外也有片元（横向外扩没被 !closed 挡掉）",
             Math.abs(r - 102) <= CHANNEL_TOLERANCE,
-            "x=296 的 red=$r，期望 102（覆盖率 0.25 的白色压在 #333333 上）")
+            "x=296 的 red=$r，期望 102（覆盖率 0.25 的白色压在 #333333 上）"
+        )
 
         // ② 拐角既不能有缺口、也不能有羽化：接头（风筝形）**整块**必须是不透明的。
         //    判据取"方块里有多少个像素不是纯白"而不是"有多少个是背景"：
@@ -1121,14 +1171,18 @@ class PipelineVerifierApp : Application() {
         //    AA 开在 [296.75,300.75]²。取完全落在各自内部的 4x4。
         val offNonWhite = f.countNotIn(97, 97, 101, 101, 0xFFFFFF)
         val onNonWhite = f.countNotIn(297, 97, 301, 101, 0xFFFFFF)
-        report("探针三 对照组：AA 关的拐角方块 16 个像素全是纯白", offNonWhite == 0,
-            "实测 $offNonWhite 个不是纯白")
+        report(
+            "探针三 对照组：AA 关的拐角方块 16 个像素全是纯白", offNonWhite == 0,
+            "实测 $offNonWhite 个不是纯白"
+        )
         // 这条只对"接头横向取 0"敏感。**不要**在失败信息里顺手把"闭合路径不再外扩"
         // 也算进来：实测（把 `&& !closed` 加回 px）那条变异让**别处**倒 1 条，本条照过
         // ——接头拿到的是 joinHalf，与外扩量无关。失败信息里断言一件不会发生的事，
         // 与注释写错同性质。
-        report("探针三 AA 开的接头风筝形整块不透明（既无缺口也无羽化）", onNonWhite == 0,
-            "实测 $onNonWhite 个不是纯白（变异：把接头横向改回 s ⇒ 底边那一半会羽化）")
+        report(
+            "探针三 AA 开的接头风筝形整块不透明（既无缺口也无羽化）", onNonWhite == 0,
+            "实测 $onNonWhite 个不是纯白（变异：把接头横向改回 s ⇒ 底边那一半会羽化）"
+        )
 
         // ③ 拐角**不再向外多画**：真轮廓之外的三个外沿像素必须是背景。
         //    曾把外扩量也加在接头上（接头横向恒 0 ⇒ 不会被羽化）⇒ 这三个像素是**纯白**，
@@ -1140,7 +1194,8 @@ class PipelineVerifierApp : Application() {
         //      不是"拐角画对了到小数点后两位"。
         val rim = listOf(296 to 96, 296 to 97, 297 to 96)
         val rimOver = rim.count { f.rgb(it.first, it.second) != background }
-        report("探针三 拐角不再向外多画 1 像素（真轮廓之外那一圈回到背景）", rimOver == 0,
+        report(
+            "探针三 拐角不再向外多画 1 像素（真轮廓之外那一圈回到背景）", rimOver == 0,
             rim.joinToString(" ") { "(${it.first},${it.second})=#%06X".format(f.rgb(it.first, it.second)) })
         return true
     }
@@ -1243,10 +1298,12 @@ class PipelineVerifierApp : Application() {
         // 横截面读数：m = y − x − c 在像素中心上取整数，所以"第几级覆盖"完全由它决定。
         val midOff = wX0Off + AA_W / 2
         val midOn = wX0On + AA_W / 2
-        println("  AA 关 第 $midOff 列横截面（m = y − x）："
-                + (-4..4).joinToString(" ") { "m$it=#%06X".format(f.rgb(midOff, midOff + AA_C_OFF + it)) })
-        println("  AA 开 第 $midOn 列横截面（m = y − x + 400）："
-                + (-4..4).joinToString(" ") { "m$it=#%06X".format(f.rgb(midOn, midOn + AA_C_ON + it)) })
+        println(
+            "  AA 关 第 $midOff 列横截面（m = y − x）："
+                    + (-4..4).joinToString(" ") { "m$it=#%06X".format(f.rgb(midOff, midOff + AA_C_OFF + it)) })
+        println(
+            "  AA 开 第 $midOn 列横截面（m = y − x + 400）："
+                    + (-4..4).joinToString(" ") { "m$it=#%06X".format(f.rgb(midOn, midOn + AA_C_ON + it)) })
         // 整窗的颜色直方图：① ② 的读数就是从这个直方图里来的，打出来让失败可读。
         println("  AA 关 窗内颜色：${f.aaHistogram(wX0Off, yOff0, wX0Off + AA_W, yOff1)}")
         println("  AA 开 窗内颜色：${f.aaHistogram(wX0On, yOn0, wX0On + AA_W, yOn1)}")
@@ -1254,29 +1311,39 @@ class PipelineVerifierApp : Application() {
         val off = f.aaStats(wX0Off, yOff0, wX0Off + AA_W, yOff1, AA_C_OFF)
         val on = f.aaStats(wX0On, yOn0, wX0On + AA_W, yOn1, AA_C_ON)
 
-        report("★ 抗锯齿① AA 关的线没有过渡像素（既非背景也非线色）", off.fringe == 0,
-            "实测 ${off.fringe} 个（期望 0）")
-        report("★ 抗锯齿② AA 开的线有过渡像素，且恰好 4W（每列 2 侧 × 2 级）",
+        report(
+            "★ 抗锯齿① AA 关的线没有过渡像素（既非背景也非线色）", off.fringe == 0,
+            "实测 ${off.fringe} 个（期望 0）"
+        )
+        report(
+            "★ 抗锯齿② AA 开的线有过渡像素，且恰好 4W（每列 2 侧 × 2 级）",
             on.fringe == 4 * AA_W,
-            "实测 ${on.fringe} 个，期望 ${4 * AA_W}（= 每列 m=±2 与 m=±3 各两个）")
-        report("★ 抗锯齿③ 线心（|m| ≤ 1）纯色像素数两种模式精确相等，且 = 3W",
+            "实测 ${on.fringe} 个，期望 ${4 * AA_W}（= 每列 m=±2 与 m=±3 各两个）"
+        )
+        report(
+            "★ 抗锯齿③ 线心（|m| ≤ 1）纯色像素数两种模式精确相等，且 = 3W",
             off.core == on.core && on.core == 3 * AA_W,
-            "关=${off.core}，开=${on.core}，期望 ${3 * AA_W}（AA 关的 |m|=2 那两条带是白的，但不在线心）")
+            "关=${off.core}，开=${on.core}，期望 ${3 * AA_W}（AA 关的 |m|=2 那两条带是白的，但不在线心）"
+        )
         // ④ 的参照系是**真实面积**（见 KDoc）。亮度差 204 = 白 255 − 背景 51。
         val analyticInk = AA_LUMA_SPAN * 4.0 * Math.sqrt(2.0) * AA_W
         val inkTol = 2.0 * AA_W + 2
-        report("★ 抗锯齿④ 墨量 == 窗内描边带的真实面积 × 亮度差（± 量化界 2W）",
+        report(
+            "★ 抗锯齿④ 墨量 == 窗内描边带的真实面积 × 亮度差（± 量化界 2W）",
             Math.abs(on.ink - analyticInk) <= inkTol,
             "实测 ${on.ink}，解析 ${"%.1f".format(analyticInk)}，允许 ±${"%.0f".format(inkTol)}"
-                    + "（相差 ${"%.1f".format(on.ink - analyticInk)}；2W 是 4 个羽化像素 × 0.5 的 8 位量化界）")
+                    + "（相差 ${"%.1f".format(on.ink - analyticInk)}；2W 是 4 个羽化像素 × 0.5 的 8 位量化界）"
+        )
         // 对照组的墨量：硬边每列只有 |m| ≤ 2 那 5 个像素 ⇒ 5W × 204。
         // **它必须精确等于这个数**：多一列/多一圈都说明"关着的时候几何被外扩了"，
         // 而那正是 AA 关时最该逐像素不变的一件事。
-        report("★ 抗锯齿④ 对照：AA 关的墨量 == 5W × 亮度差（硬边几何没有被外扩）",
+        report(
+            "★ 抗锯齿④ 对照：AA 关的墨量 == 5W × 亮度差（硬边几何没有被外扩）",
             off.ink == 5 * AA_W * AA_LUMA_SPAN,
             "实测 ${off.ink}，期望 ${5 * AA_W * AA_LUMA_SPAN}"
                     + "（比解析面积少 ${"%.1f".format(100.0 * (1 - off.ink / analyticInk))}%"
-                    + " —— 这是硬边**像素中心采样**内接于斜带的必然结果，不是缺陷）")
+                    + " —— 这是硬边**像素中心采样**内接于斜带的必然结果，不是缺陷）"
+        )
 
         // ---------------------------------------------------------------
         // 1px 细线：**方向断言**
@@ -1320,34 +1387,42 @@ class PipelineVerifierApp : Application() {
                 val yc = baseY + if (aa) 30f else 0f
                 val s = f.aaStats(AA_THIN_WX0, yc.toInt() - 3, AA_THIN_WX1, yc.toInt() + 4, 0)
                 thin[i][j] = s
-                println("    $label AA=${if (aa) "开" else "关"}：线心 ${yc}，被断言的行 ${
-                    yc.toInt() - 3
-                }..${yc.toInt() + 3}，"
-                        + "墨量 ${s.ink}（${"%.3f".format(s.ink.toDouble() / (AA_THIN_WX1 - AA_THIN_WX0) / AA_LUMA_SPAN)} px/列）"
-                        + "，纯色 ${s.white}，过渡 ${s.fringe}")
+                println(
+                    "    $label AA=${if (aa) "开" else "关"}：线心 ${yc}，被断言的行 ${
+                        yc.toInt() - 3
+                    }..${yc.toInt() + 3}，"
+                            + "墨量 ${s.ink}（${"%.3f".format(s.ink.toDouble() / (AA_THIN_WX1 - AA_THIN_WX0) / AA_LUMA_SPAN)} px/列）"
+                            + "，纯色 ${s.white}，过渡 ${s.fringe}"
+                )
             }
             val offThin = thin[i][0]!!
             val onThin = thin[i][1]!!
             val ratio = onThin.ink.toDouble() / offThin.ink
-            report("★ 抗锯齿④ 1px 细线（$label）：AA 开 / 关 的墨量在 [0.9, 1.1] 内",
+            report(
+                "★ 抗锯齿④ 1px 细线（$label）：AA 开 / 关 的墨量在 [0.9, 1.1] 内",
                 ratio in 0.9..1.1,
                 "关=${offThin.ink}，开=${onThin.ink}，比值 ${"%.4f".format(ratio)}"
-                        + "（失败即 §4.3 那条细带公式确实偏厚 ⇒ 该换三分量 aEdge，不是放宽容差）")
+                        + "（失败即 §4.3 那条细带公式确实偏厚 ⇒ 该换三分量 aEdge，不是放宽容差）"
+            )
             if (expectFringe) {
-                report("★ 抗锯齿④ 1px 细线（$label）：AA 开的那条**真的有羽化**（过渡像素 > 0）",
+                report(
+                    "★ 抗锯齿④ 1px 细线（$label）：AA 开的那条**真的有羽化**（过渡像素 > 0）",
                     onThin.fringe > 0,
                     "实测过渡 ${onThin.fringe} 个、纯色 ${onThin.white} 个"
                             + "（AA 关那条：过渡 ${offThin.fringe}、纯色 ${offThin.white}）"
-                            + " —— 挡的是“AA 整条没生效”：那时墨量仍是 1.000 px/列（硬边与羽化在这个几何上等价）")
+                            + " —— 挡的是“AA 整条没生效”：那时墨量仍是 1.000 px/列（硬边与羽化在这个几何上等价）"
+                )
             } else {
                 // 相位 .50：无羽化是构造使然（见上面那段），所以钉的是**逐项相等**。
                 // 这一条**不能省成只比墨量**：墨量比在任意相位下都恒为 1.0（对称性），
                 // 对"AA 把线画歪了"完全隐形（实测把 AA 开那条挪 0.25 像素，只有它抓得住）。
-                report("★ 抗锯齿④ 1px 细线（$label）：AA 开与关**逐项相等**（纯色数、过渡数都不变）",
+                report(
+                    "★ 抗锯齿④ 1px 细线（$label）：AA 开与关**逐项相等**（纯色数、过渡数都不变）",
                     onThin.white == offThin.white && onThin.fringe == offThin.fringe,
                     "开：纯色 ${onThin.white} / 过渡 ${onThin.fringe}，"
                             + "关：纯色 ${offThin.white} / 过渡 ${offThin.fringe}"
-                            + "（这条挡的是“AA 把一条本来就对齐的线画歪”——墨量比对平移恒为 1.0，看不见它）")
+                            + "（这条挡的是“AA 把一条本来就对齐的线画歪”——墨量比对平移恒为 1.0，看不见它）"
+                )
             }
         }
         return true
@@ -1396,10 +1471,12 @@ class PipelineVerifierApp : Application() {
                 vBeyond.add(x)
             }
         }
-        report("★ 非等比缩放 压缩轴（x，scale 1）：真外缘之外的片元数 = 0（外缘之外那 0.18 设备像素的羽化被切掉）",
+        report(
+            "★ 非等比缩放 压缩轴（x，scale 1）：真外缘之外的片元数 = 0（外缘之外那 0.18 设备像素的羽化被切掉）",
             vBeyond.isEmpty(),
             "实测 ${vBeyond.size} 个${if (vBeyond.isEmpty()) "" else "：x=$vBeyond"}"
-                    + "（带内的羽化仍在：外缘之内那一档覆盖率 0.75 —— 所以不是“退化成硬边”）")
+                    + "（带内的羽化仍在：外缘之内那一档覆盖率 0.75 —— 所以不是“退化成硬边”）"
+        )
 
         // 拉伸轴：真外缘在 yc ± 20。之外至少要有**一个**片元。
         val hBeyond = ArrayList<Int>()
@@ -1408,9 +1485,11 @@ class PipelineVerifierApp : Application() {
                 hBeyond.add(y)
             }
         }
-        report("★ 非等比缩放 拉伸轴（y，scale 10）：真外缘之外**有**片元（羽化完整）",
+        report(
+            "★ 非等比缩放 拉伸轴（y，scale 10）：真外缘之外**有**片元（羽化完整）",
             hBeyond.isNotEmpty(),
-            "实测 ${hBeyond.size} 个${if (hBeyond.isEmpty()) "（这条失败说明同一帧里 AA 没生效，而不是缩放降级）" else "：y=$hBeyond"}")
+            "实测 ${hBeyond.size} 个${if (hBeyond.isEmpty()) "（这条失败说明同一帧里 AA 没生效，而不是缩放降级）" else "：y=$hBeyond"}"
+        )
         return true
     }
 
@@ -1480,7 +1559,14 @@ class PipelineVerifierApp : Application() {
 
         /** 逐通道打印一串行上的颜色，给报告当读数用。 */
         fun rowColors(x: Int, y0: Int, rows: Int): String =
-            (y0 until y0 + rows).joinToString(" ") { "y$it=#%06X".format((r(x, it) shl 16) or (g(x, it) shl 8) or channel(x, it, 2)) }
+            (y0 until y0 + rows).joinToString(" ") {
+                "y$it=#%06X".format(
+                    (r(x, it) shl 16) or (g(
+                        x,
+                        it
+                    ) shl 8) or channel(x, it, 2)
+                )
+            }
 
         /** 取一块矩形的 RGB（不含 alpha）。 */
         fun rgb(x: Int, y: Int): Int = (r(x, y) shl 16) or (g(x, y) shl 8) or b(x, y)

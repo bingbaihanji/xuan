@@ -18,42 +18,6 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class GlyphAtlasTest {
 
-    /** 假的字形来源：按 key 生成固定尺寸的位图，并记录每个 key 被问了几次。 */
-    private static final class FakeSource implements GlyphSource {
-
-        /** 默认位图宽。 */
-        int width = 64;
-
-        /** 默认位图高。 */
-        int height = 64;
-
-        /** 默认推进宽度（em 像素）。 */
-        float advance = 48f;
-
-        /** 尺寸例外：key → {宽, 高}。用来造"空字形"与"比图集还大的字形"。 */
-        final Map<Integer, int[]> sizes = new HashMap<>();
-
-        /** 每个 key 被索取的次数。 */
-        private final Map<Integer, Integer> calls = new HashMap<>();
-
-        @Override
-        public GlyphBitmap pixelsFor(int key) {
-            calls.merge(key, 1, Integer::sum);
-            int[] wh = sizes.get(key);
-            int w = wh == null ? width : wh[0];
-            int h = wh == null ? height : wh[1];
-            byte[] pixels = new byte[w * h];
-            // 用 key 低 8 位填充：这样"上传的内容确实落在自己的槽位里"可以被逐像素断言，
-            // 而不是只能断言"上传过一次"。
-            Arrays.fill(pixels, (byte) (key & 0xFF));
-            return new GlyphBitmap(w, h, -2, -40, advance, pixels);
-        }
-
-        int calls(int key) {
-            return calls.getOrDefault(key, 0);
-        }
-    }
-
     /** 槽位左上角在纹理里的 x。uv 带半点偏移，所以反过来算时要先减掉。 */
     private static int slotX(GlyphSlot slot) {
         return Math.round(slot.u0() * GlyphAtlas.SIZE - 0.5f);
@@ -257,5 +221,41 @@ class GlyphAtlasTest {
         assertEquals(1, gl.deletedTextures.size(), "重复 dispose 不该重复删除纹理");
         assertThrows(IllegalStateException.class, () -> atlas.acquire(1),
                 "释放之后再分配必须炸：纹理名字可能已经被驱动发给了别的纹理");
+    }
+
+    /** 假的字形来源：按 key 生成固定尺寸的位图，并记录每个 key 被问了几次。 */
+    private static final class FakeSource implements GlyphSource {
+
+        /** 尺寸例外：key → {宽, 高}。用来造"空字形"与"比图集还大的字形"。 */
+        final Map<Integer, int[]> sizes = new HashMap<>();
+
+        /** 每个 key 被索取的次数。 */
+        private final Map<Integer, Integer> calls = new HashMap<>();
+
+        /** 默认位图宽。 */
+        int width = 64;
+
+        /** 默认位图高。 */
+        int height = 64;
+
+        /** 默认推进宽度（em 像素）。 */
+        float advance = 48f;
+
+        @Override
+        public GlyphBitmap pixelsFor(int key) {
+            calls.merge(key, 1, Integer::sum);
+            int[] wh = sizes.get(key);
+            int w = wh == null ? width : wh[0];
+            int h = wh == null ? height : wh[1];
+            byte[] pixels = new byte[w * h];
+            // 用 key 低 8 位填充：这样"上传的内容确实落在自己的槽位里"可以被逐像素断言，
+            // 而不是只能断言"上传过一次"。
+            Arrays.fill(pixels, (byte) (key & 0xFF));
+            return new GlyphBitmap(w, h, -2, -40, advance, pixels);
+        }
+
+        int calls(int key) {
+            return calls.getOrDefault(key, 0);
+        }
     }
 }

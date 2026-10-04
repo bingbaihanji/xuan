@@ -1,17 +1,6 @@
 package com.bingbaihanji.xuan.example
 
-import com.bingbaihanji.xuan.chart.ArrayChartData
-import com.bingbaihanji.xuan.chart.Axis
-import com.bingbaihanji.xuan.chart.AxisRange
-import com.bingbaihanji.xuan.chart.AxisType
-import com.bingbaihanji.xuan.chart.Chart
-import com.bingbaihanji.xuan.chart.ChartInsets
-import com.bingbaihanji.xuan.chart.ChartLayout
-import com.bingbaihanji.xuan.chart.ChartData
-import com.bingbaihanji.xuan.chart.ChartSide
-import com.bingbaihanji.xuan.chart.ChartType
-import com.bingbaihanji.xuan.chart.RingChartData
-import com.bingbaihanji.xuan.chart.Series
+import com.bingbaihanji.xuan.chart.*
 import com.bingbaihanji.xuan.chartrender.ChartRenderLayout
 import com.bingbaihanji.xuan.glview.FXGLTransfer
 import com.bingbaihanji.xuan.gpu.FftWindow
@@ -25,13 +14,7 @@ import javafx.stage.Stage
 import org.lwjgl.opengl.GL11.*
 import org.lwjgl.opengl.GL30.GL_FRAMEBUFFER_BINDING
 import java.nio.ByteBuffer
-import kotlin.jvm.java
-import kotlin.math.PI
-import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.hypot
-import kotlin.math.roundToInt
-import kotlin.math.sin
+import kotlin.math.*
 import kotlin.system.exitProcess
 
 /**
@@ -1741,8 +1724,10 @@ class ChartVerifierApp : Application() {
     // Task 13 的两张实验图
     // -----------------------------------------------------------------------
 
-    private val pickProbeRect = Rect(PICK_PROBE_PLOT_X, PICK_PROBE_PLOT_Y,
-        PICK_PROBE_PLOT_W, PICK_PROBE_PLOT_H)
+    private val pickProbeRect = Rect(
+        PICK_PROBE_PLOT_X, PICK_PROBE_PLOT_Y,
+        PICK_PROBE_PLOT_W, PICK_PROBE_PLOT_H
+    )
 
     private val wrapRect = Rect(WRAP_PLOT_X, WRAP_PLOT_Y, WRAP_PLOT_W, WRAP_PLOT_H)
 
@@ -1797,14 +1782,20 @@ class ChartVerifierApp : Application() {
     // Task 14 的两张实验图：散点
     // -----------------------------------------------------------------------
 
-    private val scatterRect = Rect(SCATTER_PLOT_X, SCATTER_PLOT_Y,
-        SCATTER_PLOT_W, SCATTER_PLOT_H)
+    private val scatterRect = Rect(
+        SCATTER_PLOT_X, SCATTER_PLOT_Y,
+        SCATTER_PLOT_W, SCATTER_PLOT_H
+    )
 
-    private val markerRect = Rect(MARKER_PLOT_X, MARKER_PLOT_Y,
-        MARKER_PLOT_W, MARKER_PLOT_H)
+    private val markerRect = Rect(
+        MARKER_PLOT_X, MARKER_PLOT_Y,
+        MARKER_PLOT_W, MARKER_PLOT_H
+    )
 
-    private val degenRect = Rect(DEGEN_PLOT_X, DEGEN_PLOT_Y,
-        DEGEN_PLOT_W, DEGEN_PLOT_H)
+    private val degenRect = Rect(
+        DEGEN_PLOT_X, DEGEN_PLOT_Y,
+        DEGEN_PLOT_W, DEGEN_PLOT_H
+    )
 
     /**
      * 散点实验的数据。两张实验图**共用同一份**——只有 markerSize 不同。
@@ -1857,8 +1848,10 @@ class ChartVerifierApp : Application() {
     // 一块绘图区、一个系列、一份数据，四幕换输入。见文件上方"Task 7 的频谱实验图"。
     // -----------------------------------------------------------------------
 
-    private val spectrumRect = Rect(SPECTRUM_PLOT_X, SPECTRUM_PLOT_Y,
-        SPECTRUM_PLOT_W, SPECTRUM_PLOT_H)
+    private val spectrumRect = Rect(
+        SPECTRUM_PLOT_X, SPECTRUM_PLOT_Y,
+        SPECTRUM_PLOT_W, SPECTRUM_PLOT_H
+    )
 
     /**
      * 频谱的数据：环容量 [SPECTRUM_CAPACITY]，0 号维度是"样本序号"（没人读，
@@ -1927,17 +1920,25 @@ class ChartVerifierApp : Application() {
     // 图型实验的四张图（柱状 / 面积 ×2 / 阶梯）
     // -----------------------------------------------------------------------
 
-    private val barRect = Rect(KIND_PLOT_X, BAR_PLOT_Y.toFloat(), KIND_PLOT_W.toFloat(),
-        KIND_PLOT_H.toFloat())
+    private val barRect = Rect(
+        KIND_PLOT_X, BAR_PLOT_Y.toFloat(), KIND_PLOT_W.toFloat(),
+        KIND_PLOT_H.toFloat()
+    )
 
-    private val areaSlopeRect = Rect(KIND_PLOT_X, AREA_PLOT_Y.toFloat(), KIND_PLOT_W.toFloat(),
-        KIND_PLOT_H.toFloat())
+    private val areaSlopeRect = Rect(
+        KIND_PLOT_X, AREA_PLOT_Y.toFloat(), KIND_PLOT_W.toFloat(),
+        KIND_PLOT_H.toFloat()
+    )
 
-    private val areaLineRect = Rect(KIND_PLOT_X, AREA_LINE_PLOT_Y.toFloat(), KIND_PLOT_W.toFloat(),
-        KIND_PLOT_H.toFloat())
+    private val areaLineRect = Rect(
+        KIND_PLOT_X, AREA_LINE_PLOT_Y.toFloat(), KIND_PLOT_W.toFloat(),
+        KIND_PLOT_H.toFloat()
+    )
 
-    private val stepRect = Rect(KIND_PLOT_X, STEP_PLOT_Y.toFloat(), KIND_PLOT_W.toFloat(),
-        KIND_PLOT_H.toFloat())
+    private val stepRect = Rect(
+        KIND_PLOT_X, STEP_PLOT_Y.toFloat(), KIND_PLOT_W.toFloat(),
+        KIND_PLOT_H.toFloat()
+    )
 
     /** 柱状实验：同一层里**两个**柱状系列，于是每格并排两根柱（分组的判别式所在）。 */
     private val barDataA = ArrayChartData(
@@ -2027,11 +2028,15 @@ class ChartVerifierApp : Application() {
     // 要比较的东西之一（见下面第 5 幕）。
     // -----------------------------------------------------------------------
 
-    private val smoothCurveRect = Rect(SMOOTH_PLOT_X, SMOOTH_PLOT_Y,
-        SMOOTH_PLOT_W, SMOOTH_PLOT_H)
+    private val smoothCurveRect = Rect(
+        SMOOTH_PLOT_X, SMOOTH_PLOT_Y,
+        SMOOTH_PLOT_W, SMOOTH_PLOT_H
+    )
 
-    private val smoothGapRect = Rect(SMOOTH_GAP_PLOT_X, SMOOTH_GAP_PLOT_Y,
-        SMOOTH_GAP_PLOT_W, SMOOTH_GAP_PLOT_H)
+    private val smoothGapRect = Rect(
+        SMOOTH_GAP_PLOT_X, SMOOTH_GAP_PLOT_Y,
+        SMOOTH_GAP_PLOT_W, SMOOTH_GAP_PLOT_H
+    )
 
     /**
      * 造一张"一个系列、一块矩形"的图（x 窗口显式给，y 窗口就是数据的范围）。
@@ -2039,9 +2044,11 @@ class ChartVerifierApp : Application() {
      * <p>数据取 {@code ChartData}（不是 {@code ArrayChartData}）：跨环绕那一对用的是
      * {@code RingChartData}，而两者的坐标映射完全一样（都是"轴窗口 → 绘图区"）。
      */
-    private fun buildSmoothChart(series: Series, data: ChartData,
-                                 xMin: Double, xMax: Double,
-                                 plotW: Float, plotH: Float): Chart {
+    private fun buildSmoothChart(
+        series: Series, data: ChartData,
+        xMin: Double, xMax: Double,
+        plotW: Float, plotH: Float
+    ): Chart {
         val xAxis = Axis(AxisType.LINEAR, data.axisRange(0))
             .setDisplayLength(plotW.toDouble())
             .setWindow(xMin, xMax)
@@ -2074,11 +2081,15 @@ class ChartVerifierApp : Application() {
     private val smoothCurveSmoothSeries = Series("曲线平滑", smoothCurveData, ChartType.LINE)
         .color(smoothCurveArgb).lineWidth(SMOOTH_LINE_WIDTH).smooth(true)
 
-    private val smoothCurvePlainChart = buildSmoothChart(smoothCurvePlainSeries, smoothCurveData,
-        SMOOTH_X_WINDOW_MIN, SMOOTH_X_WINDOW_MAX, SMOOTH_PLOT_W, SMOOTH_PLOT_H)
+    private val smoothCurvePlainChart = buildSmoothChart(
+        smoothCurvePlainSeries, smoothCurveData,
+        SMOOTH_X_WINDOW_MIN, SMOOTH_X_WINDOW_MAX, SMOOTH_PLOT_W, SMOOTH_PLOT_H
+    )
 
-    private val smoothCurveSmoothChart = buildSmoothChart(smoothCurveSmoothSeries, smoothCurveData,
-        SMOOTH_X_WINDOW_MIN, SMOOTH_X_WINDOW_MAX, SMOOTH_PLOT_W, SMOOTH_PLOT_H)
+    private val smoothCurveSmoothChart = buildSmoothChart(
+        smoothCurveSmoothSeries, smoothCurveData,
+        SMOOTH_X_WINDOW_MIN, SMOOTH_X_WINDOW_MAX, SMOOTH_PLOT_W, SMOOTH_PLOT_H
+    )
 
     /** 缺口实验的数据：中间一个 NaN（见 [SMOOTH_GAP_VALUES]）。 */
     private val smoothGapData = ArrayChartData(
@@ -2086,8 +2097,10 @@ class ChartVerifierApp : Application() {
             AxisRange(0.0, (SMOOTH_GAP_VALUES.size - 1).toDouble(), "样本", ""),
             AxisRange(0.0, 1.0, "值", "")
         ),
-        arrayOf(DoubleArray(SMOOTH_GAP_VALUES.size) { it.toDouble() },
-            SMOOTH_GAP_VALUES.copyOf())
+        arrayOf(
+            DoubleArray(SMOOTH_GAP_VALUES.size) { it.toDouble() },
+            SMOOTH_GAP_VALUES.copyOf()
+        )
     )
 
     private val smoothGapPlainSeries = Series("缺口直线", smoothGapData, ChartType.LINE)
@@ -2096,11 +2109,15 @@ class ChartVerifierApp : Application() {
     private val smoothGapSmoothSeries = Series("缺口平滑", smoothGapData, ChartType.LINE)
         .color(smoothGapArgb).lineWidth(SMOOTH_GAP_LINE_WIDTH).smooth(true)
 
-    private val smoothGapPlainChart = buildSmoothChart(smoothGapPlainSeries, smoothGapData,
-        SMOOTH_GAP_X_WINDOW_MIN, SMOOTH_GAP_X_WINDOW_MAX, SMOOTH_GAP_PLOT_W, SMOOTH_GAP_PLOT_H)
+    private val smoothGapPlainChart = buildSmoothChart(
+        smoothGapPlainSeries, smoothGapData,
+        SMOOTH_GAP_X_WINDOW_MIN, SMOOTH_GAP_X_WINDOW_MAX, SMOOTH_GAP_PLOT_W, SMOOTH_GAP_PLOT_H
+    )
 
-    private val smoothGapSmoothChart = buildSmoothChart(smoothGapSmoothSeries, smoothGapData,
-        SMOOTH_GAP_X_WINDOW_MIN, SMOOTH_GAP_X_WINDOW_MAX, SMOOTH_GAP_PLOT_W, SMOOTH_GAP_PLOT_H)
+    private val smoothGapSmoothChart = buildSmoothChart(
+        smoothGapSmoothSeries, smoothGapData,
+        SMOOTH_GAP_X_WINDOW_MIN, SMOOTH_GAP_X_WINDOW_MAX, SMOOTH_GAP_PLOT_W, SMOOTH_GAP_PLOT_H
+    )
 
     /**
      * 面积实验：与曲线实验**同一份数据、同一块矩形、同一个 y 窗口**，
@@ -2117,11 +2134,15 @@ class ChartVerifierApp : Application() {
     private val smoothAreaSmoothSeries = Series("面积平滑", smoothCurveData, ChartType.AREA)
         .color(smoothAreaArgb).lineWidth(SMOOTH_LINE_WIDTH).smooth(true)
 
-    private val smoothAreaPlainChart = buildSmoothChart(smoothAreaPlainSeries, smoothCurveData,
-        SMOOTH_X_WINDOW_MIN, SMOOTH_X_WINDOW_MAX, SMOOTH_PLOT_W, SMOOTH_PLOT_H)
+    private val smoothAreaPlainChart = buildSmoothChart(
+        smoothAreaPlainSeries, smoothCurveData,
+        SMOOTH_X_WINDOW_MIN, SMOOTH_X_WINDOW_MAX, SMOOTH_PLOT_W, SMOOTH_PLOT_H
+    )
 
-    private val smoothAreaSmoothChart = buildSmoothChart(smoothAreaSmoothSeries, smoothCurveData,
-        SMOOTH_X_WINDOW_MIN, SMOOTH_X_WINDOW_MAX, SMOOTH_PLOT_W, SMOOTH_PLOT_H)
+    private val smoothAreaSmoothChart = buildSmoothChart(
+        smoothAreaSmoothSeries, smoothCurveData,
+        SMOOTH_X_WINDOW_MIN, SMOOTH_X_WINDOW_MAX, SMOOTH_PLOT_W, SMOOTH_PLOT_H
+    )
 
     // ---- 跨环绕的一对（第 6、7 幕）：与既有的跨环绕实验共用数据与窗口 ----
 
@@ -2131,15 +2152,19 @@ class ChartVerifierApp : Application() {
      * <p>复用对象是有意的：两张图共用同一个 `Series` 就是共用同一块缓冲，
      * 于是"两张快照必须逐像素相同"这条判据里不会掺进"两块缓冲各自上传到哪"这种差别。
      */
-    private val smoothWrapPlainChart = buildSmoothChart(wrapSeries, wrapData,
-        SMOOTH_WRAP_WINDOW_START, SMOOTH_WRAP_WINDOW_END, SMOOTH_GAP_PLOT_W, SMOOTH_GAP_PLOT_H)
+    private val smoothWrapPlainChart = buildSmoothChart(
+        wrapSeries, wrapData,
+        SMOOTH_WRAP_WINDOW_START, SMOOTH_WRAP_WINDOW_END, SMOOTH_GAP_PLOT_W, SMOOTH_GAP_PLOT_H
+    )
 
     /** 平滑那一版：同数据、同窗口、同颜色、同线宽，只多一个开关。 */
     private val smoothWrapSmoothSeries = Series("跨环绕平滑", wrapData, ChartType.LINE)
         .color(wrapArgb).lineWidth(3f).smooth(true)
 
-    private val smoothWrapSmoothChart = buildSmoothChart(smoothWrapSmoothSeries, wrapData,
-        SMOOTH_WRAP_WINDOW_START, SMOOTH_WRAP_WINDOW_END, SMOOTH_GAP_PLOT_W, SMOOTH_GAP_PLOT_H)
+    private val smoothWrapSmoothChart = buildSmoothChart(
+        smoothWrapSmoothSeries, wrapData,
+        SMOOTH_WRAP_WINDOW_START, SMOOTH_WRAP_WINDOW_END, SMOOTH_GAP_PLOT_W, SMOOTH_GAP_PLOT_H
+    )
 
     // ---- 九幕各自的快照（观察期抓下来，校验期才断言）----
 
@@ -2157,8 +2182,10 @@ class ChartVerifierApp : Application() {
     // 装配实验：标题 / 图例 / 外边距
     // -----------------------------------------------------------------------
 
-    private val decorRect = Rect(DECOR_PLOT_X.toFloat(), DECOR_PLOT_Y.toFloat(),
-        DECOR_PLOT_W.toFloat(), DECOR_PLOT_H.toFloat())
+    private val decorRect = Rect(
+        DECOR_PLOT_X.toFloat(), DECOR_PLOT_Y.toFloat(),
+        DECOR_PLOT_W.toFloat(), DECOR_PLOT_H.toFloat()
+    )
 
     /** 装配实验的数据：两个点、同一个值 0.25，画出来是一条水平线。 */
     private val decorData = ArrayChartData(
@@ -2288,8 +2315,10 @@ class ChartVerifierApp : Application() {
     // 左/右图例、底部标题、带子边界、轴标题：四个变体共用一块矩形
     // -----------------------------------------------------------------------
 
-    private val overRect = Rect(OVER_X.toFloat(), OVER_Y.toFloat(),
-        OVER_W.toFloat(), OVER_H.toFloat())
+    private val overRect = Rect(
+        OVER_X.toFloat(), OVER_Y.toFloat(),
+        OVER_W.toFloat(), OVER_H.toFloat()
+    )
 
     /** 三个变体共用的数据：两个点、同一个值 0.5，画出来是一条水平线。 */
     private val overData = ArrayChartData(
@@ -2313,14 +2342,20 @@ class ChartVerifierApp : Application() {
     // 回收实验（见文件上方那一段"回收实验"的说明）
     // -----------------------------------------------------------------------
 
-    private val reclaimRectA = Rect(RECLAIM_A_PLOT_X, RECLAIM_PLOT_Y,
-        RECLAIM_PLOT_W, RECLAIM_PLOT_H)
+    private val reclaimRectA = Rect(
+        RECLAIM_A_PLOT_X, RECLAIM_PLOT_Y,
+        RECLAIM_PLOT_W, RECLAIM_PLOT_H
+    )
 
-    private val reclaimRectB = Rect(RECLAIM_B_PLOT_X, RECLAIM_PLOT_Y,
-        RECLAIM_PLOT_W, RECLAIM_PLOT_H)
+    private val reclaimRectB = Rect(
+        RECLAIM_B_PLOT_X, RECLAIM_PLOT_Y,
+        RECLAIM_PLOT_W, RECLAIM_PLOT_H
+    )
 
-    private val reclaimRectC = Rect(RECLAIM_C_PLOT_X, RECLAIM_PLOT_Y,
-        RECLAIM_PLOT_W, RECLAIM_PLOT_H)
+    private val reclaimRectC = Rect(
+        RECLAIM_C_PLOT_X, RECLAIM_PLOT_Y,
+        RECLAIM_PLOT_W, RECLAIM_PLOT_H
+    )
 
     /**
      * A/B/C 三路探针共用的数据（一份静态的 [ArrayChartData]，一条水平线）。
@@ -2411,17 +2446,21 @@ class ChartVerifierApp : Application() {
 
         val needW = RECLAIM_C_PLOT_X + RECLAIM_PLOT_W
         val needH = RECLAIM_PLOT_Y + RECLAIM_PLOT_H
-        report("前提：回收实验的三块探针绘图区都在帧缓冲里", w >= needW && h >= needH,
+        report(
+            "前提：回收实验的三块探针绘图区都在帧缓冲里", w >= needW && h >= needH,
             "帧缓冲 ${w}x$h，探针要 x ≥ $needW、y ≥ $needH。" +
                     "越界时三个拾取号会全是 0——而\"全是 0\"看起来像\"回收把还在用的号" +
-                    "也收走了\"，归因就完全错了（与 AA 那一组是同一条前提）")
+                    "也收走了\"，归因就完全错了（与 AA 那一组是同一条前提）"
+        )
 
         val tail = reclaimSamples.filter { it.frame >= RECLAIM_START + 3 }
         if (tail.size < RECLAIM_FRAMES - 3) {
             // 没有这条前提的话，下面的判据会在**空集合**上恒真——一条静默的绿。
-            report("前提：回收实验的读数取满了 ${RECLAIM_FRAMES - 3} 帧", false,
+            report(
+                "前提：回收实验的读数取满了 ${RECLAIM_FRAMES - 3} 帧", false,
                 "实际 ${tail.size} 帧（共记下 ${reclaimSamples.size} 帧，" +
-                        "回收期是 [$RECLAIM_START, $RECLAIM_END)）")
+                        "回收期是 [$RECLAIM_START, $RECLAIM_END)）"
+            )
             return
         }
 
@@ -2432,8 +2471,10 @@ class ChartVerifierApp : Application() {
         val firstBDraw = reclaimSamples.first { it.frame % 2 == 1 }
         val firstCDraw = reclaimSamples.first()
 
-        println("  回收期逐帧读数（帧号 / pickRegistry.size / cachedBufferCount / " +
-                "B 号 / B 上传 / C 号 / C 上传）：")
+        println(
+            "  回收期逐帧读数（帧号 / pickRegistry.size / cachedBufferCount / " +
+                    "B 号 / B 上传 / C 号 / C 上传）："
+        )
         for (s in reclaimSamples) {
             // "B 这一帧没画"用 `-` 标出来：写成 0 的话与"号真的读成了 0"分不开，
             // 而后者正是断言要抓的东西。
@@ -2455,23 +2496,27 @@ class ChartVerifierApp : Application() {
         // `size` 在这 ${tail.size} 帧里会单调涨 ${2 * (tail.size - 1)}（每帧恰好 +2）。
         val regFirst = tail.first().registrySize
         val regLast = tail.last().registrySize
-        report("① 每帧重建 Chart（每帧 new 两个 Series）${tail.size} 帧后，" +
-                "pickRegistry 的规模不增长",
+        report(
+            "① 每帧重建 Chart（每帧 new 两个 Series）${tail.size} 帧后，" +
+                    "pickRegistry 的规模不增长",
             tail.all { it.registrySize == regFirst },
             "第 ${tail.first().frame} 帧 size=$regFirst，第 ${tail.last().frame} 帧 size=$regLast；" +
                     "本段 size 的取值集合=${tail.map { it.registrySize }.toSortedSet()}。" +
                     "对照组（把 Gc.beginFrame 里的 releaseUnused() 删掉）这一段会涨 " +
-                    "${2 * (tail.size - 1)} 个号（每帧恰好 +2，A 组两个新系列）")
+                    "${2 * (tail.size - 1)} 个号（每帧恰好 +2，A 组两个新系列）"
+        )
 
         val bufFirst = tail.first().bufferCount
         val bufLast = tail.last().bufferCount
-        report("① 每帧重建 Chart ${tail.size} 帧后，缓存的缓冲数不增长",
+        report(
+            "① 每帧重建 Chart ${tail.size} 帧后，缓存的缓冲数不增长",
             tail.all { it.bufferCount == bufFirst },
             "第 ${tail.first().frame} 帧 bufferCount=$bufFirst，" +
                     "第 ${tail.last().frame} 帧 bufferCount=$bufLast；" +
                     "本段 bufferCount 的取值集合=${tail.map { it.bufferCount }.toSortedSet()}。" +
                     "对照组（不开回收）这一段会涨 ${2 * (tail.size - 1)} 块" +
-                    "（每帧泄漏两块 SeriesBuffer）")
+                    "（每帧泄漏两块 SeriesBuffer）"
+        )
 
         // ---- ② 每隔一帧画一次：宽限挡得住，缓冲与号都不动 ----
         //
@@ -2481,37 +2526,45 @@ class ChartVerifierApp : Application() {
         // 于是"不重传"那条立刻倒，而画面逐像素相同。
         val bFrames = tail.filter { it.frame % 2 == 1 }
         val bIds = bFrames.map { it.bId }.toSortedSet()
-        report("② 每隔一帧画一次（奇数帧画、偶数帧不画）：拾取号始终不变且非 0",
+        report(
+            "② 每隔一帧画一次（奇数帧画、偶数帧不画）：拾取号始终不变且非 0",
             bIds.size == 1 && bIds.first() != 0,
             "本段画了 ${bFrames.size} 次，读到的号集合=$bIds（期望恰好一个元素且非 0）。" +
                     "号变了说明这个还在用的系列被回收后又重新注册（拾取会静默失效）；" +
-                    "0 说明这一帧压根没画出来（先看上面那条前提）")
+                    "0 说明这一帧压根没画出来（先看上面那条前提）"
+        )
 
         val bUploads = bFrames.map { it.bUpload }
-        report("② 每隔一帧画一次：缓冲没有被回收（每一次都不重传）",
+        report(
+            "② 每隔一帧画一次：缓冲没有被回收（每一次都不重传）",
             bUploads.all { it == 0 },
             "本段 ${bUploads.size} 次画它的上传字节取值集合=${bUploads.toSortedSet()}" +
                     "（期望只有 0）。非 0 就是\"缓冲被销毁又重建\"的直接证据——" +
                     "重建必然把整环重传（1M 点就是 4 MB），而画面逐像素相同。" +
                     "这个读数口本身不是恒 0 的：它第一次被画（帧 " +
                     "${firstBDraw.frame}，在建缓冲那一帧上，落在本段之外）实测传了 " +
-                    "${firstBDraw.bUpload} 字节")
+                    "${firstBDraw.bUpload} 字节"
+        )
 
         // ---- ③ 一直画同一个 Chart：还在用的东西不会被回收 ----
         val cIds = tail.map { it.cId }.toSortedSet()
-        report("③ 一直画同一个 Chart：拾取号始终不变且非 0",
+        report(
+            "③ 一直画同一个 Chart：拾取号始终不变且非 0",
             cIds.size == 1 && cIds.first() != 0,
-            "本段 ${tail.size} 帧读到的号集合=$cIds（期望恰好一个元素且非 0）")
+            "本段 ${tail.size} 帧读到的号集合=$cIds（期望恰好一个元素且非 0）"
+        )
 
         val cUploads = tail.map { it.cUpload }
-        report("③ 一直画同一个 Chart：缓冲没有被回收（每一帧都不重传）",
+        report(
+            "③ 一直画同一个 Chart：缓冲没有被回收（每一帧都不重传）",
             cUploads.all { it == 0 },
             "本段 ${cUploads.size} 帧的上传字节取值集合=${cUploads.toSortedSet()}" +
                     "（期望只有 0）。非 0 说明回收把**正在画**的系列也收掉了——" +
                     "那表现为每帧重传整环，而且拾取号会跟着变。" +
                     "同样地，这个读数口不是恒 0 的：它第一次被画（帧 " +
                     "${firstCDraw.frame}，建缓冲那一帧，落在本段之外）实测传了 " +
-                    "${firstCDraw.cUpload} 字节")
+                    "${firstCDraw.cUpload} 字节"
+        )
     }
 
     /**
@@ -2749,8 +2802,10 @@ class ChartVerifierApp : Application() {
     }
 
     /** 造面积图：x 窗口就是数据范围（每样本 96/(N-1) px），y 窗口见 [KIND_Y_WINDOW_MIN]。 */
-    private fun buildAreaChart(data: ArrayChartData, series: Series,
-                               windowMin: Double, windowMax: Double): Chart {
+    private fun buildAreaChart(
+        data: ArrayChartData, series: Series,
+        windowMin: Double, windowMax: Double
+    ): Chart {
         val xAxis = Axis(AxisType.LINEAR, data.axisRange(0))
             .setDisplayLength(KIND_PLOT_W.toDouble())
             .setWindow(windowMin, windowMax)
@@ -3510,11 +3565,17 @@ class ChartVerifierApp : Application() {
         // 3) 让网格落定，再把数据系列画在其上。这就是 Gc.flush() 存在的理由
         //    （见它的文档）：不 flush 的话数据系列只能整个画在 Gc 内容之上或之下。
         gc.flush()
-        gc.charts.draw(chart, Rect(PLOT_X.toFloat(), PLOT_Y.toFloat(),
-            PLOT_W.toFloat(), PLOT_H.toFloat()), gc.width, gc.height)
+        gc.charts.draw(
+            chart, Rect(
+                PLOT_X.toFloat(), PLOT_Y.toFloat(),
+                PLOT_W.toFloat(), PLOT_H.toFloat()
+            ), gc.width, gc.height
+        )
         // 3b) 第二张图。同一帧里画两张图也是顺带被覆盖到的用法。
-        gc.charts.draw(zigzagChart, Rect(ZIG_PLOT_X, ZIG_PLOT_Y, ZIG_PLOT_W, ZIG_PLOT_H),
-            gc.width, gc.height)
+        gc.charts.draw(
+            zigzagChart, Rect(ZIG_PLOT_X, ZIG_PLOT_Y, ZIG_PLOT_W, ZIG_PLOT_H),
+            gc.width, gc.height
+        )
         // 3b2) 退化散点图：**每帧都画**（不是只在观察期），理由见 DEGEN_PLOT_X。
         drawDegenerateScatterChart(gc)
 
@@ -3622,6 +3683,7 @@ class ChartVerifierApp : Application() {
             SPECTRUM_STAGE_B -> spectrumSamplesB = appendSpectrumSine(SPECTRUM_K0_B, SPECTRUM_AMP)
             SPECTRUM_STAGE_C -> spectrumSamplesC =
                 appendSpectrumSine(SPECTRUM_K0_A, SPECTRUM_AMP_LOW)
+
             SPECTRUM_STAGE_D -> appendSpectrumGap()
         }
         gc.charts.draw(spectrumChart, spectrumRect, gc.width, gc.height)
@@ -3924,11 +3986,13 @@ class ChartVerifierApp : Application() {
     private fun captureScatterPicks(bridge: FXGLTransfer) {
         val gc = bridge.gc() ?: return
         val onMarker = gc.pick(
-            scatterX(0.0).toFloat(), scatterY(SCATTER_VALUES[0]).toFloat())
+            scatterX(0.0).toFloat(), scatterY(SCATTER_VALUES[0]).toFloat()
+        )
         scatterOnMarkerId = onMarker?.id() ?: 0
         scatterOnMarkerPayloadOk = onMarker?.payload() === scatterSeries
         scatterOnMarker2Id = gc.pick(
-            scatterX(1.0).toFloat(), scatterY(SCATTER_VALUES[1]).toFloat())?.id() ?: 0
+            scatterX(1.0).toFloat(), scatterY(SCATTER_VALUES[1]).toFloat()
+        )?.id() ?: 0
         scatterMidId = gc.pick(
             ((scatterX(0.0) + scatterX(1.0)) / 2.0).toFloat(),
             ((scatterY(SCATTER_VALUES[0]) + scatterY(SCATTER_VALUES[1])) / 2.0).toFloat()
@@ -3957,8 +4021,10 @@ class ChartVerifierApp : Application() {
         val rw = rect.width.toInt()
         val rh = rect.height.toInt()
         val buf = ByteBuffer.allocateDirect(rw * rh * 4)
-        glReadPixels(rect.x.toInt(), h - rect.y.toInt() - rh, rw, rh,
-            GL_RGBA, GL_UNSIGNED_BYTE, buf)
+        glReadPixels(
+            rect.x.toInt(), h - rect.y.toInt() - rh, rw, rh,
+            GL_RGBA, GL_UNSIGNED_BYTE, buf
+        )
         buf.position(0)
         val px = IntArray(rw * rh)
         for (row in 0 until rh) {
@@ -4011,8 +4077,10 @@ class ChartVerifierApp : Application() {
      * **AA 关**那一帧的每一个墨迹像素都算成"过渡像素"，① 于是恒假——
      * 而那个失败看起来像"AA 关的时候也有羽化"，归因全错。
      */
-    private fun aaStats(s: Shot, x0: Int, x1: Int, y0: Int, y1: Int,
-                        inkRgb: Int = AA_INK_RGB): AaStats {
+    private fun aaStats(
+        s: Shot, x0: Int, x1: Int, y0: Int, y1: Int,
+        inkRgb: Int = AA_INK_RGB
+    ): AaStats {
         // 快照的像素是**不含 alpha 的 RGB**（与全帧回读同一个口径），而调用方手上
         // 通常是 ARGB 常量 ⇒ 这里统一去掉 alpha 那一字节。不去的话比较恒不成立
         // （表现为"纯墨色 0 个、过渡 390 个"，看起来像"关着也在羽化"）。
@@ -4082,10 +4150,12 @@ class ChartVerifierApp : Application() {
         //
         // 窗在帧缓冲最底下那一条。越界时读数会**全是背景色**——而"全是背景"
         // 看起来像"AA 没生效"，归因就反了，所以它必须是第一条断言。
-        report("★ AA 前置：回读窗整块在帧缓冲里（x ∈ [${AA_PLOT_X.toInt()}, ${(AA_PLOT_X + AA_PLOT_W).toInt()})、" +
-                "y ∈ [$AA_GRAB_Y, ${AA_GRAB_Y + AA_PLOT_H.toInt()})）",
+        report(
+            "★ AA 前置：回读窗整块在帧缓冲里（x ∈ [${AA_PLOT_X.toInt()}, ${(AA_PLOT_X + AA_PLOT_W).toInt()})、" +
+                    "y ∈ [$AA_GRAB_Y, ${AA_GRAB_Y + AA_PLOT_H.toInt()})）",
             w >= (AA_PLOT_X + AA_PLOT_W).toInt() && h >= AA_GRAB_Y + AA_PLOT_H.toInt(),
-            "帧缓冲 ${w}x$h")
+            "帧缓冲 ${w}x$h"
+        )
 
         // 相位：由带心（= AA_PLOT_Y + (1 − v)·AA_PLOT_H）推出"哪些行被光栅化"，
         // 再与上面那批**硬编码**的行号常量比。两者不一致说明有人动了绘图区或数值，
@@ -4097,46 +4167,98 @@ class ChartVerifierApp : Application() {
             (0 until aaGrabRect.height.toInt()).filter {
                 abs((AA_GRAB_Y + it + 0.5f) - center) < AA_LINE_WIDTH * 0.5f
             }
+
         fun nearestEdgeGap(center: Float): Float =
             (0 until aaGrabRect.height.toInt()).minOfOrNull {
                 abs(abs((AA_GRAB_Y + it + 0.5f) - center) - AA_LINE_WIDTH * 0.5f)
             } ?: 0f
+
         val rowsA = bandRows(centerA)
         val rowsB = bandRows(centerB)
-        report("★ AA 前置：相位 A 的带心 = 723.25、被光栅化的行 = [722, 723, 724]（局部 [10, 11, 12]）",
+        report(
+            "★ AA 前置：相位 A 的带心 = 723.25、被光栅化的行 = [722, 723, 724]（局部 [10, 11, 12]）",
             rowsA == listOf(AA_FRINGE_ROW_A - 2, AA_FRINGE_ROW_A - 1, AA_FRINGE_ROW_A),
             "实测带心 $centerA、行 $rowsA（局部；设备行 ${rowsA.map { it + AA_GRAB_Y }}）" +
                     "，期望 [${AA_FRINGE_ROW_A - 2}, ${AA_FRINGE_ROW_A - 1}, $AA_FRINGE_ROW_A]" +
-                    " ——不一致说明 AA_PLOT_Y / AA_VALUE_A / 线宽被动过，**四条判据的行号要重算**")
-        report("★ AA 前置：相位 B 的带心 = 728.75、被光栅化的行 = [727, 728, 729]（局部 [15, 16, 17]）",
+                    " ——不一致说明 AA_PLOT_Y / AA_VALUE_A / 线宽被动过，**四条判据的行号要重算**"
+        )
+        report(
+            "★ AA 前置：相位 B 的带心 = 728.75、被光栅化的行 = [727, 728, 729]（局部 [15, 16, 17]）",
             rowsB == listOf(AA_FRINGE_ROW_B, AA_FRINGE_ROW_B + 1, AA_FRINGE_ROW_B + 2),
             "实测带心 $centerB、行 $rowsB（局部；设备行 ${rowsB.map { it + AA_GRAB_Y }}）" +
                     "，期望 [$AA_FRINGE_ROW_B, ${AA_FRINGE_ROW_B + 1}, ${AA_FRINGE_ROW_B + 2}]" +
-                    " ——同上前提")
+                    " ——同上前提"
+        )
         // 没有像素中心正好压在带边缘上（tie 会让光栅化的取舍规则参与进来，
         // 而那个规则不在我们的控制里）。实测余量 0.25 px。
         val gapA = nearestEdgeGap(centerA)
         val gapB = nearestEdgeGap(centerB)
-        report("★ AA 前置：没有像素中心落在带边缘上（tie 会让取舍规则进到读数里）",
+        report(
+            "★ AA 前置：没有像素中心落在带边缘上（tie 会让取舍规则进到读数里）",
             gapA > 0.2f && gapB > 0.2f,
-            "最近的像素中心到带边缘 相位A ${"%.3f".format(gapA)} px、相位B ${"%.3f".format(gapB)} px")
+            "最近的像素中心到带边缘 相位A ${"%.3f".format(gapA)} px、相位B ${"%.3f".format(gapB)} px"
+        )
 
         val lineOff = aaLinesOff
         val lineOn = aaLinesOn
         if (lineOff == null || lineOn == null) {
-            report("★ AA 折线：关 / 开两张快照都在", false,
-                "关=${lineOff != null}，开=${lineOn != null}")
+            report(
+                "★ AA 折线：关 / 开两张快照都在", false,
+                "关=${lineOff != null}，开=${lineOn != null}"
+            )
             return
         }
 
-        println("  折线窗 x∈[$AA_X0, $AA_X1)（局部；设备 x∈[${AA_X0 + AA_PLOT_X.toInt()}, " +
-                "${AA_X1 + AA_PLOT_X.toInt()})）")
-        println("  相位 A 行 $AA_ROWS_A0..${AA_ROWS_A1 - 1}（设备 ${AA_ROWS_A0 + AA_GRAB_Y}.." +
-                "${AA_ROWS_A1 - 1 + AA_GRAB_Y}）  AA 关：${aaRowProfile(lineOff, AA_X0, AA_X1, AA_ROWS_A0, AA_ROWS_A1)}")
-        println("  相位 A 行 $AA_ROWS_A0..${AA_ROWS_A1 - 1}  AA 开：${aaRowProfile(lineOn, AA_X0, AA_X1, AA_ROWS_A0, AA_ROWS_A1)}")
-        println("  相位 B 行 $AA_ROWS_B0..${AA_ROWS_B1 - 1}（设备 ${AA_ROWS_B0 + AA_GRAB_Y}.." +
-                "${AA_ROWS_B1 - 1 + AA_GRAB_Y}）  AA 关：${aaRowProfile(lineOff, AA_X0, AA_X1, AA_ROWS_B0, AA_ROWS_B1)}")
-        println("  相位 B 行 $AA_ROWS_B0..${AA_ROWS_B1 - 1}  AA 开：${aaRowProfile(lineOn, AA_X0, AA_X1, AA_ROWS_B0, AA_ROWS_B1)}")
+        println(
+            "  折线窗 x∈[$AA_X0, $AA_X1)（局部；设备 x∈[${AA_X0 + AA_PLOT_X.toInt()}, " +
+                    "${AA_X1 + AA_PLOT_X.toInt()})）"
+        )
+        println(
+            "  相位 A 行 $AA_ROWS_A0..${AA_ROWS_A1 - 1}（设备 ${AA_ROWS_A0 + AA_GRAB_Y}.." +
+                    "${AA_ROWS_A1 - 1 + AA_GRAB_Y}）  AA 关：${
+                        aaRowProfile(
+                            lineOff,
+                            AA_X0,
+                            AA_X1,
+                            AA_ROWS_A0,
+                            AA_ROWS_A1
+                        )
+                    }"
+        )
+        println(
+            "  相位 A 行 $AA_ROWS_A0..${AA_ROWS_A1 - 1}  AA 开：${
+                aaRowProfile(
+                    lineOn,
+                    AA_X0,
+                    AA_X1,
+                    AA_ROWS_A0,
+                    AA_ROWS_A1
+                )
+            }"
+        )
+        println(
+            "  相位 B 行 $AA_ROWS_B0..${AA_ROWS_B1 - 1}（设备 ${AA_ROWS_B0 + AA_GRAB_Y}.." +
+                    "${AA_ROWS_B1 - 1 + AA_GRAB_Y}）  AA 关：${
+                        aaRowProfile(
+                            lineOff,
+                            AA_X0,
+                            AA_X1,
+                            AA_ROWS_B0,
+                            AA_ROWS_B1
+                        )
+                    }"
+        )
+        println(
+            "  相位 B 行 $AA_ROWS_B0..${AA_ROWS_B1 - 1}  AA 开：${
+                aaRowProfile(
+                    lineOn,
+                    AA_X0,
+                    AA_X1,
+                    AA_ROWS_B0,
+                    AA_ROWS_B1
+                )
+            }"
+        )
 
         val offA = aaStats(lineOff, AA_X0, AA_X1, AA_ROWS_A0, AA_ROWS_A1)
         val onA = aaStats(lineOn, AA_X0, AA_X1, AA_ROWS_A0, AA_ROWS_A1)
@@ -4149,25 +4271,31 @@ class ChartVerifierApp : Application() {
         val coreOnB = aaStats(lineOn, AA_X0, AA_X1, AA_CORE_ROWS_B.first, AA_CORE_ROWS_B.last + 1).pure
 
         // ① AA 关：一条过渡像素都不许有（硬边没有中间值）。
-        report("★ AA 折线① AA 关时两条相位都没有过渡像素",
+        report(
+            "★ AA 折线① AA 关时两条相位都没有过渡像素",
             offA.fringe == 0 && offB.fringe == 0,
-            "相位A ${offA.fringe} 个、相位B ${offB.fringe} 个（都期望 0）")
+            "相位A ${offA.fringe} 个、相位B ${offB.fringe} 个（都期望 0）"
+        )
         // ② AA 开：每列恰好 1 个过渡像素（带心取的是 k+0.25 / k+0.75 两档，
         // 带内三行的覆盖率是 1 / 1 / 0.75 ⇒ 每列**只有一个外缘行**是部分覆盖的）。
         // 两条相位都要：`abs(vEdge) → vEdge` 那条变异把斜坡变成单侧的，
         // 相位 A 照过、相位 B 才倒（见文件上方那段推导）。
-        report("★ AA 折线② AA 开时两条相位各有 $AA_W 个过渡像素（每列 1 个，相位 A 在下缘、相位 B 在上缘）",
+        report(
+            "★ AA 折线② AA 开时两条相位各有 $AA_W 个过渡像素（每列 1 个，相位 A 在下缘、相位 B 在上缘）",
             onA.fringe == AA_W && onB.fringe == AA_W,
             "相位A ${onA.fringe} 个、相位B ${onB.fringe} 个，期望各 $AA_W" +
                     "（相位 A 的过渡行是局部 $AA_FRINGE_ROW_A＝设备 ${AA_FRINGE_ROW_A + AA_GRAB_Y}，" +
-                    "相位 B 是局部 $AA_FRINGE_ROW_B＝设备 ${AA_FRINGE_ROW_B + AA_GRAB_Y}）")
+                    "相位 B 是局部 $AA_FRINGE_ROW_B＝设备 ${AA_FRINGE_ROW_B + AA_GRAB_Y}）"
+        )
         // ③ 线心（覆盖率恒为 1 的那两行）的纯色像素数两模式**精确相等**，且 = 2W。
         // 写成"总纯色数相等"是一条**恒假**断言：AA 开时最外那一圈本来就会变成过渡像素，
         // 总数必然略减（关 3W、开 2W）。线心离边缘足够远，两模式都是满覆盖。
-        report("★ AA 折线③ 线心（2 行）纯色像素数两模式精确相等、且 = ${2 * AA_W}",
+        report(
+            "★ AA 折线③ 线心（2 行）纯色像素数两模式精确相等、且 = ${2 * AA_W}",
             coreOffA == coreOnA && coreOnA == 2 * AA_W &&
                     coreOffB == coreOnB && coreOnB == 2 * AA_W,
-            "相位A 关=$coreOffA 开=$coreOnA；相位B 关=$coreOffB 开=$coreOnB，期望各 ${2 * AA_W}")
+            "相位A 关=$coreOffA 开=$coreOnA；相位B 关=$coreOffB 开=$coreOnB，期望各 ${2 * AA_W}"
+        )
         // ④ 墨量对**解析值** 2.75 px/列 × 亮度差 255 × W（推导见文件上方那段：
         //    带的全宽 3 减去"斜坡在外侧被切掉的那 0.25"——图表这条路径几何不外扩，
         //    与 Gc 的双向外扩不同；**这是声明过的降级**，与"压缩轴外缘之外的羽化被切掉"并列）。
@@ -4182,15 +4310,19 @@ class ChartVerifierApp : Application() {
         //    `uAntialias` 恒传 `0f`）墨量变成硬边的 76500，偏离 **+6375 ≫ 52**。
         val analytic = 2.75 * AA_INK_LUMA * AA_W
         val tol = 0.5 * AA_W + 2
-        report("★ AA 折线④ 墨量 == 解析值（2.75 px/列 × 亮度差 255 × $AA_W = ${"%.0f".format(analytic)}）",
+        report(
+            "★ AA 折线④ 墨量 == 解析值（2.75 px/列 × 亮度差 255 × $AA_W = ${"%.0f".format(analytic)}）",
             abs(onA.ink - analytic) <= tol && abs(onB.ink - analytic) <= tol,
             "相位A 实测 ${onA.ink}、相位B 实测 ${onB.ink}，解析 ${"%.0f".format(analytic)}，" +
-                    "允许 ±${"%.0f".format(tol)}（每列 1 个过渡像素 × 8 位量化界 0.5）")
+                    "允许 ±${"%.0f".format(tol)}（每列 1 个过渡像素 × 8 位量化界 0.5）"
+        )
         // ④ 对照：AA 关的墨量必须**精确**等于 3 px/列 × 255 × W。
         // 它钉的是"关着的时候几何没有被外扩"——外扩一行就会多出 W × 255。
-        report("★ AA 折线④ 对照：AA 关的墨量 == 3 px/列 × 亮度差 255 × $AA_W（硬边几何没有被外扩）",
+        report(
+            "★ AA 折线④ 对照：AA 关的墨量 == 3 px/列 × 亮度差 255 × $AA_W（硬边几何没有被外扩）",
             offA.ink == 3 * AA_INK_LUMA * AA_W && offB.ink == 3 * AA_INK_LUMA * AA_W,
-            "相位A 实测 ${offA.ink}、相位B 实测 ${offB.ink}，期望各 ${3 * AA_INK_LUMA * AA_W}")
+            "相位A 实测 ${offA.ink}、相位B 实测 ${offB.ink}，期望各 ${3 * AA_INK_LUMA * AA_W}"
+        )
 
         // ---- 其余五个图型：接线判据（关时无过渡 / 开时有）----
         //
@@ -4208,8 +4340,10 @@ class ChartVerifierApp : Application() {
         aaWiring(report, "面积 AREA（基线那一段，只可能来自填充）", aaAreaOff, aaAreaOn, 14, 19)
         aaWiring(report, "柱状 BAR", aaBarOff, aaBarOn, 8, 19)
         aaWiring(report, "散点 SCATTER", aaScatterOff, aaScatterOn, 8, 14)
-        aaWiring(report, "频谱 SPECTRUM", aaSpectrumOff, aaSpectrumOn, 0, AA_PLOT_H.toInt(),
-            spectrumArgb)
+        aaWiring(
+            report, "频谱 SPECTRUM", aaSpectrumOff, aaSpectrumOn, 0, AA_PLOT_H.toInt(),
+            spectrumArgb
+        )
 
         // 交叉：**平坦的阶梯段画出来的就是一条普通水平线**——同一块绘图区、同一个值、
         // 同一个线宽，两帧逐项读数应当完全相同。它替"阶梯的拐角会不会把平坦段画歪"
@@ -4218,17 +4352,21 @@ class ChartVerifierApp : Application() {
         val stepOn = aaStepOn
         if (stepOff != null) {
             val sOff = aaStats(stepOff, AA_X0, AA_X1, AA_ROWS_A0, AA_ROWS_A1)
-            report("★ AA 交叉：平坦的阶梯与同一条水平线逐项读数相同（相位 A 那一段）",
+            report(
+                "★ AA 交叉：平坦的阶梯与同一条水平线逐项读数相同（相位 A 那一段）",
                 sOff.fringe == offA.fringe && sOff.pure == offA.pure && sOff.ink == offA.ink,
                 "阶梯 过${sOff.fringe}/纯${sOff.pure}/墨${sOff.ink}，" +
-                        "折线 过${offA.fringe}/纯${offA.pure}/墨${offA.ink}")
+                        "折线 过${offA.fringe}/纯${offA.pure}/墨${offA.ink}"
+            )
         }
         if (stepOn != null) {
             val sOn = aaStats(stepOn, AA_X0, AA_X1, AA_ROWS_A0, AA_ROWS_A1)
-            report("★ AA 交叉：同上，AA 开的那一对",
+            report(
+                "★ AA 交叉：同上，AA 开的那一对",
                 sOn.fringe == onA.fringe && sOn.pure == onA.pure && sOn.ink == onA.ink,
                 "阶梯 过${sOn.fringe}/纯${sOn.pure}/墨${sOn.ink}，" +
-                        "折线 过${onA.fringe}/纯${onA.pure}/墨${onA.ink}")
+                        "折线 过${onA.fringe}/纯${onA.pure}/墨${onA.ink}"
+            )
         }
     }
 
@@ -4238,25 +4376,33 @@ class ChartVerifierApp : Application() {
      * <p>这两条合起来才成立：只有 ② 会被"AA 永远是开的"骗过去，只有 ① 会被
      * "AA 永远没生效"骗过去（那时 ① 恒真）。
      */
-    private fun aaWiring(report: (String, Boolean, String) -> Unit, label: String,
-                         off: Shot?, on: Shot?, y0: Int, y1: Int,
-                         inkRgb: Int = AA_INK_RGB) {
+    private fun aaWiring(
+        report: (String, Boolean, String) -> Unit, label: String,
+        off: Shot?, on: Shot?, y0: Int, y1: Int,
+        inkRgb: Int = AA_INK_RGB
+    ) {
         if (off == null || on == null) {
             report("★ AA $label：关 / 开两张快照都在", false, "关=${off != null}，开=${on != null}")
             return
         }
         val a = aaStats(off, 0, AA_PLOT_W.toInt(), y0, y1, inkRgb)
         val b = aaStats(on, 0, AA_PLOT_W.toInt(), y0, y1, inkRgb)
-        println("  $label 行 $y0..${y1 - 1}（设备 ${y0 + AA_GRAB_Y}..${y1 - 1 + AA_GRAB_Y}）、" +
-                "全宽（设备 x ${AA_PLOT_X.toInt()}..${(AA_PLOT_X + AA_PLOT_W).toInt() - 1}），" +
-                "墨色 #%06X".format(inkRgb))
+        println(
+            "  $label 行 $y0..${y1 - 1}（设备 ${y0 + AA_GRAB_Y}..${y1 - 1 + AA_GRAB_Y}）、" +
+                    "全宽（设备 x ${AA_PLOT_X.toInt()}..${(AA_PLOT_X + AA_PLOT_W).toInt() - 1}），" +
+                    "墨色 #%06X".format(inkRgb)
+        )
         println("    关：过${a.fringe}/纯${a.pure}   开：过${b.fringe}/纯${b.pure}")
-        report("★ AA $label ①：AA 关时没有过渡像素", a.fringe == 0,
-            "实测 ${a.fringe} 个（期望 0；纯墨色 ${a.pure} 个）")
-        report("★ AA $label ②：AA 开时有过渡像素（> 0）", b.fringe > 0,
+        report(
+            "★ AA $label ①：AA 关时没有过渡像素", a.fringe == 0,
+            "实测 ${a.fringe} 个（期望 0；纯墨色 ${a.pure} 个）"
+        )
+        report(
+            "★ AA $label ②：AA 开时有过渡像素（> 0）", b.fringe > 0,
             "实测 ${b.fringe} 个（期望 > 0；纯墨色 ${b.pure} 个）" +
                     "——0 说明这个渲染器没有把 uAntialias 传下去，" +
-                    "而画面上只表现为\"这一种图型没有 AA\"")
+                    "而画面上只表现为\"这一种图型没有 AA\""
+        )
     }
 
     private fun verifyOnce() {
@@ -4346,21 +4492,28 @@ class ChartVerifierApp : Application() {
         //   x=250 → 下标 30 → 值 0.30 → y = 380
         //   x=400 → 下标 50 → 值 0.50 → y = 300
         val centerBox = countIn(396, 296, 404, 304, rampRgb)
-        report("绘图区中心附近有该系列颜色的像素", centerBox >= 15,
-            "以 (400,300) 为中心的 9x9 里 ${centerBox} px（期望 ≥15，线宽 4）")
-        report("斜坡恰好穿过 (250,380)",
+        report(
+            "绘图区中心附近有该系列颜色的像素", centerBox >= 15,
+            "以 (400,300) 为中心的 9x9 里 ${centerBox} px（期望 ≥15，线宽 4）"
+        )
+        report(
+            "斜坡恰好穿过 (250,380)",
             pixelAt(250, 380) == rampRgb,
-            "(250,380) = #%06X，期望 #%06X".format(pixelAt(250, 380), rampRgb))
+            "(250,380) = #%06X，期望 #%06X".format(pixelAt(250, 380), rampRgb)
+        )
 
         // ---- 2. y 轴方向：值越大越靠上，不是镜像 ----
         // 斜坡本身是**对称**的：翻转 y 之后它看起来仍是同一条线（只是镜像），
         // 所以"中心有像素"对翻转同样成立。必须挑一个**不对称**的位置来钉：
         // x=250 处 y=380（正确）与 y=220（翻转后）两者只能有一个是线。
         println("\n-- y 轴方向：值越大越靠上 --")
-        report("x=250 处的线在 y=380 而不是 y=220",
+        report(
+            "x=250 处的线在 y=380 而不是 y=220",
             pixelAt(250, 220) == plotBackground,
             "(250,220) = #%06X，期望绘图区底色 #%06X".format(
-                pixelAt(250, 220), plotBackground))
+                pixelAt(250, 220), plotBackground
+            )
+        )
 
         // ---- 3. 裁剪：绘图区外一个像素都没有 ----
         println("\n-- 裁剪：绘图区外无越界像素 --")
@@ -4380,33 +4533,45 @@ class ChartVerifierApp : Application() {
         // 溢出系列的[高值段]整个画在绘图区**上方**（值 1.2 > y 窗口上界 1.0）。
         // 两条断言必须成对：只有"外面没有"是恒真的（不画也成立），
         // 只有"里面有"也一样（画穿了也成立）。
-        report("溢出系列在绘图区内存在（否则下一条恒真）",
+        report(
+            "溢出系列在绘图区内存在（否则下一条恒真）",
             countIn(PLOT_X, PLOT_Y, PLOT_X + PLOT_W - 1, PLOT_Y + PLOT_H - 1, spillRgb) > 0,
-            "绘图区内 ${countIn(PLOT_X, PLOT_Y, PLOT_X + PLOT_W - 1, PLOT_Y + PLOT_H - 1, spillRgb)} px")
-        report("溢出系列：绘图区外一个像素都没有", countOutside(spillRgb) == 0,
-            "绘图区外 ${countOutside(spillRgb)} px（漏掉裁剪测试时这里会有几百 px）")
+            "绘图区内 ${countIn(PLOT_X, PLOT_Y, PLOT_X + PLOT_W - 1, PLOT_Y + PLOT_H - 1, spillRgb)} px"
+        )
+        report(
+            "溢出系列：绘图区外一个像素都没有", countOutside(spillRgb) == 0,
+            "绘图区外 ${countOutside(spillRgb)} px（漏掉裁剪测试时这里会有几百 px）"
+        )
 
         // 斜坡本身也要复核一遍：它的两端（下标 0 与 100）在窗口之外，不该被画出来。
-        report("斜坡：绘图区外没有该颜色的像素", countOutside(rampRgb) == 0,
-            "绘图区外 ${countOutside(rampRgb)} px")
-        report("斜坡该颜色在画面里存在（否则上一条恒真）", (counts[rampRgb] ?: 0) > 0,
-            "全画面 ${counts[rampRgb] ?: 0} px")
+        report(
+            "斜坡：绘图区外没有该颜色的像素", countOutside(rampRgb) == 0,
+            "绘图区外 ${countOutside(rampRgb)} px"
+        )
+        report(
+            "斜坡该颜色在画面里存在（否则上一条恒真）", (counts[rampRgb] ?: 0) > 0,
+            "全画面 ${counts[rampRgb] ?: 0} px"
+        )
 
         // ---- 4. 反证：线宽 0 的系列一个像素都不该留下 ----
         println("\n-- 反证：退化系列不画任何东西 --")
         // 与主系列同一份数据、同一个绘图区、同一条代码路径，只有 lineWidth 不同。
         // 这条断言的存在意义是证明上面三条**不是恒真的**：若渲染器对"0 宽"没有正确退化，
         // 这里就会数到像素，而那意味着真正的几何（半宽、属性偏移）也没被验证。
-        report("线宽 0 的系列：全画面一个像素都没有", (counts[degenerateRgb] ?: 0) == 0,
-            "退化色像素 ${counts[degenerateRgb] ?: 0}")
+        report(
+            "线宽 0 的系列：全画面一个像素都没有", (counts[degenerateRgb] ?: 0) == 0,
+            "退化色像素 ${counts[degenerateRgb] ?: 0}"
+        )
 
         // ---- 5. 动态场景：画面里没有上一帧的残留 ----
         println("\n-- 动态场景：绘图区外的移动方块 --")
         // 方块每帧换位置，所以"上一帧的方块"一旦残留下来就盖不住：像素数翻倍。
         // 它探得出什么、探不出什么，见 [movingSquareX]——**实测它不是裁剪状态的守卫**。
         val squarePixels = counts[squareRgb] ?: 0
-        report("移动方块不多不少 $SQUARE×$SQUARE（无鬼影）", squarePixels == SQUARE * SQUARE,
-            "实际 $squarePixels，期望 ${SQUARE * SQUARE}")
+        report(
+            "移动方块不多不少 $SQUARE×$SQUARE（无鬼影）", squarePixels == SQUARE * SQUARE,
+            "实际 $squarePixels，期望 ${SQUARE * SQUARE}"
+        )
 
         // ---- 6. 没有 GL 错误 ----
         // 多余的 draw call / 打不进去的 uniform 都不会让画面变坏，但会在这里留下痕迹。
@@ -4420,20 +4585,30 @@ class ChartVerifierApp : Application() {
         // 反过来的失败模式（图表把顶点攒进 Gc 的写入器、等 endFrame 才提交）在这里
         // 会让折线横穿标注——而"折线上有个洞"与"折线本来就这样"肉眼分不开。
         val labelArea = (LABEL_W * LABEL_H).toInt()
-        report("标注矩形完整可见（没有被折线穿过去）",
-            countIn(LABEL_X.toInt(), LABEL_Y.toInt(),
+        report(
+            "标注矩形完整可见（没有被折线穿过去）",
+            countIn(
+                LABEL_X.toInt(), LABEL_Y.toInt(),
                 LABEL_X.toInt() + LABEL_W.toInt() - 1, LABEL_Y.toInt() + LABEL_H.toInt() - 1,
-                labelRgb) == labelArea,
-            "标注色 ${counts[labelRgb] ?: 0} px，期望 $labelArea")
-        report("标注覆盖之处没有折线像素（否则说明它被盖在了下面）",
-            countIn(LABEL_X.toInt(), LABEL_Y.toInt(),
+                labelRgb
+            ) == labelArea,
+            "标注色 ${counts[labelRgb] ?: 0} px，期望 $labelArea"
+        )
+        report(
+            "标注覆盖之处没有折线像素（否则说明它被盖在了下面）",
+            countIn(
+                LABEL_X.toInt(), LABEL_Y.toInt(),
                 LABEL_X.toInt() + LABEL_W.toInt() - 1, LABEL_Y.toInt() + LABEL_H.toInt() - 1,
-                rampRgb) == 0,
+                rampRgb
+            ) == 0,
             "标注矩形内折线像素 ${
-                countIn(LABEL_X.toInt(), LABEL_Y.toInt(),
+                countIn(
+                    LABEL_X.toInt(), LABEL_Y.toInt(),
                     LABEL_X.toInt() + LABEL_W.toInt() - 1, LABEL_Y.toInt() + LABEL_H.toInt() - 1,
-                    rampRgb)
-            }")
+                    rampRgb
+                )
+            }"
+        )
 
         // ---- 8. 线段的两端确实是两个不同的实例属性 ----
         println("\n-- 实例属性：线段两端的 y 是两次不同的取值 --")
@@ -4462,13 +4637,17 @@ class ChartVerifierApp : Application() {
         val segMidY = ((zigY(1.0) + zigY(0.0)) / 2.0).toInt()
         val segLeftY = zigY(1.0).toInt()
         val midHit = countIn(segMidX - 2, segMidY - 3, segMidX + 3, segMidY + 3, zigRgb)
-        report("折返段的中点处有折线（正确实现：两端的平均值）", midHit >= 10,
-            "($segMidX,$segMidY) 附近 ${midHit} px，期望 ≥10")
+        report(
+            "折返段的中点处有折线（正确实现：两端的平均值）", midHit >= 10,
+            "($segMidX,$segMidY) 附近 ${midHit} px，期望 ≥10"
+        )
         val wrongHit = countIn(segMidX - 2, segLeftY - 2, segMidX + 3, segLeftY + 2, zigRgb)
-        report("折返段的**左端点高度**处没有折线（坏实现会把水平小横线画在这里）",
+        report(
+            "折返段的**左端点高度**处没有折线（坏实现会把水平小横线画在这里）",
             wrongHit == 0,
             "($segMidX,$segLeftY) 附近 ${wrongHit} px，期望 0——" +
-                    "非 0 说明线段两端取的是同一个 y（第二个实例属性的偏移写成了 0）")
+                    "非 0 说明线段两端取的是同一个 y（第二个实例属性的偏移写成了 0）"
+        )
 
         // ---- 9. 画面的颜色集合恰好是预期的那几个 ----
         // "只数了那几种颜色"管不住"多出来一种颜色"；这条管住了。
@@ -4476,8 +4655,10 @@ class ChartVerifierApp : Application() {
         println("\n-- 颜色集合 --")
         val expectedColors =
             setOf(background, plotBackground, rampRgb, spillRgb, squareRgb, labelRgb, zigRgb)
-        report("画面只有这 7 种颜色（无杂散像素）", counts.keys == expectedColors,
-            "实际 ${counts.keys.sorted().joinToString { "#%06X".format(it) }}")
+        report(
+            "画面只有这 7 种颜色（无杂散像素）", counts.keys == expectedColors,
+            "实际 ${counts.keys.sorted().joinToString { "#%06X".format(it) }}"
+        )
 
         // ---- 10. ★ ② 的性能主张：每帧只上传新增的点 ----
         //
@@ -4491,7 +4672,8 @@ class ChartVerifierApp : Application() {
         println("\n-- ★ 性能主张：每帧只上传新增的点 --")
         val expectedBytesPerFrame = STREAM_POINTS_PER_FRAME * BYTES_PER_SAMPLE
         val oddFrames = streamUploadedBytes.withIndex().filter { it.value != expectedBytesPerFrame }
-        report("流式系列：每一帧的上传字节数恒等于 K×4 = $expectedBytesPerFrame",
+        report(
+            "流式系列：每一帧的上传字节数恒等于 K×4 = $expectedBytesPerFrame",
             streamUploadedBytes.size == STREAM_FRAMES && oddFrames.isEmpty(),
             "记录 ${streamUploadedBytes.size} 帧（期望 $STREAM_FRAMES），不符 ${oddFrames.size} 帧" +
                     (oddFrames.firstOrNull()?.let { "；首个：第 ${it.index} 帧 ${it.value} 字节" } ?: "") +
@@ -4501,14 +4683,18 @@ class ChartVerifierApp : Application() {
         // 上面那条必须与这两条成对：一条管"量到的确实是这一帧的量"，
         // 一条管"全量与增量在这套参数下真的差得开"——否则"每帧 40 字节"
         // 也可能只是因为它压根没什么可传。
-        report("前提：测量期确实在流式追加（否则上一条恒真）",
+        report(
+            "前提：测量期确实在流式追加（否则上一条恒真）",
             streamData.writeIndex() == (STREAM_FRAMES * STREAM_POINTS_PER_FRAME).toLong(),
-            "写入总数 ${streamData.writeIndex()}，期望 ${STREAM_FRAMES * STREAM_POINTS_PER_FRAME}")
-        report("前提：环里装着的样本数远多于 K，两种实现才分得开",
+            "写入总数 ${streamData.writeIndex()}，期望 ${STREAM_FRAMES * STREAM_POINTS_PER_FRAME}"
+        )
+        report(
+            "前提：环里装着的样本数远多于 K，两种实现才分得开",
             streamData.itemCount() >= STREAM_CAPACITY / 4 * 3,
             "环里 ${streamData.itemCount()} 个样本，每帧只新增 $STREAM_POINTS_PER_FRAME 个——" +
                     "全量重传要传 ${streamData.itemCount() * BYTES_PER_SAMPLE} 字节，" +
-                    "是增量的 ${streamData.itemCount() / STREAM_POINTS_PER_FRAME} 倍")
+                    "是增量的 ${streamData.itemCount() / STREAM_POINTS_PER_FRAME} 倍"
+        )
 
         // ---- 11. 缺口（NaN）必须断开折线 ----
         //
@@ -4527,19 +4713,25 @@ class ChartVerifierApp : Application() {
             // 下标 i 的屏幕 x = 20 + i × 60，减去 20 即局部 x = 60 i。
             val nanCol = GAP_NAN_INDEX * (GAP_PLOT_W.toInt() / (GAP_POINTS - 1))
             val inGap = gapShot.countIn(nanCol - 3, 0, nanCol + 3, gapShot.h - 1, gapRgb)
-            report("缺口那一段的像素是背景色（NaN 处一条折线都没有）", inGap == 0,
+            report(
+                "缺口那一段的像素是背景色（NaN 处一条折线都没有）", inGap == 0,
                 "局部 x=${nanCol}±3 的整列里有 $inGap px 折线色，期望 0——" +
-                        "非 0 说明缺口被连了过去（那条线显示了一个不存在的信号）")
+                        "非 0 说明缺口被连了过去（那条线显示了一个不存在的信号）"
+            )
 
             // 成对断言：缺口**两侧**都得有折线，否则"整条曲线都没画"也能让上一条通过。
             val leftCol = 3 * (GAP_PLOT_W.toInt() / (GAP_POINTS - 1))
             val rightCol = 9 * (GAP_PLOT_W.toInt() / (GAP_POINTS - 1))
             val leftPx = gapShot.countIn(leftCol - 3, 0, leftCol + 3, gapShot.h - 1, gapRgb)
             val rightPx = gapShot.countIn(rightCol - 3, 0, rightCol + 3, gapShot.h - 1, gapRgb)
-            report("缺口之前（下标 3）有折线（否则上一条恒真）", leftPx > 0,
-                "局部 x=$leftCol±3 里 $leftPx px")
-            report("缺口之后（下标 9）有折线（证明缺口之后的数据照样在画）", rightPx > 0,
-                "局部 x=$rightCol±3 里 $rightPx px")
+            report(
+                "缺口之前（下标 3）有折线（否则上一条恒真）", leftPx > 0,
+                "局部 x=$leftCol±3 里 $leftPx px"
+            )
+            report(
+                "缺口之后（下标 9）有折线（证明缺口之后的数据照样在画）", rightPx > 0,
+                "局部 x=$rightCol±3 里 $rightPx px"
+            )
         }
 
         // ---- 12. 跨帧：某条曲线消失后，它原来的位置必须干净 ----
@@ -4554,26 +4746,45 @@ class ChartVerifierApp : Application() {
         val before = crossSnapshotBefore
         val after = crossSnapshotAfter
         if (before == null || after == null) {
-            report("前提：跨帧实验的两张快照都抓到了", false,
-                "before=${before != null}，after=${after != null}")
+            report(
+                "前提：跨帧实验的两张快照都抓到了", false,
+                "before=${before != null}，after=${after != null}"
+            )
         } else {
             val wasThere = before.count(crossTransientRgb)
-            report("移除之前：那条系列确实在画面上（否则下面两条恒真）", wasThere > 0,
-                "短暂色 ${wasThere} px（局部 ${before.w}×${before.h}）")
-            report("两张快照里常驻系列都在（否则可能是整张图都没画）",
+            report(
+                "移除之前：那条系列确实在画面上（否则下面两条恒真）", wasThere > 0,
+                "短暂色 ${wasThere} px（局部 ${before.w}×${before.h}）"
+            )
+            report(
+                "两张快照里常驻系列都在（否则可能是整张图都没画）",
                 before.count(crossPersistRgb) > 0 && after.count(crossPersistRgb) > 0,
-                "移除前 ${before.count(crossPersistRgb)} px，移除后 ${after.count(crossPersistRgb)} px")
-            report("移除之后：它原来占的那几行（局部 y $CROSS_TRANSIENT_ROW_LO..$CROSS_TRANSIENT_ROW_HI）就是背景色",
+                "移除前 ${before.count(crossPersistRgb)} px，移除后 ${after.count(crossPersistRgb)} px"
+            )
+            report(
+                "移除之后：它原来占的那几行（局部 y $CROSS_TRANSIENT_ROW_LO..$CROSS_TRANSIENT_ROW_HI）就是背景色",
                 after.countNonBackgroundInRows(
-                    CROSS_TRANSIENT_ROW_LO, CROSS_TRANSIENT_ROW_HI, background) == 0,
+                    CROSS_TRANSIENT_ROW_LO, CROSS_TRANSIENT_ROW_HI, background
+                ) == 0,
                 "那几行里不是背景色的像素 " +
-                        "${after.countNonBackgroundInRows(CROSS_TRANSIENT_ROW_LO, CROSS_TRANSIENT_ROW_HI, background)} px，" +
+                        "${
+                            after.countNonBackgroundInRows(
+                                CROSS_TRANSIENT_ROW_LO,
+                                CROSS_TRANSIENT_ROW_HI,
+                                background
+                            )
+                        } px，" +
                         "其中短暂色 ${
-                            after.countIn(0, CROSS_TRANSIENT_ROW_LO, after.w - 1,
-                                CROSS_TRANSIENT_ROW_HI, crossTransientRgb)
-                        } px——非 0 就是上一帧的残留")
-            report("两张快照确实不是同一张图（场景真的变了）", !before.sameAs(after),
-                "移除前 ${before.count(crossTransientRgb)} px 短暂色，移除后 ${after.count(crossTransientRgb)} px")
+                            after.countIn(
+                                0, CROSS_TRANSIENT_ROW_LO, after.w - 1,
+                                CROSS_TRANSIENT_ROW_HI, crossTransientRgb
+                            )
+                        } px——非 0 就是上一帧的残留"
+            )
+            report(
+                "两张快照确实不是同一张图（场景真的变了）", !before.sameAs(after),
+                "移除前 ${before.count(crossTransientRgb)} px 短暂色，移除后 ${after.count(crossTransientRgb)} px"
+            )
         }
 
         // ---- 13. 流式图确实画出来了 ----
@@ -4584,8 +4795,10 @@ class ChartVerifierApp : Application() {
         if (streamShot == null) {
             report("前提：流式图的快照抓到了", false, "streamSnapshot 为 null")
         } else {
-            report("流式图上有该系列颜色的像素", streamShot.count(streamRgb) > 0,
-                "流式色 ${streamShot.count(streamRgb)} px（局部 ${streamShot.w}×${streamShot.h}）")
+            report(
+                "流式图上有该系列颜色的像素", streamShot.count(streamRgb) > 0,
+                "流式色 ${streamShot.count(streamRgb)} px（局部 ${streamShot.w}×${streamShot.h}）"
+            )
         }
 
         // ---- 14. ★ 拾取：系列级 ID、容差与裁剪 ----
@@ -4612,8 +4825,10 @@ class ChartVerifierApp : Application() {
         // "静默的绿"。所以把它当成一条断言来报。
         val gc = bridge.gc()
         if (gc == null) {
-            report("前提：拾取查询需要 GL 上下文（Gc）", false,
-                "bridge.gc() 返回 null：拾取那一组断言无法进行")
+            report(
+                "前提：拾取查询需要 GL 上下文（Gc）", false,
+                "bridge.gc() 返回 null：拾取那一组断言无法进行"
+            )
         } else {
             fun describePayload(p: Any?): String = when {
                 p === null -> "null（没命中，或 ID 没注册）"
@@ -4625,20 +4840,24 @@ class ChartVerifierApp : Application() {
             // 折返图线段 1→2 的中点，与上一节那条"实例属性"断言是同一个点。
             val zigHit = gc.pick(segMidX.toFloat(), segMidY.toFloat())
             val zigId = zigHit?.id() ?: 0
-            report("曲线上的像素命中该系列（payload 就是那个 Series 对象）",
+            report(
+                "曲线上的像素命中该系列（payload 就是那个 Series 对象）",
                 zigId != 0 && zigHit?.payload() === zigSeries,
                 "($segMidX,$segMidY) 实际 ID=$zigId（期望非 0），" +
-                        "payload=${describePayload(zigHit?.payload())}")
+                        "payload=${describePayload(zigHit?.payload())}"
+            )
 
             // 系列级 ID：同一条曲线的**两个不同位置**必须读到同一个号。
             // 按点发号（每个样本一个 ID）会让这两处读到不同的号——那样"点中一条曲线"
             // 得到的号与点中另一处得到的号不同，而画面上什么都看不出来。
             val zigMidX2 = ((zigX(3.0) + zigX(4.0)) / 2.0).toInt()
             val zigId2 = gc.pick(zigMidX2.toFloat(), segMidY.toFloat())?.id() ?: 0
-            report("系列级 ID：同一条曲线上两个不同位置读到同一个 ID",
+            report(
+                "系列级 ID：同一条曲线上两个不同位置读到同一个 ID",
                 zigId != 0 && zigId == zigId2,
                 "($segMidX,$segMidY) ID=$zigId，($zigMidX2,$segMidY) ID=$zigId2" +
-                        "（期望相等且非 0）")
+                        "（期望相等且非 0）"
+            )
 
             // 拾取四边形必须**落在画面里那条线上**——这是"点到的地方就是看到的地方"。
             // 主图的斜坡是**斜的**、而且它的实例区间不从槽位 0 开始（窗口 [10,90] →
@@ -4651,22 +4870,26 @@ class ChartVerifierApp : Application() {
             val rampHitB = gc.pick(250f, 380f)
             val rampIdA = rampHitA?.id() ?: 0
             val rampIdB = rampHitB?.id() ?: 0
-            report("斜坡线上两个不同位置都命中同一个系列（拾取四边形与画面同一条线）",
+            report(
+                "斜坡线上两个不同位置都命中同一个系列（拾取四边形与画面同一条线）",
                 rampIdA != 0 && rampIdA == rampIdB,
                 "(400,300) ID=$rampIdA（${describePayload(rampHitA?.payload())}），" +
                         "(250,380) ID=$rampIdB（${describePayload(rampHitB?.payload())}）" +
-                        "——期望相等且非 0")
+                        "——期望相等且非 0"
+            )
 
             // 两条曲线不串号。零号是"什么都没命中"，所以两个号都必须非 0 才有意义；
             // 而"号不同"还不够——它们各自还得解析回**自己**那个 Series 对象。
             // 溢出系列在 x=400 处是值 0.85 → 屏幕 y = 160 的水平线。
             val spillHit = gc.pick(400f, 160f)
             val spillId = spillHit?.id() ?: 0
-            report("两条曲线不串号：折返与溢出的 ID 互不相同，且各自解析回自己",
+            report(
+                "两条曲线不串号：折返与溢出的 ID 互不相同，且各自解析回自己",
                 zigId != 0 && spillId != 0 && zigId != spillId &&
                         zigHit?.payload() === zigSeries && spillHit?.payload() === spillSeries,
                 "折返 ID=$zigId（payload=${describePayload(zigHit?.payload())}），" +
-                        "溢出 ID=$spillId（payload=${describePayload(spillHit?.payload())}）")
+                        "溢出 ID=$spillId（payload=${describePayload(spillHit?.payload())}）"
+            )
 
             // 裁剪在 ID pass 里同样生效：被裁掉的部分不可拾取，与画面一致。
             // 探测点是**溢出系列被裁掉的那一段**：值从 1.2 跌到 0.85 的那一条陡线
@@ -4677,16 +4900,20 @@ class ChartVerifierApp : Application() {
             // 它不是橡皮图章：上面"溢出系列在绘图区内存在"保证了这个系列真的在画；
             // 而且实测过——把 ID pass 的 scissor 测试关掉，这一条立刻失败（见最终报告）。
             val outsideId = gc.pick(253f, 60f)?.id() ?: 0
-            report("拾取也受裁剪约束：绘图区之外不可拾取", outsideId == 0,
-                "(253,60) ID=$outsideId，期望 0——非 0 说明 ID pass 没有按 scissor 裁剪")
+            report(
+                "拾取也受裁剪约束：绘图区之外不可拾取", outsideId == 0,
+                "(253,60) ID=$outsideId，期望 0——非 0 说明 ID pass 没有按 scissor 裁剪"
+            )
         }
 
         // 容差那一组问的是**探针图**（线宽 1），所以用的是观察期当场记下的三个 ID，
         // 见 [capturePickProbes]：探针图只在观察期画，校验帧上它已经不在画面里了。
         val probeShot = pickProbeSnapshot
         if (!pickProbeCaptured || probeShot == null) {
-            report("前提：探针图的快照与三个探测点的拾取结果都取到了", false,
-                "pickProbeCaptured=$pickProbeCaptured，pickProbeSnapshot=${probeShot != null}")
+            report(
+                "前提：探针图的快照与三个探测点的拾取结果都取到了", false,
+                "pickProbeCaptured=$pickProbeCaptured，pickProbeSnapshot=${probeShot != null}"
+            )
         } else {
             // 局部坐标：快照就是探针图那一块，左上角为原点。
             val probeCol = (PICK_PROBE_X - PICK_PROBE_PLOT_X).toInt()
@@ -4694,30 +4921,40 @@ class ChartVerifierApp : Application() {
 
             // **前提**：线确实只画了 1px 高。少了这一条，下面"线旁 3px 仍命中"
             // 对"线本来就有 8px 粗"的实现同样成立——那它就是一条橡皮图章。
-            val thin = probeShot.countIn(probeCol - 3, probeRow - 8, probeCol + 3, probeRow + 8,
-                pickProbeRgb)
-            report("前提：探针线确实只画了 1px 高（否则容差那两条恒真）", thin == 7,
-                "以探测点为中心 7 列 × 17 行里有 $thin px，期望 7（每列恰好 1 px）")
+            val thin = probeShot.countIn(
+                probeCol - 3, probeRow - 8, probeCol + 3, probeRow + 8,
+                pickProbeRgb
+            )
+            report(
+                "前提：探针线确实只画了 1px 高（否则容差那两条恒真）", thin == 7,
+                "以探测点为中心 7 列 × 17 行里有 $thin px，期望 7（每列恰好 1 px）"
+            )
 
-            report("探针线上的一点命中探针系列（否则下面两条恒真）",
+            report(
+                "探针线上的一点命中探针系列（否则下面两条恒真）",
                 pickOnLineId != 0 && pickOnLinePayloadOk,
-                "线上 ID=$pickOnLineId，payload 是探针系列=$pickOnLinePayloadOk")
+                "线上 ID=$pickOnLineId，payload 是探针系列=$pickOnLinePayloadOk"
+            )
 
             // 容差：线只有 1px 宽，要求用户精确点中是不合理的。
             // **这是刻意行为，不是 bug**——与"全透明图元仍可拾取"
             // "文本的可拾取范围比墨迹大一圈"同类。
             val besidePx = (PICK_PROBE_BESIDE_Y - PICK_PROBE_ON_LINE_Y).toInt()
-            report("拾取容差：线旁 ${besidePx}px 仍命中（线画 1px）",
+            report(
+                "拾取容差：线旁 ${besidePx}px 仍命中（线画 1px）",
                 pickBesideId != 0 && pickBesideId == pickOnLineId,
                 "线上 ID=$pickOnLineId，线旁 ${besidePx}px ID=$pickBesideId" +
-                        "（期望相等且非 0；容差是 $PICK_TOLERANCE_PX px 半宽）")
+                        "（期望相等且非 0；容差是 $PICK_TOLERANCE_PX px 半宽）"
+            )
 
             // 成对：容差不能是"无边界"。少了这一条，"容差开成 100px"照样通过，
             // 而那会让整个绘图区都变成某条曲线的热区。
             val farPx = (PICK_PROBE_FAR_Y - PICK_PROBE_ON_LINE_Y).toInt()
-            report("拾取不越界：线旁 ${farPx}px 不命中",
+            report(
+                "拾取不越界：线旁 ${farPx}px 不命中",
                 pickFarId == 0,
-                "线旁 ${farPx}px（行 ${PICK_PROBE_FAR_Y.toInt()}）ID=$pickFarId，期望 0")
+                "线旁 ${farPx}px（行 ${PICK_PROBE_FAR_Y.toInt()}）ID=$pickFarId，期望 0"
+            )
         }
 
         // ---- 15. ★ 跨环绕：baseInstance 生效，且那一个实例的第二端读到的是槽位 0 ----
@@ -4748,25 +4985,37 @@ class ChartVerifierApp : Application() {
                     (WRAP_PLOT_H / WRAP_TOTAL)
             val rowWrong = rowOn - shiftRows
 
-            val onCount = wrapShot.countIn(col - 2, rowOn.toInt() - 5, col + 2, rowOn.toInt() + 5,
-                wrapRgb)
-            val wrongCount = wrapShot.countIn(col - 2, rowWrong.toInt() - 5, col + 2,
-                rowWrong.toInt() + 5, wrapRgb)
-            report("跨环绕处那条线画在它该在的行上（局部 y≈${"%.1f".format(rowOn)}）", onCount > 0,
+            val onCount = wrapShot.countIn(
+                col - 2, rowOn.toInt() - 5, col + 2, rowOn.toInt() + 5,
+                wrapRgb
+            )
+            val wrongCount = wrapShot.countIn(
+                col - 2, rowWrong.toInt() - 5, col + 2,
+                rowWrong.toInt() + 5, wrapRgb
+            )
+            report(
+                "跨环绕处那条线画在它该在的行上（局部 y≈${"%.1f".format(rowOn)}）", onCount > 0,
                 "x=$probeX 附近 ${onCount} px，期望 > 0（线的中心在屏幕 y=${"%.1f".format(rowOn + WRAP_PLOT_Y)}，" +
-                        "即局部行 ${"%.1f".format(rowOn)}）")
-            report("少了 baseInstance 时线会落到的那一块是空的", wrongCount == 0,
+                        "即局部行 ${"%.1f".format(rowOn)}）"
+            )
+            report(
+                "少了 baseInstance 时线会落到的那一块是空的", wrongCount == 0,
                 "x=$probeX 附近局部行 ${rowWrong.toInt()}（= 正确位置上方 $shiftRows px）" +
-                        "有 $wrongCount px，期望 0——非 0 说明第一段取的是别的槽位的数据")
+                        "有 $wrongCount px，期望 0——非 0 说明第一段取的是别的槽位的数据"
+            )
 
             // 整段都在画（不是只有左边那一段）。
             val rightX = 910.0
             val rightRow = wrapLineRowAt(rightX) - WRAP_PLOT_Y
-            val rightCount = wrapShot.countIn((rightX - WRAP_PLOT_X).toInt() - 5,
+            val rightCount = wrapShot.countIn(
+                (rightX - WRAP_PLOT_X).toInt() - 5,
                 rightRow.toInt() - 5, (rightX - WRAP_PLOT_X).toInt() + 5, rightRow.toInt() + 5,
-                wrapRgb)
-            report("窗口右端也在画（证明整段都在，不是只有一段）", rightCount > 0,
-                "x=$rightX 附近 $rightCount px，期望 > 0")
+                wrapRgb
+            )
+            report(
+                "窗口右端也在画（证明整段都在，不是只有一段）", rightCount > 0,
+                "x=$rightX 附近 $rightCount px，期望 > 0"
+            )
 
             // ---- 跨环绕点那一个实例：它的第二端必须读到**槽位 0 的值** ----
             //
@@ -4791,10 +5040,12 @@ class ChartVerifierApp : Application() {
             val dropColLo = colAtRow(dropRowLo + 2.0).toInt()
             val dropColHi = colAtRow(dropRowHi - 2.0).toInt()
             val dropCount = wrapShot.countIn(dropColLo, dropRowLo, dropColHi, dropRowHi, wrapRgb)
-            report("跨环绕处没有「掉到 0」的那条斜线（它的必经之路是空的）", dropCount == 0,
+            report(
+                "跨环绕处没有「掉到 0」的那条斜线（它的必经之路是空的）", dropCount == 0,
                 "局部 x $dropColLo..$dropColHi × y $dropRowLo..$dropRowHi 里有 $dropCount px，期望 0" +
                         "——非 0 说明槽位 capacity（= 槽位 0）上那个镜像没写，" +
-                        "跨环绕的实例读到的是从未写过的余量 float（恒为 0）")
+                        "跨环绕的实例读到的是从未写过的余量 float（恒为 0）"
+            )
 
             // 逐列取最上面的那个折线像素，看它是不是一条**连续、单调**的线。
             // **整条线都要扫**：跨环绕点那一段（局部 x 123..165）曾经只能被避开
@@ -4828,10 +5079,12 @@ class ChartVerifierApp : Application() {
             }
 
             val whole = straightness(1, 288)
-            report("跨环绕点前后是一条连续、单调的线（含跨环绕那一段）",
+            report(
+                "跨环绕点前后是一条连续、单调的线（含跨环绕那一段）",
                 whole.first == 0 && whole.second <= 2 && whole.third == 0,
                 "局部 x 1..287：缺 ${whole.first} 列，最大跳变 ${whole.second} px，" +
-                        "反向 ${whole.third} 处（期望：都不缺列、跳变 ≤ 2、无反向）")
+                        "反向 ${whole.third} 处（期望：都不缺列、跳变 ≤ 2、无反向）"
+            )
         }
 
         // ---- 16. ★ 散点：点与点之间没有连线 ----
@@ -4856,14 +5109,18 @@ class ChartVerifierApp : Application() {
         val scatShot = scatterSnapshot
         val markerShot = markerSnapshot
         if (scatShot == null || markerShot == null || !scatterPickCaptured) {
-            report("前提：两张散点实验图的快照与拾取结果都取到了", false,
+            report(
+                "前提：两张散点实验图的快照与拾取结果都取到了", false,
                 "scatterSnapshot=${scatShot != null}，markerSnapshot=${markerShot != null}，" +
-                        "scatterPickCaptured=$scatterPickCaptured")
+                        "scatterPickCaptured=$scatterPickCaptured"
+            )
         } else {
             // 局部坐标：快照就是 SCATTER_PLOT 那一块，左上角为原点。
             val markerPts = (0 until SCATTER_POINTS).map {
-                Pair((scatterX(it.toDouble()) - SCATTER_PLOT_X).toInt(),
-                    (scatterY(SCATTER_VALUES[it]) - SCATTER_PLOT_Y).toInt())
+                Pair(
+                    (scatterX(it.toDouble()) - SCATTER_PLOT_X).toInt(),
+                    (scatterY(SCATTER_VALUES[it]) - SCATTER_PLOT_Y).toInt()
+                )
             }
 
             // (a) 每个数据点位置上都是标记。盒子取 5×5：它整个落在边长 10 的标记内部，
@@ -4872,10 +5129,12 @@ class ChartVerifierApp : Application() {
             val pointHits = markerPts.map { (px, py) ->
                 scatShot.countIn(px - 2, py - 2, px + 2, py + 2, scatterRgb)
             }
-            report("每个数据点位置上都是标记（点周围 5×5 各 25 px）",
+            report(
+                "每个数据点位置上都是标记（点周围 5×5 各 25 px）",
                 pointHits.all { it == 25 },
                 "5 个点分别 ${pointHits.joinToString()} px，期望都是 25" +
-                        "（5×5 的盒子完全落在半径 $SCATTER_MARKER_RADIUS_SMALL 的标记内部）")
+                        "（5×5 的盒子完全落在半径 $SCATTER_MARKER_RADIUS_SMALL 的标记内部）"
+            )
 
             // (b) ★ 相邻两点的中点处一个该系列颜色的像素都没有——**"散点不是折线"的判据**。
             //
@@ -4891,32 +5150,42 @@ class ChartVerifierApp : Application() {
                 val n = scatShot.countIn(mx - 2, my - 8, mx + 2, my + 8, scatterRgb)
                 if (n != 0) segFails.add("第 ${i}→${i + 1} 段的中点 ($mx,$my) 附近 $n px")
             }
-            report("相邻两点的中点处【没有】该系列的像素（散点没有连线）",
+            report(
+                "相邻两点的中点处【没有】该系列的像素（散点没有连线）",
                 segFails.isEmpty(),
                 if (segFails.isEmpty())
                     "4 段各自的 5×17 盒子全空——把点连成线的实现会在那里留下一条线"
                 else segFails.joinToString("；") + "，期望 0——" +
-                        "非 0 说明两点被连了起来，而那条线显示的是一个不存在的信号")
+                        "非 0 说明两点被连了起来，而那条线显示的是一个不存在的信号"
+            )
 
             // (c) 拾取：标记上的像素命中该系列（散点与折线共用同一套 ID 机制），
             //     而且**热区也没有把两点连起来**——它是 (b) 的孪生断言。
             //     拾取坏了画面一点都不会变坏，只会让点击落在不该命中的地方。
-            report("标记点上的像素命中散点系列（payload 就是那个 Series 对象）",
+            report(
+                "标记点上的像素命中散点系列（payload 就是那个 Series 对象）",
                 scatterOnMarkerId != 0 && scatterOnMarkerPayloadOk,
-                "标记上 ID=$scatterOnMarkerId（期望非 0），payload 是散点系列=$scatterOnMarkerPayloadOk")
-            report("系列级 ID：同一系列的两个标记读到同一个 ID",
+                "标记上 ID=$scatterOnMarkerId（期望非 0），payload 是散点系列=$scatterOnMarkerPayloadOk"
+            )
+            report(
+                "系列级 ID：同一系列的两个标记读到同一个 ID",
                 scatterOnMarkerId != 0 && scatterOnMarkerId == scatterOnMarker2Id,
-                "第一个标记 ID=$scatterOnMarkerId，第二个标记 ID=$scatterOnMarker2Id（期望相等且非 0）")
-            report("相邻两点的中点处拾取不到任何东西（热区也没把两点连起来）",
+                "第一个标记 ID=$scatterOnMarkerId，第二个标记 ID=$scatterOnMarker2Id（期望相等且非 0）"
+            )
+            report(
+                "相邻两点的中点处拾取不到任何东西（热区也没把两点连起来）",
                 scatterMidId == 0,
                 "中点 ID=$scatterMidId，期望 0——非 0 说明散点的 ID pass 用了几何形状不对的顶点程序" +
                         "（例如错用了折线那份：第二个实例属性没人喂、恒为 0，" +
-                        "热区会变成一条从数据值竖直拉到 0 的长条）")
-            report("标记之外的空白处拾取不到（热区的形状就是标记本身，不是一条斜带）",
+                        "热区会变成一条从数据值竖直拉到 0 的长条）"
+            )
+            report(
+                "标记之外的空白处拾取不到（热区的形状就是标记本身，不是一条斜带）",
                 scatterBlankId == 0,
                 "(${SCATTER_BLANK_X.toInt()},${SCATTER_BLANK_Y.toInt()}) ID=$scatterBlankId，期望 0——" +
                         "这一点离最近的标记有 26 px，却正落在\"错用折线顶点程序\"那条斜带上" +
-                        "（见 SCATTER_BLANK_X 的推导）；非 0 就是那个形状错误的热区")
+                        "（见 SCATTER_BLANK_X 的推导）；非 0 就是那个形状错误的热区"
+            )
 
             // ---- 17. ★ 标记尺寸：markerSize 变大，覆盖的像素确实变多 ----
             //
@@ -4935,18 +5204,24 @@ class ChartVerifierApp : Application() {
             val bigEdge = SCATTER_MARKER_RADIUS_BIG.toInt() * 2
             val smallExpected = SCATTER_POINTS * smallEdge * smallEdge
             val bigExpected = SCATTER_POINTS * bigEdge * bigEdge
-            report("小标记图（半径 $SCATTER_MARKER_RADIUS_SMALL → 边长 $smallEdge）：" +
-                    "标记像素数 = 点数 × 边长² = $smallExpected",
+            report(
+                "小标记图（半径 $SCATTER_MARKER_RADIUS_SMALL → 边长 $smallEdge）：" +
+                        "标记像素数 = 点数 × 边长² = $smallExpected",
                 smallCount == smallExpected,
-                "实际 $smallCount px（局部 ${scatShot.w}×${scatShot.h}）")
-            report("大标记图（半径 $SCATTER_MARKER_RADIUS_BIG → 边长 $bigEdge）：" +
-                    "标记像素数 = 点数 × 边长² = $bigExpected",
+                "实际 $smallCount px（局部 ${scatShot.w}×${scatShot.h}）"
+            )
+            report(
+                "大标记图（半径 $SCATTER_MARKER_RADIUS_BIG → 边长 $bigEdge）：" +
+                        "标记像素数 = 点数 × 边长² = $bigExpected",
                 bigCount == bigExpected,
-                "实际 $bigCount px（局部 ${markerShot.w}×${markerShot.h}）")
-            report("标记变大 → 覆盖的像素确实变多（面积是边长的平方，这里约 4 倍）",
+                "实际 $bigCount px（局部 ${markerShot.w}×${markerShot.h}）"
+            )
+            report(
+                "标记变大 → 覆盖的像素确实变多（面积是边长的平方，这里约 4 倍）",
                 bigCount > smallCount * 3,
                 "小标记 $smallCount px，大标记 $bigCount px（比值 " +
-                        "${"%.2f".format(bigCount.toDouble() / smallCount.coerceAtLeast(1))}，期望约 4）")
+                        "${"%.2f".format(bigCount.toDouble() / smallCount.coerceAtLeast(1))}，期望约 4）"
+            )
         }
 
         // ---- 18. ★ markerSize = 0：一个像素都不画，但拾取照旧 ----
@@ -4956,13 +5231,17 @@ class ChartVerifierApp : Application() {
         //   只有"拾取命中" → "它其实画了一堆像素"照样通过。
         // 折线那边有一个同构的断言（第 4 组，"线宽 0 的系列全画面一个像素都没有"）。
         println("\n-- ★ markerSize = 0：不画像素，但拾取照旧 --")
-        report("退化散点系列（半径 0）在拾取里仍能命中（否则下一条恒真）",
+        report(
+            "退化散点系列（半径 0）在拾取里仍能命中（否则下一条恒真）",
             degenPickId != 0,
             "探测点 (${DEGEN_PROBE_X.toInt()},${DEGEN_PROBE_Y.toInt()}) ID=$degenPickId，期望非 0" +
-                    "——0 说明这张图根本没被画，那下一条就是橡皮图章")
-        report("退化散点系列：全画面一个像素都没有", (counts[degenScatterRgb] ?: 0) == 0,
+                    "——0 说明这张图根本没被画，那下一条就是橡皮图章"
+        )
+        report(
+            "退化散点系列：全画面一个像素都没有", (counts[degenScatterRgb] ?: 0) == 0,
             "退化色像素 ${counts[degenScatterRgb] ?: 0}——非 0 说明 markerSize = 0 没有退化" +
-                    "（边长取到了非 0 的值，标记会凭空出现在绘图区里）")
+                    "（边长取到了非 0 的值，标记会凭空出现在绘图区里）"
+        )
 
         // ---- 19. ★ 频谱：GPU 上的 FFT 输出真的被画成了曲线，而且画在它该在的位置上 ----
         //
@@ -4983,8 +5262,10 @@ class ChartVerifierApp : Application() {
         val specC = spectrumSnapshotC
         val specD = spectrumSnapshotD
         if (specA == null || specB == null || specC == null || specD == null) {
-            report("前提：四张频谱快照都抓到了", false,
-                "A=${specA != null}，B=${specB != null}，C=${specC != null}，D=${specD != null}")
+            report(
+                "前提：四张频谱快照都抓到了", false,
+                "A=${specA != null}，B=${specB != null}，C=${specC != null}，D=${specD != null}"
+            )
         } else {
             // 与渲染路径**同一份映射**：ChartRenderLayout 就是 CPU 那一份（着色器里还有一份，
             // 两份的一致性由 ChartRenderLayoutTest 钉着）。期望值直接由它算，
@@ -5006,15 +5287,19 @@ class ChartVerifierApp : Application() {
             }
 
             // 前提两条：下面所有期望值都站在它们之上。
-            report("前提：FFT 的变换长度就是环容量 $SPECTRUM_CAPACITY" +
-                    "（容量 ≤ 渲染器的默认长度，否则 CPU 参考要按另一个长度算）",
+            report(
+                "前提：FFT 的变换长度就是环容量 $SPECTRUM_CAPACITY" +
+                        "（容量 ≤ 渲染器的默认长度，否则 CPU 参考要按另一个长度算）",
                 SPECTRUM_CAPACITY <= SPECTRUM_DEFAULT_FFT_LENGTH,
                 "min(默认长度 $SPECTRUM_DEFAULT_FFT_LENGTH, 容量 $SPECTRUM_CAPACITY) = " +
                         "${minOf(SPECTRUM_DEFAULT_FFT_LENGTH, SPECTRUM_CAPACITY)}" +
-                        "——默认长度是渲染器里的私有常量，这里是它的第二份，改一处就得改另一处")
-            report("前提：三幕的输入样本都记下来了（CPU 参考要用它们算预期幅值）",
+                        "——默认长度是渲染器里的私有常量，这里是它的第二份，改一处就得改另一处"
+            )
+            report(
+                "前提：三幕的输入样本都记下来了（CPU 参考要用它们算预期幅值）",
                 refA != null && refB != null && refC != null,
-                "A=${refA != null}，B=${refB != null}，C=${refC != null}")
+                "A=${refA != null}，B=${refB != null}，C=${refC != null}"
+            )
 
             // ---- (1) 画出来了，而且在**预期的那一列**上 ----
             val kA = SPECTRUM_K0_A
@@ -5025,12 +5310,15 @@ class ChartVerifierApp : Application() {
             val peakB = specB.inkPeak(spectrumRgb, SPECTRUM_TIE_PX)
             val peakC = specC.inkPeak(spectrumRgb, SPECTRUM_TIE_PX)
 
-            report("阶段 A：频谱在绘图区里画出来了（该颜色的像素 > 0）",
+            report(
+                "阶段 A：频谱在绘图区里画出来了（该颜色的像素 > 0）",
                 peakA != null,
                 "该颜色的像素 ${specA.count(spectrumRgb)} px（局部 ${specA.w}×${specA.h}）" +
-                        "——这条只是前提：它成立不代表画对了地方")
-            report("阶段 A：峰值那一列与 ChartRenderLayout.screenX($kA) 相符" +
-                    "（x 轴窗口刻意不取 [0,…]，所以这一条同时钉住了 uFirstRelIndex）",
+                        "——这条只是前提：它成立不代表画对了地方"
+            )
+            report(
+                "阶段 A：峰值那一列与 ChartRenderLayout.screenX($kA) 相符" +
+                        "（x 轴窗口刻意不取 [0,…]，所以这一条同时钉住了 uFirstRelIndex）",
                 peakA != null && abs(peakA.column - wantAX) <= SPECTRUM_PEAK_COL_TOL,
                 peakA?.let {
                     "峰值读在局部第 ${"%.1f".format(it.column)} 列（屏幕 x = " +
@@ -5051,7 +5339,8 @@ class ChartVerifierApp : Application() {
             val rowPeakA = localY(layout.screenY(magA0).toDouble())
             val rangeA = peakA?.let { specA.inkRange(it.column.roundToInt(), spectrumRgb) }
             val centerA = rangeA?.let { (it.first + it.last) / 2.0 }
-            report("阶段 A：峰的高度就是参考幅值所在的行（|X[$kA]| ≈ ${"%.4f".format(magA0)}）",
+            report(
+                "阶段 A：峰的高度就是参考幅值所在的行（|X[$kA]| ≈ ${"%.4f".format(magA0)}）",
                 centerA != null && abs(centerA - rowPeakA) <= SPECTRUM_PEAK_ROW_TOL,
                 if (centerA == null) "峰值那一列上没有该颜色的像素"
                 else "峰顶墨迹的行范围 $rangeA，中点 ${"%.1f".format(centerA)}，" +
@@ -5062,25 +5351,32 @@ class ChartVerifierApp : Application() {
             // ---- (3) ★ 相邻两个 bin 之间那一列：墨迹应当落在两者幅值的中点 ----
             val rowMidA = localY(layout.screenY((magA0 + magA1) / 2.0).toDouble())
             val midColA = localX(layout.screenX(kA + 0.5).toDouble()).roundToInt()
-            report("前提：相邻两个 bin 的幅值差在屏幕上拉开的行距 ≥ ${SPECTRUM_MIN_DROP_PX}px" +
-                    "（窄了下面两条就成了橡皮图章）",
+            report(
+                "前提：相邻两个 bin 的幅值差在屏幕上拉开的行距 ≥ ${SPECTRUM_MIN_DROP_PX}px" +
+                        "（窄了下面两条就成了橡皮图章）",
                 rowMidA - rowPeakA >= SPECTRUM_MIN_DROP_PX,
                 "|X[$kA]| = ${"%.4f".format(magA0)}、|X[${kA + 1}]| = ${"%.4f".format(magA1)}" +
                         "（BH 窗主瓣上最陡的一级），在 ${SPECTRUM_PLOT_H.toInt()} px 高的绘图区上是 " +
                         "${"%.1f".format(rowMidA - rowPeakA)} px"
             )
-            val midInk = specA.countIn(midColA - 1, (rowMidA - SPECTRUM_MID_BAND_PX).roundToInt(),
-                midColA + 1, (rowMidA + SPECTRUM_MID_BAND_PX).roundToInt(), spectrumRgb)
-            report("★ 相邻两个 bin 之间那一列有墨迹，且落在**两者幅值的中点**那一行上" +
-                    "（正确实现：线段斜着穿过去）",
+            val midInk = specA.countIn(
+                midColA - 1, (rowMidA - SPECTRUM_MID_BAND_PX).roundToInt(),
+                midColA + 1, (rowMidA + SPECTRUM_MID_BAND_PX).roundToInt(), spectrumRgb
+            )
+            report(
+                "★ 相邻两个 bin 之间那一列有墨迹，且落在**两者幅值的中点**那一行上" +
+                        "（正确实现：线段斜着穿过去）",
                 midInk > 0,
                 "局部第 $midColA 列（屏幕 x = ${midColA + SPECTRUM_PLOT_X}）、行 " +
                         "${"%.1f".format(rowMidA)}±$SPECTRUM_MID_BAND_PX 里有 $midInk px，期望 > 0"
             )
-            val wrongInk = specA.countIn(midColA - 1, (rowPeakA - SPECTRUM_WRONG_BAND_PX).roundToInt(),
-                midColA + 1, (rowPeakA + SPECTRUM_WRONG_BAND_PX).roundToInt(), spectrumRgb)
-            report("★ 那一列在**左端点的高度**（峰值那一行）附近没有墨迹" +
-                    "（坏实现把水平小横线画在这里）",
+            val wrongInk = specA.countIn(
+                midColA - 1, (rowPeakA - SPECTRUM_WRONG_BAND_PX).roundToInt(),
+                midColA + 1, (rowPeakA + SPECTRUM_WRONG_BAND_PX).roundToInt(), spectrumRgb
+            )
+            report(
+                "★ 那一列在**左端点的高度**（峰值那一行）附近没有墨迹" +
+                        "（坏实现把水平小横线画在这里）",
                 wrongInk == 0,
                 "局部第 $midColA 列、行 ${"%.1f".format(rowPeakA)}±$SPECTRUM_WRONG_BAND_PX 里有 " +
                         "$wrongInk px，期望 0——非 0 说明相邻两段的第二端取的是**同一个 bin**" +
@@ -5096,8 +5392,9 @@ class ChartVerifierApp : Application() {
             val rowPeakB = localY(layout.screenY(magB0).toDouble())
             val rangeB = peakB?.let { specB.inkRange(it.column.roundToInt(), spectrumRgb) }
             val centerB = rangeB?.let { (it.first + it.last) / 2.0 }
-            report("阶段 B（频率 $kA → $kB）：峰位跟着移动 ${"%.0f".format(wantBX - wantAX)} px 且落在 " +
-                    "screenX($kB) 上",
+            report(
+                "阶段 B（频率 $kA → $kB）：峰位跟着移动 ${"%.0f".format(wantBX - wantAX)} px 且落在 " +
+                        "screenX($kB) 上",
                 peakB != null && abs(peakB.column - wantBX) <= SPECTRUM_PEAK_COL_TOL &&
                         peakA != null && abs(peakB.column - peakA.column) >= SPECTRUM_MOVE_MIN_PX,
                 peakB?.let {
@@ -5106,7 +5403,8 @@ class ChartVerifierApp : Application() {
                             "（要求 ≥ $SPECTRUM_MOVE_MIN_PX）"
                 } ?: "阶段 B 的快照里没有该颜色的像素"
             )
-            report("阶段 B：幅度没变，峰高仍是 1.0（换频率不该动峰高）",
+            report(
+                "阶段 B：幅度没变，峰高仍是 1.0（换频率不该动峰高）",
                 centerB != null && abs(centerB - rowPeakB) <= SPECTRUM_PEAK_ROW_TOL,
                 if (centerB == null) "阶段 B 的快照里没有该颜色的像素"
                 else "峰顶中点 ${"%.1f".format(centerB)}，期望 ${"%.1f".format(rowPeakB)}"
@@ -5116,8 +5414,9 @@ class ChartVerifierApp : Application() {
             val rowPeakC = localY(layout.screenY(magC0).toDouble())
             val rangeC = peakC?.let { specC.inkRange(it.column.roundToInt(), spectrumRgb) }
             val centerC = rangeC?.let { (it.first + it.last) / 2.0 }
-            report("阶段 C（幅度 $SPECTRUM_AMP → $SPECTRUM_AMP_LOW、频率不变）：峰位不动、峰高降到" +
-                    "参考幅值那一行",
+            report(
+                "阶段 C（幅度 $SPECTRUM_AMP → $SPECTRUM_AMP_LOW、频率不变）：峰位不动、峰高降到" +
+                        "参考幅值那一行",
                 peakC != null && centerC != null && abs(peakC.column - wantAX) <= SPECTRUM_PEAK_COL_TOL &&
                         abs(centerC - rowPeakC) <= SPECTRUM_PEAK_ROW_TOL,
                 peakC?.let {
@@ -5126,19 +5425,22 @@ class ChartVerifierApp : Application() {
                             "，期望 ${"%.1f".format(rowPeakC)}（|X[$kA]| ≈ ${"%.4f".format(magC0)}）"
                 } ?: "阶段 C 的快照里没有该颜色的像素"
             )
-            report("阶段 C：峰比阶段 A 矮了至少 ${SPECTRUM_HEIGHT_DROP_MIN.toInt()} px（峰高跟着幅度变）",
+            report(
+                "阶段 C：峰比阶段 A 矮了至少 ${SPECTRUM_HEIGHT_DROP_MIN.toInt()} px（峰高跟着幅度变）",
                 centerA != null && centerC != null && centerC - centerA >= SPECTRUM_HEIGHT_DROP_MIN,
                 if (centerA == null || centerC == null) "两幕里有一幕没读到峰顶"
                 else "阶段 A 峰顶在行 ${"%.1f".format(centerA)}，阶段 C 在行 " +
                         "${"%.1f".format(centerC)}，相差 ${"%.1f".format(centerC - centerA)} px"
             )
-            report("阶段 D（输入全 NaN）：绘图区里一个该颜色的像素都没有" +
-                    "（反证：上面的像素确实来自数据，不是别处漏进来的）",
+            report(
+                "阶段 D（输入全 NaN）：绘图区里一个该颜色的像素都没有" +
+                        "（反证：上面的像素确实来自数据，不是别处漏进来的）",
                 specD.count(spectrumRgb) == 0,
                 "该颜色的像素 ${specD.count(spectrumRgb)} px，期望 0——全 NaN 的谱是 NaN，" +
                         "着色器把每个实例都退化到裁剪空间之外"
             )
-            report("阶段 D：整块绘图区都是背景色（上一幕的谱没有留下任何残留）",
+            report(
+                "阶段 D：整块绘图区都是背景色（上一幕的谱没有留下任何残留）",
                 specD.countNonBackgroundInRows(0, specD.h - 1, background) == 0,
                 "不是背景色的像素 ${specD.countNonBackgroundInRows(0, specD.h - 1, background)} px，" +
                         "期望 0——这一块地方除了这张频谱图没有别的东西画过"
@@ -5163,8 +5465,10 @@ class ChartVerifierApp : Application() {
         val areaLine = areaLineSnapshot
         val step = stepSnapshot
         if (bar == null || areaSlope == null || areaLine == null || step == null) {
-            report("图型实验的四张快照都取到了（否则下面整节都是橡皮图章）", false,
-                "bar=$bar areaSlope=$areaSlope areaLine=$areaLine step=$step")
+            report(
+                "图型实验的四张快照都取到了（否则下面整节都是橡皮图章）", false,
+                "bar=$bar areaSlope=$areaSlope areaLine=$areaLine step=$step"
+            )
         } else {
             // ---- 21a. 柱状：并排分组 + 下沿是数值 ----
             //
@@ -5177,63 +5481,88 @@ class ChartVerifierApp : Application() {
             // 每根柱 8 列宽（见上面的手算），高度之和 × 8 就是 A 的全部像素。
             val barPixelsA = 8 * BAR_VALUES_A.sumOf { (kindY(0.0) - kindY(it)).toInt() }
             val bottom = kindY(0.0).toInt()
-            report("柱状：左槽位（系列 A）的像素数 = 8 列 × 四根柱高之和",
+            report(
+                "柱状：左槽位（系列 A）的像素数 = 8 列 × 四根柱高之和",
                 bar.count(barSlotARgb) == barPixelsA,
                 "实际 ${bar.count(barSlotARgb)} px，期望 $barPixelsA" +
                         "（柱高 ${BAR_VALUES_A.joinToString { (bottom - kindY(it)).toInt().toString() }}，" +
-                        "下沿在局部行 $bottom）——数目对不上说明柱宽、分组、下沿或高度之一定错了")
+                        "下沿在局部行 $bottom）——数目对不上说明柱宽、分组、下沿或高度之一定错了"
+            )
             val barPixelsB = 3 * 8 * (bottom - 0)
-            report("柱状：右槽位（系列 B）的像素数 = 8 列 × 三根满高柱（下标 2 是 NaN）",
+            report(
+                "柱状：右槽位（系列 B）的像素数 = 8 列 × 三根满高柱（下标 2 是 NaN）",
                 bar.count(barSlotBRgb) == barPixelsB,
-                "实际 ${bar.count(barSlotBRgb)} px，期望 $barPixelsB")
+                "实际 ${bar.count(barSlotBRgb)} px，期望 $barPixelsB"
+            )
 
             // ★ 分组的判别式：同一格（样本 0，局部列 2..21）里，左半是 A、右半是 B。
             // 不分组（两个系列都当第 0 根、总数 1）时两组柱完全重叠，B 后画、
             // 整格都是 B 的颜色——而画面看起来就是一张正常的单系列柱状图。
-            report("★ 并排分组：同一格里左半是 A 的颜色", bar.at(5, 56) == barSlotARgb,
+            report(
+                "★ 并排分组：同一格里左半是 A 的颜色", bar.at(5, 56) == barSlotARgb,
                 "局部 (5,56) = #%06X，期望 #%06X".format(bar.at(5, 56), barSlotARgb) +
-                        "——不是 A 说明两个柱状系列画在了同一个位置上（后画的盖住了先画的）")
-            report("★ 并排分组：同一格里右半是 B 的颜色", bar.at(15, 56) == barSlotBRgb,
-                "局部 (15,56) = #%06X，期望 #%06X".format(bar.at(15, 56), barSlotBRgb))
+                        "——不是 A 说明两个柱状系列画在了同一个位置上（后画的盖住了先画的）"
+            )
+            report(
+                "★ 并排分组：同一格里右半是 B 的颜色", bar.at(15, 56) == barSlotBRgb,
+                "局部 (15,56) = #%06X，期望 #%06X".format(bar.at(15, 56), barSlotBRgb)
+            )
             // 与上面两条成对：柱高必须跟着数值走，而不是四根一样高。
-            report("柱状：A 的第一根柱之上（值 0.25 的柱顶以上）没有墨迹",
+            report(
+                "柱状：A 的第一根柱之上（值 0.25 的柱顶以上）没有墨迹",
                 bar.at(5, 40) == background,
                 "局部 (5,40) = #%06X，期望背景 #%06X".format(bar.at(5, 40), background) +
-                        "——非背景说明柱高没跟着数值走（或下沿取的是窗口下界）")
+                        "——非背景说明柱高没跟着数值走（或下沿取的是窗口下界）"
+            )
             // 下沿以下整条带子：正确实现是 0（下沿在局部行 64），
             // 取窗口下界（-0.5 → 行 96）或取绘图区底边的话这里会有几千像素。
-            val belowBaseline = bar.countIn(0, bottom + 1, KIND_PLOT_W - 1, KIND_PLOT_H - 1,
-                barSlotARgb) + bar.countIn(0, bottom + 1, KIND_PLOT_W - 1, KIND_PLOT_H - 1,
-                barSlotBRgb)
-            report("柱状：下沿（局部行 $bottom）以下一个柱像素都没有——下沿是**数值 0**，" +
-                    "不是窗口下界也不是绘图区底边",
+            val belowBaseline = bar.countIn(
+                0, bottom + 1, KIND_PLOT_W - 1, KIND_PLOT_H - 1,
+                barSlotARgb
+            ) + bar.countIn(
+                0, bottom + 1, KIND_PLOT_W - 1, KIND_PLOT_H - 1,
+                barSlotBRgb
+            )
+            report(
+                "柱状：下沿（局部行 $bottom）以下一个柱像素都没有——下沿是**数值 0**，" +
+                        "不是窗口下界也不是绘图区底边",
                 belowBaseline == 0,
                 "行 ${bottom + 1}..${KIND_PLOT_H - 1} 里 $belowBaseline px，期望 0" +
-                        "——非 0 说明 uBaseline 被当成「画到绘图区下边缘」了")
+                        "——非 0 说明 uBaseline 被当成「画到绘图区下边缘」了"
+            )
             // NaN 那一格：既不画柱，也不该退化成一根从下沿到 0 的柱。
-            report("柱状：NaN 那一格（下标 $BAR_NAN_INDEX）没有柱（反证：它的邻居有）",
+            report(
+                "柱状：NaN 那一格（下标 $BAR_NAN_INDEX）没有柱（反证：它的邻居有）",
                 bar.at(64, 30) == background && bar.at(40, 30) == barSlotBRgb,
                 "NaN 那一格 (64,30) = #%06X（期望背景 #%06X）；邻居 (40,30) = #%06X（期望 #%06X）"
                     .format(bar.at(64, 30), background, bar.at(40, 30), barSlotBRgb) +
-                        "——NaN 那一格要是有一根柱，那是凭空多出来的一根不存在的柱子")
+                        "——NaN 那一格要是有一根柱，那是凭空多出来的一根不存在的柱子"
+            )
 
             // ---- 21b. 面积（斜填充，线宽 0）：逐列对上参考 ----
             //
             // x 窗口 [0,3] → 每样本 32px；y 窗口 [-0.5,1] → 值 0 落在局部行 64（下沿）、
             // 值 1.0 落在行 0。四个值 0.25/0.5/0.75/1.0 于是对应行 48/32/16/0。
             val areaRef = areaFillReference(AREA_VALUES, 0.0)
-            report("面积：填充的逐列像素数与按定义算出的参考完全一致（一共 $areaRef 列像素）",
+            report(
+                "面积：填充的逐列像素数与按定义算出的参考完全一致（一共 $areaRef 列像素）",
                 areaRef > 1000 && areaSlope.countNonBackgroundInRows(
-                    0, KIND_PLOT_H - 1, background) == areaRef,
+                    0, KIND_PLOT_H - 1, background
+                ) == areaRef,
                 "实际 ${areaSlope.countNonBackgroundInRows(0, KIND_PLOT_H - 1, background)} px，" +
-                        "期望 $areaRef——逐列对不上说明边界（值→y 的映射、斜率、基线）有一处错了")
-            report("面积：基线以下（局部行 ${bottom + 1}..）一个像素都没有——基线是**数值 0**",
+                        "期望 $areaRef——逐列对不上说明边界（值→y 的映射、斜率、基线）有一处错了"
+            )
+            report(
+                "面积：基线以下（局部行 ${bottom + 1}..）一个像素都没有——基线是**数值 0**",
                 areaSlope.countNonBackgroundInRows(bottom + 1, KIND_PLOT_H - 1, background) == 0,
                 "实际 ${areaSlope.countNonBackgroundInRows(bottom + 1, KIND_PLOT_H - 1, background)} px，" +
-                        "期望 0——非 0 说明下沿取的是窗口下界或绘图区底边（两者都会把行 64 以下也填满）")
-            report("面积：线宽 0 → 该颜色的**纯色**一个像素都没有（填充是半透明的）",
+                        "期望 0——非 0 说明下沿取的是窗口下界或绘图区底边（两者都会把行 64 以下也填满）"
+            )
+            report(
+                "面积：线宽 0 → 该颜色的**纯色**一个像素都没有（填充是半透明的）",
                 areaSlope.count(areaSlopeRgb) == 0,
-                "纯色 ${areaSlope.count(areaSlopeRgb)} px，期望 0——非 0 说明轮廓线没按线宽退化")
+                "纯色 ${areaSlope.count(areaSlopeRgb)} px，期望 0——非 0 说明轮廓线没按线宽退化"
+            )
             // 默认 fillAlpha = 0.5：填充色必须是"主色与背景各一半"，而不是主色本身。
             // 这一条同时钉住了预乘混合（片段着色器输出 rgb×a，混合因子 GL_ONE/GL_ONE_MINUS_SRC_ALPHA）。
             val fillAt = areaSlope.at(95, 40)
@@ -5241,14 +5570,18 @@ class ChartVerifierApp : Application() {
             val wantFillG = blendChannel(background shr 8 and 0xFF, areaSlopeRgb shr 8 and 0xFF, 0.5)
             val wantFillB = blendChannel(background and 0xFF, areaSlopeRgb and 0xFF, 0.5)
             val wantFill = (wantFillR shl 16) or (wantFillG shl 8) or wantFillB
-            report("面积：填充是**半透明**的（默认 fillAlpha = 0.5，与 JavaFX 的面积填充一致）",
+            report(
+                "面积：填充是**半透明**的（默认 fillAlpha = 0.5，与 JavaFX 的面积填充一致）",
                 channelClose(fillAt, wantFill, 1),
                 "局部 (95,40) = #%06X，期望 ≈ #%06X（主色 #%06X 与背景 #%06X 各一半）"
                     .format(fillAt, wantFill, areaSlopeRgb, background) +
-                        "——等于主色说明 fillAlpha 被当成 1 了（那样轮廓线在画面上看不出存在过）")
-            report("面积：填充不与主色、背景混淆（上一条的成对反证）",
+                        "——等于主色说明 fillAlpha 被当成 1 了（那样轮廓线在画面上看不出存在过）"
+            )
+            report(
+                "面积：填充不与主色、背景混淆（上一条的成对反证）",
                 fillAt != areaSlopeRgb && fillAt != background,
-                "局部 (95,40) = #%06X".format(fillAt))
+                "局部 (95,40) = #%06X".format(fillAt)
+            )
 
             // ---- 21c. 面积（水平 + 轮廓线）：4 行纯色 + 46 行半透明 ----
             //
@@ -5256,70 +5589,96 @@ class ChartVerifierApp : Application() {
             // 下沿（数值 0）落在行 96 —— 正是绘图区底边，于是填充占行 48..95。
             // 线宽 4 → 轮廓线（折线路径画的）正好占行 46..49（中心 46.5..49.5）。
             val lineRows = AREA_LINE_WIDTH.toInt()
-            report("面积轮廓线：纯色像素 = 线宽 × 宽度（一根 4 行高的水平线）",
+            report(
+                "面积轮廓线：纯色像素 = 线宽 × 宽度（一根 4 行高的水平线）",
                 areaLine.count(areaLineRgb) == lineRows * KIND_PLOT_W,
                 "实际 ${areaLine.count(areaLineRgb)} px，期望 ${lineRows * KIND_PLOT_W}" +
                         "——少了说明轮廓线没画（填充与它同色时画面上看不出来），" +
-                        "多了说明线宽或位置不对")
-            report("面积轮廓线：纯色只出现在**曲线那一行**的上下各 2px 里（局部行 46..49）",
+                        "多了说明线宽或位置不对"
+            )
+            report(
+                "面积轮廓线：纯色只出现在**曲线那一行**的上下各 2px 里（局部行 46..49）",
                 areaLine.countIn(0, 46, KIND_PLOT_W - 1, 49, areaLineRgb) ==
                         lineRows * KIND_PLOT_W &&
                         areaLine.countIn(0, 0, KIND_PLOT_W - 1, 45, areaLineRgb) == 0 &&
-                        areaLine.countIn(0, 50, KIND_PLOT_W - 1, KIND_PLOT_H - 1,
-                            areaLineRgb) == 0,
+                        areaLine.countIn(
+                            0, 50, KIND_PLOT_W - 1, KIND_PLOT_H - 1,
+                            areaLineRgb
+                        ) == 0,
                 "行 46..49 里 ${areaLine.countIn(0, 46, KIND_PLOT_W - 1, 49, areaLineRgb)} px、" +
                         "行 0..45 里 ${areaLine.countIn(0, 0, KIND_PLOT_W - 1, 45, areaLineRgb)} px、" +
-                        "行 50.. 里 ${areaLine.countIn(0, 50, KIND_PLOT_W - 1, KIND_PLOT_H - 1, areaLineRgb)} px")
-            report("面积填充：曲线之下（行 50..95）整片都是填充（46 行 × 96 列，" +
-                    "与曲线之上那一片成对：那边 0 px、这边铺满）",
+                        "行 50.. 里 ${areaLine.countIn(0, 50, KIND_PLOT_W - 1, KIND_PLOT_H - 1, areaLineRgb)} px"
+            )
+            report(
+                "面积填充：曲线之下（行 50..95）整片都是填充（46 行 × 96 列，" +
+                        "与曲线之上那一片成对：那边 0 px、这边铺满）",
                 areaLine.countNonBackgroundInRows(50, KIND_PLOT_H - 1, background) ==
                         46 * KIND_PLOT_W,
                 "实际 ${areaLine.countNonBackgroundInRows(50, KIND_PLOT_H - 1, background)} px，" +
-                        "期望 ${46 * KIND_PLOT_W}")
-            report("面积填充：曲线之上（行 0..45）一个像素都没有",
+                        "期望 ${46 * KIND_PLOT_W}"
+            )
+            report(
+                "面积填充：曲线之上（行 0..45）一个像素都没有",
                 areaLine.countNonBackgroundInRows(0, 45, background) == 0,
                 "实际 ${areaLine.countNonBackgroundInRows(0, 45, background)} px，期望 0" +
-                        "——非 0 说明填充画到了曲线**上方**（基线当成绘图区顶边了）")
+                        "——非 0 说明填充画到了曲线**上方**（基线当成绘图区顶边了）"
+            )
 
             // ---- 21d. 阶梯：踏步、竖段、拐角、NaN ----
             //
             // x 窗口 [0,3] → 每样本 32px；y 窗口 [0,1] → 值 0.25/0.75 落在局部行 72/24；
             // 线宽 4（半宽 2）→ 踏步占 4 行（70..73 / 22..25）、竖段占 4 列（30..33 / 62..65）。
             // 四个值 0.25 / 0.75 / 0.25 / NaN → 最后一段（下标 2→3）整段消失。
-            report("阶梯：第一段先横（局部行 72 有踏步）", step.at(16, 72) == stepRgb,
-                "局部 (16,72) = #%06X，期望 #%06X".format(step.at(16, 72), stepRgb))
-            report("★ 阶梯：那不是一条斜线（斜线会从这里穿过）", step.at(16, 48) == background,
+            report(
+                "阶梯：第一段先横（局部行 72 有踏步）", step.at(16, 72) == stepRgb,
+                "局部 (16,72) = #%06X，期望 #%06X".format(step.at(16, 72), stepRgb)
+            )
+            report(
+                "★ 阶梯：那不是一条斜线（斜线会从这里穿过）", step.at(16, 48) == background,
                 "局部 (16,48) = #%06X，期望背景 #%06X".format(step.at(16, 48), background) +
-                        "——非背景说明阶梯被按普通折线画了：形状是错的、画面却完全正常")
-            report("阶梯：再竖（局部列 32 的竖段从行 24 到行 72）",
+                        "——非背景说明阶梯被按普通折线画了：形状是错的、画面却完全正常"
+            )
+            report(
+                "阶梯：再竖（局部列 32 的竖段从行 24 到行 72）",
                 step.at(32, 40) == stepRgb && step.at(32, 80) == background,
                 "局部 (32,40) = #%06X（期望 #%06X）、(32,80) = #%06X（期望背景 #%06X）"
                     .format(step.at(32, 40), stepRgb, step.at(32, 80), background) +
-                        "——上面那个点没有墨迹说明走的是「先竖后横」，下面那个点有墨迹说明竖段越过了拐角")
-            report("阶梯：第二段的踏步在值 0.75 那一行（局部行 24），不是斜线",
+                        "——上面那个点没有墨迹说明走的是「先竖后横」，下面那个点有墨迹说明竖段越过了拐角"
+            )
+            report(
+                "阶梯：第二段的踏步在值 0.75 那一行（局部行 24），不是斜线",
                 step.at(48, 24) == stepRgb && step.at(48, 48) == background,
                 "局部 (48,24) = #%06X（期望 #%06X）、(48,48) = #%06X（期望背景 #%06X）"
-                    .format(step.at(48, 24), stepRgb, step.at(48, 48), background))
+                    .format(step.at(48, 24), stepRgb, step.at(48, 48), background)
+            )
             // ★ 拐角是**斜接**的：右-上转角的外角顶点落在 (30,70)，
             // 而"两段四边形各自收尾"的实现那里缺一个半宽见方的角（外观像抗锯齿）。
-            report("★ 阶梯：拐角的外角是补满的（斜接），不是一个豁口",
+            report(
+                "★ 阶梯：拐角的外角是补满的（斜接），不是一个豁口",
                 step.at(33, 72) == stepRgb,
                 "局部 (33,72) = #%06X，期望 #%06X".format(step.at(33, 72), stepRgb) +
-                        "——不是该颜色说明两段四边形各画各的、拐角缺了一块")
-            report("阶梯：拐角之外（外角顶点再往外）没有墨迹（上一条的成对反证）",
+                        "——不是该颜色说明两段四边形各画各的、拐角缺了一块"
+            )
+            report(
+                "阶梯：拐角之外（外角顶点再往外）没有墨迹（上一条的成对反证）",
                 step.at(35, 69) == background,
                 "局部 (35,69) = #%06X，期望背景 #%06X".format(step.at(35, 69), background) +
-                        "——非背景说明拐角被撑大了（斜接的长度算错）")
+                        "——非背景说明拐角被撑大了（斜接的长度算错）"
+            )
             // NaN 的判别式与缺口实验同源：**同一行上，左半边有墨迹、右半边没有**。
             // 只断言"那段没有像素"会被"整张图都没画"骗过去。
-            report("阶梯：末尾是 NaN → 最后一段整段消失（同一行上左半边有、右半边没有）",
+            report(
+                "阶梯：末尾是 NaN → 最后一段整段消失（同一行上左半边有、右半边没有）",
                 step.at(80, 72) == background && step.at(16, 72) == stepRgb,
                 "局部 (80,72) = #%06X（期望背景 #%06X）、(16,72) = #%06X（期望 #%06X）"
                     .format(step.at(80, 72), background, step.at(16, 72), stepRgb) +
-                        "——非背景说明 NaN 那段被连过去了（那条线是假的，比不画更糟）")
-            report("阶梯：顶部（局部行 0..21）一个像素都没有（值→y 的映射没有翻转/偏移）",
+                        "——非背景说明 NaN 那段被连过去了（那条线是假的，比不画更糟）"
+            )
+            report(
+                "阶梯：顶部（局部行 0..21）一个像素都没有（值→y 的映射没有翻转/偏移）",
                 step.countNonBackgroundInRows(0, 21, background) == 0,
-                "实际 ${step.countNonBackgroundInRows(0, 21, background)} px，期望 0")
+                "实际 ${step.countNonBackgroundInRows(0, 21, background)} px，期望 0"
+            )
 
             // ---- 21e. 拾取：三个新图型的 ID pass ----
             //
@@ -5329,20 +5688,30 @@ class ChartVerifierApp : Application() {
             // 而探针刻意取在柱内偏边处（局部 x = 5 与 15）——中心的点照样命中，
             // 只有偏边的点能把两种实现分开。
             println("\n-- 图型：拾取（柱状 / 面积 / 阶梯）--")
-            report("拾取：柱状左槽位（柱内偏边，局部 x=5，样本中心在 12）命中系列 A",
+            report(
+                "拾取：柱状左槽位（柱内偏边，局部 x=5，样本中心在 12）命中系列 A",
                 kindPickBarSlotA,
                 "payload 是不是「柱A」= $kindPickBarSlotA——漏了 uBarOffset 的 ID pass 会在" +
-                        "样本中心周围盖热区，而这一点离样本中心 7px、落在热区之外，于是这里落空")
-            report("拾取：柱状右槽位（局部 x=15）命中系列 B", kindPickBarSlotB,
-                "payload 是不是「柱B」= $kindPickBarSlotB")
-            report("拾取：柱的下沿以下（局部行 80）什么都没命中（与上面两条成对）",
+                        "样本中心周围盖热区，而这一点离样本中心 7px、落在热区之外，于是这里落空"
+            )
+            report(
+                "拾取：柱状右槽位（局部 x=15）命中系列 B", kindPickBarSlotB,
+                "payload 是不是「柱B」= $kindPickBarSlotB"
+            )
+            report(
+                "拾取：柱的下沿以下（局部行 80）什么都没命中（与上面两条成对）",
                 kindPickBarBelow,
-                "那里必须有柱才该命中；命中说明热区被撑到了下沿以下")
-            report("拾取：面积填充的深处（离曲线 40px）命中该系列" +
-                    "（轮廓线那条路径够不到那里，所以只可能是填充自己的 ID pass）",
-                kindPickAreaFill, "payload 是不是「面积斜率」= $kindPickAreaFill")
-            report("拾取：阶梯的竖段上命中该系列", kindPickStepRiser,
-                "payload 是不是「阶梯」= $kindPickStepRiser")
+                "那里必须有柱才该命中；命中说明热区被撑到了下沿以下"
+            )
+            report(
+                "拾取：面积填充的深处（离曲线 40px）命中该系列" +
+                        "（轮廓线那条路径够不到那里，所以只可能是填充自己的 ID pass）",
+                kindPickAreaFill, "payload 是不是「面积斜率」= $kindPickAreaFill"
+            )
+            report(
+                "拾取：阶梯的竖段上命中该系列", kindPickStepRiser,
+                "payload 是不是「阶梯」= $kindPickStepRiser"
+            )
 
             // ---- 21f. 跨帧：这四张图在校验帧上必须已经不在画面里 ----
             //
@@ -5363,10 +5732,12 @@ class ChartVerifierApp : Application() {
                     if (pixelAt(xx, yy) != background) decorResidue++
                 }
             }
-            report("图型与装配实验图在校验帧上都已经不在画面里（观察期专属，无残留）",
+            report(
+                "图型与装配实验图在校验帧上都已经不在画面里（观察期专属，无残留）",
                 kindResidue == 0 && decorResidue == 0,
                 "左边那一条 96×${STEP_PLOT_Y + KIND_PLOT_H - BAR_PLOT_Y} 里有 $kindResidue px 不是背景；" +
-                        "装配那一块 ${DECOR_PLOT_W}×$DECOR_PLOT_H 里有 $decorResidue px 不是背景")
+                        "装配那一块 ${DECOR_PLOT_W}×$DECOR_PLOT_H 里有 $decorResidue px 不是背景"
+            )
         }
 
         // ---- 22. ★ 装配：标题 / 图例 / 外边距 ----
@@ -5411,49 +5782,67 @@ class ChartVerifierApp : Application() {
             val plotRows = decorPlotTop.toInt()..decorPlotBottom.toInt()
 
             // 标题：**画在标题带里**。没有这一条，"标题没画"会从下面每一条底下溜过去。
-            report("标题画在标题带里（局部行 $titleRows）",
+            report(
+                "标题画在标题带里（局部行 $titleRows）",
                 textInk(0, titleRows.first, DECOR_PLOT_W - 1, titleRows.last) > 0,
                 "标题带里的文字墨迹 ${textInk(0, titleRows.first, DECOR_PLOT_W - 1, titleRows.last)} px，" +
-                        "期望 > 0")
+                        "期望 > 0"
+            )
             // 与上一条成对：标题的墨迹不许越过带子进到绘图区里
             // （漏掉"给标题留位置"时，标题会直接压在绘图区最上面几行上）。
-            report("绘图区里没有标题的墨迹（标题带真的把它挡在外面了）",
+            report(
+                "绘图区里没有标题的墨迹（标题带真的把它挡在外面了）",
                 textInk(0, plotRows.first, DECOR_PLOT_W - 1, plotRows.last) == 0,
-                "绘图区里的文字墨迹 ${textInk(0, plotRows.first, DECOR_PLOT_W - 1, plotRows.last)} px，期望 0")
+                "绘图区里的文字墨迹 ${textInk(0, plotRows.first, DECOR_PLOT_W - 1, plotRows.last)} px，期望 0"
+            )
 
             // ★ 绘图区被挤过：数据线的行号 == 按布局规则算出来的那两行。
             // 不挤的话线会落在局部第 ${...} 行（比这里高 7 行）——而画面看起来完全正常。
             val inkCol = DECOR_PLOT_W / 2
             val inkRange = decor.inkRange(inkCol, decorSeriesRgb)
-            report("★ 绘图区的下边缘到局部行 ${"%.1f".format(decorPlotBottom)}：" +
-                    "数据线落在第 $decorInkRows 行（标题与图例真的把绘图区挤了）",
+            report(
+                "★ 绘图区的下边缘到局部行 ${"%.1f".format(decorPlotBottom)}：" +
+                        "数据线落在第 $decorInkRows 行（标题与图例真的把绘图区挤了）",
                 inkRange != null && inkRange.first == decorInkRows.first &&
                         inkRange.last == decorInkRows.last,
                 "第 $inkCol 列上的墨迹行范围 $inkRange，期望 $decorInkRows" +
                         "（不挤的话线会落在更高的几行上，因为这个值是按「内框 + 标题带 + 间隙」" +
                         "算出来的——标题带与图例带同高，所以数据取 0.5 时分不出挤没挤，" +
-                        "取 0.25 才分得出）")
+                        "取 0.25 才分得出）"
+            )
 
             // padding：绘图区的内容没有越过内框（左右各 2px）。16 列 × 2 行 = 32 px。
-            val inPlot = decor.countIn(DECOR_PADDING.toInt(), decorInkRows.first,
-                (DECOR_PLOT_W - DECOR_PADDING).toInt() - 1, decorInkRows.last, decorSeriesRgb)
-            val inLeftPad = decor.countIn(0, decorInkRows.first,
-                DECOR_PADDING.toInt() - 1, decorInkRows.last, decorSeriesRgb)
-            val inRightPad = decor.countIn((DECOR_PLOT_W - DECOR_PADDING).toInt(),
-                decorInkRows.first, DECOR_PLOT_W - 1, decorInkRows.last, decorSeriesRgb)
-            report("外边距 ${DECOR_PADDING.toInt()}px 生效：数据线恰好占内框那 16 列 × 2 行",
+            val inPlot = decor.countIn(
+                DECOR_PADDING.toInt(), decorInkRows.first,
+                (DECOR_PLOT_W - DECOR_PADDING).toInt() - 1, decorInkRows.last, decorSeriesRgb
+            )
+            val inLeftPad = decor.countIn(
+                0, decorInkRows.first,
+                DECOR_PADDING.toInt() - 1, decorInkRows.last, decorSeriesRgb
+            )
+            val inRightPad = decor.countIn(
+                (DECOR_PLOT_W - DECOR_PADDING).toInt(),
+                decorInkRows.first, DECOR_PLOT_W - 1, decorInkRows.last, decorSeriesRgb
+            )
+            report(
+                "外边距 ${DECOR_PADDING.toInt()}px 生效：数据线恰好占内框那 16 列 × 2 行",
                 inPlot == 32 && inLeftPad == 0 && inRightPad == 0,
-                "内框里 $inPlot px（期望 32）、左边距里 $inLeftPad px、右边距里 $inRightPad px（都期望 0）")
+                "内框里 $inPlot px（期望 32）、左边距里 $inLeftPad px、右边距里 $inRightPad px（都期望 0）"
+            )
 
             // ★ 图例色块：6×6 = 36 px，而且是图例带里**唯一**的系列色。
-            val swatchPixels = decor.countIn(0, legendRows.first, DECOR_PLOT_W - 1,
-                legendRows.last, decorSeriesRgb)
-            report("★ 图例色块 = ${DECOR_SWATCH.toInt()}×${DECOR_SWATCH.toInt()} = 36 px，" +
-                    "且它是图例带里唯一的系列色",
+            val swatchPixels = decor.countIn(
+                0, legendRows.first, DECOR_PLOT_W - 1,
+                legendRows.last, decorSeriesRgb
+            )
+            report(
+                "★ 图例色块 = ${DECOR_SWATCH.toInt()}×${DECOR_SWATCH.toInt()} = 36 px，" +
+                        "且它是图例带里唯一的系列色",
                 swatchPixels == 36,
                 "图例带（局部行 $legendRows）里的系列色 $swatchPixels px，期望 36" +
                         "——多了说明色块比 legendSwatchSize 大（或位置偏了），" +
-                        "少了说明被别的绘制盖住或者压根没画")
+                        "少了说明被别的绘制盖住或者压根没画"
+            )
             // 图例文字：在色块**右边**（不许压在色块上，也不许跑到带子外面）
             val legendTextX = (0 until DECOR_PLOT_W).filter { xx ->
                 legendRows.any { yy ->
@@ -5461,15 +5850,18 @@ class ChartVerifierApp : Application() {
                 }
             }
             val swatchRight = DECOR_PADDING.toInt() + DECOR_SWATCH.toInt()
-            report("图例文字在色块右边（最左一列 $legendTextX 的墨迹在色块右边缘之后）",
+            report(
+                "图例文字在色块右边（最左一列 $legendTextX 的墨迹在色块右边缘之后）",
                 legendTextX.isNotEmpty() && legendTextX.first() > swatchRight,
                 "文字墨迹的列 $legendTextX，色块右边缘在第 $swatchRight 列" +
-                        "——文字压在色块上或跑到左边，图例就读不出来了")
+                        "——文字压在色块上或跑到左边，图例就读不出来了"
+            )
 
             // 身份断言：同一张图、同一块矩形，过 ChartLayout 与不过它逐像素相同。
             val viaLayout = barViaLayoutSnapshot
             val plain = barSnapshot
-            report("★ 同一张图（无标题/无图例/无内边距）：drawChart 与 draw 逐像素相同",
+            report(
+                "★ 同一张图（无标题/无图例/无内边距）：drawChart 与 draw 逐像素相同",
                 viaLayout != null && plain != null && viaLayout.sameAs(plain),
                 if (viaLayout == null || plain == null) "有一张快照没抓到"
                 else if (!viaLayout.sameAs(plain)) {
@@ -5481,7 +5873,8 @@ class ChartVerifierApp : Application() {
                     }
                     "$diff px 不同——说明 ChartLayout 在没有装饰时也动了绘图区，" +
                             "而那是**无声地改动了已验证的行为**"
-                } else "两张快照逐像素相同（${plain.w}×${plain.h}）")
+                } else "两张快照逐像素相同（${plain.w}×${plain.h}）"
+            )
         }
 
         // ---- 23. ★ 左/右图例、底部标题、轴标题、以及"带子就是边界" ----
@@ -5516,7 +5909,14 @@ class ChartVerifierApp : Application() {
 
         /** 行区间里所有带文字墨迹的列（升序）。 */
         fun overInkColumns(s: Shot, y0: Int, y1: Int): List<Int> =
-            (0 until s.w).filter { xx -> (y0..y1).any { yy -> s.at(xx, yy) != background && s.at(xx, yy) != overSeriesRgb } }
+            (0 until s.w).filter { xx ->
+                (y0..y1).any { yy ->
+                    s.at(xx, yy) != background && s.at(
+                        xx,
+                        yy
+                    ) != overSeriesRgb
+                }
+            }
 
         /** 行区间里带系列色的列（升序）——用来"看见"绘图区从哪一列到哪一列。 */
         fun overSeriesColumns(s: Shot, y0: Int, y1: Int): List<Int> =
@@ -5525,8 +5925,10 @@ class ChartVerifierApp : Application() {
         val overA = overSnapshotA
         val overB = overSnapshotB
         if (OVER_DEBUG_DUMP) {
-            listOf("A" to overA, "B" to overB, "C" to overSnapshotC, "D" to overSnapshotD,
-                "E" to overSnapshotE)
+            listOf(
+                "A" to overA, "B" to overB, "C" to overSnapshotC, "D" to overSnapshotD,
+                "E" to overSnapshotE
+            )
                 .forEach { (name, shot) ->
                     println("---- 变体 $name 的原始像素（. 背景 / # 系列色 / ? 其它）----")
                     shot?.let { s ->
@@ -5556,16 +5958,20 @@ class ChartVerifierApp : Application() {
         // 这件事在画面上没有任何痕迹（它本来就该什么都不画），所以只能直接问一次
         // （探针见 captureOverflow）。消息里必须提到"变换"——否则"抛了异常"也可能
         // 是因为别的入口检查（例如矩形非法），那就是一条对不上因的断言。
-        report("★ 带着变换调 drawChart 抛 IllegalStateException（装饰的布局算在设备像素上）",
+        report(
+            "★ 带着变换调 drawChart 抛 IllegalStateException（装饰的布局算在设备像素上）",
             transformGuardError is IllegalStateException &&
                     transformGuardError?.message?.contains("变换") == true,
             "抛的是 ${transformGuardError?.javaClass?.simpleName ?: "什么都没抛"}，" +
-                    "消息：${transformGuardError?.message?.take(60) ?: "—"}")
+                    "消息：${transformGuardError?.message?.take(60) ?: "—"}"
+        )
 
         if (overA == null || overB == null || overC == null || overD == null || overE == null) {
-            report("五个变体的快照都抓到了（否则下面整节都是橡皮图章）", false,
+            report(
+                "五个变体的快照都抓到了（否则下面整节都是橡皮图章）", false,
                 "A=${overA != null} B=${overB != null} C=${overC != null} " +
-                        "D=${overD != null} E=${overE != null}")
+                        "D=${overD != null} E=${overE != null}"
+            )
         } else {
             // 手算的公共量：数据线（值 0.5、线宽 2）在各自绘图区里的墨迹行范围。
             // 装配实验那条用的是同一个式子：行 = ceil(sy-1.5) .. floor(sy+0.5)。
@@ -5581,56 +5987,77 @@ class ChartVerifierApp : Application() {
             val aPlotH = overInnerBottom - overInnerTop - overBandH - OVER_TITLE_GAP
             val aLineRows = lineRows(overInnerTop.toDouble(), aPlotH.toDouble())
             val aSwatch = overA.countIn(overInnerLeft, 5, overInnerLeft + 5, 10, overSeriesRgb)
-            report("★ A（左图例）：色块 6×6 = 36 px 且贴内框左边缘、在图例带最上面那一行（局部行 5..10）",
+            report(
+                "★ A（左图例）：色块 6×6 = 36 px 且贴内框左边缘、在图例带最上面那一行（局部行 5..10）",
                 aSwatch == 36,
                 "内框左上角 6×6 里 ${aSwatch} px，期望 36——色块不在这里说明图例没摆在左边" +
-                        "（上下放的图例色块会在底部带子里）")
+                        "（上下放的图例色块会在底部带子里）"
+            )
             val aLine = overA.inkRange(60, overSeriesRgb)
-            report("★ A：数据线落在第 $aLineRows 行（底部标题带真的把绘图区挤矮了）",
+            report(
+                "★ A：数据线落在第 $aLineRows 行（底部标题带真的把绘图区挤矮了）",
                 aLine == aLineRows,
                 "第 60 列上的系列色行范围 $aLine，期望 $aLineRows" +
-                        "（不挤的话绘图区高 15.2px，线会落到局部第 11、12 行上）")
+                        "（不挤的话绘图区高 15.2px，线会落到局部第 11、12 行上）"
+            )
             val aTextCols = overInkColumns(overA, 5, 10)
-            report("A：图例文字从色块右边（局部列 ${overInnerLeft + 10} 附近）起画",
+            report(
+                "A：图例文字从色块右边（局部列 ${overInnerLeft + 10} 附近）起画",
                 aTextCols.firstOrNull()?.let { it in (overInnerLeft + 9)..(overInnerLeft + 12) } == true,
                 "色块那一行（局部行 5..10）里文字墨迹的列 $aTextCols，" +
                         "期望最左一列 ≈ ${overInnerLeft + 10}（色块 6 + 间隙 4）")
-            val aTitleCols = overInkColumns(overA, (overInnerBottom - overBandH).toInt() + 1,
-                overInnerBottom - 1)
-            report("A：底部标题画在内框左下角（标题带里最左的墨迹从内框左边缘起）",
+            val aTitleCols = overInkColumns(
+                overA, (overInnerBottom - overBandH).toInt() + 1,
+                overInnerBottom - 1
+            )
+            report(
+                "A：底部标题画在内框左下角（标题带里最左的墨迹从内框左边缘起）",
                 aTitleCols.firstOrNull()?.let { it <= overInnerLeft + 2 } == true,
                 "标题带（局部行 ${(overInnerBottom - overBandH).toInt() + 1}..${overInnerBottom - 1}）" +
                         "里最左的墨迹列 ${aTitleCols.firstOrNull()}，期望 ≤ ${overInnerLeft + 2}" +
                         "（左图例的文字在更右边，所以「跑到最左边」只可能是标题画的）")
-            report("A：绘图区里没有文字墨迹（标题与图例都没画到数据上）",
+            report(
+                "A：绘图区里没有文字墨迹（标题与图例都没画到数据上）",
                 overInk(overA, 30, overInnerTop, overInnerRight - 1, aLineRows.first - 2) == 0,
-                "绘图区上部 ${overInk(overA, 30, overInnerTop, overInnerRight - 1, aLineRows.first - 2)} px")
+                "绘图区上部 ${overInk(overA, 30, overInnerTop, overInnerRight - 1, aLineRows.first - 2)} px"
+            )
 
             // ---- 23c. 变体 B：右图例 + 底部标题 ----
             //
             // 与 A 逐条成对，判别式只有一条：**色块在右半边**（A 的在最左边）。
             // 这条能分开"图例摆错了边"，而"绘图区被挤"由数据线的行号钉着（两者同高）。
             val bSwatch = overB.countIn(53, 5, 105, 10, overSeriesRgb)
-            report("★ B（右图例）：色块 36 px 且落在内框右半边（局部列 ≥ 53）",
+            report(
+                "★ B（右图例）：色块 36 px 且落在内框右半边（局部列 ≥ 53）",
                 bSwatch == 36,
-                "右下角 6×6 里 ${bSwatch} px，期望 36——0 说明图例摆在了左边（那是 A 的样子）")
-            report("B：左图例那一块（局部列 ${overInnerLeft}..7、行 5..10）里一个色块像素都没有",
+                "右下角 6×6 里 ${bSwatch} px，期望 36——0 说明图例摆在了左边（那是 A 的样子）"
+            )
+            report(
+                "B：左图例那一块（局部列 ${overInnerLeft}..7、行 5..10）里一个色块像素都没有",
                 overB.countIn(overInnerLeft, 5, overInnerLeft + 5, 10, overSeriesRgb) == 0,
                 "内框左上角里 ${overB.countIn(overInnerLeft, 5, overInnerLeft + 5, 10, overSeriesRgb)} px 系列色" +
-                        "（数据线在行 11、12，不在这个区间里）")
+                        "（数据线在行 11、12，不在这个区间里）"
+            )
             val bLine = overB.inkRange(30, overSeriesRgb)
-            report("★ B：数据线落在第 $aLineRows 行（与 A 同：底部标题带把绘图区挤到同样高）",
+            report(
+                "★ B：数据线落在第 $aLineRows 行（与 A 同：底部标题带把绘图区挤到同样高）",
                 bLine == aLineRows,
-                "第 30 列上的系列色行范围 $bLine，期望 $aLineRows")
+                "第 30 列上的系列色行范围 $bLine，期望 $aLineRows"
+            )
             val bInkCols = overInkColumns(overB, 5, 10)
             val bSwatchCols = overSeriesColumns(overB, 5, 10)
-            report("B：图例文字在色块右边（最左一列 ${bInkCols.firstOrNull()} 在色块右边缘之后）",
+            report(
+                "B：图例文字在色块右边（最左一列 ${bInkCols.firstOrNull()} 在色块右边缘之后）",
                 bInkCols.isNotEmpty() && bSwatchCols.isNotEmpty() &&
                         bInkCols.first() > bSwatchCols.last(),
-                "文字墨迹的列 ${bInkCols.firstOrNull()}，色块列 ${bSwatchCols.firstOrNull()}..${bSwatchCols.lastOrNull()}")
-            val bTitleCols = overInkColumns(overB, (overInnerBottom - overBandH).toInt() + 1,
-                overInnerBottom - 1)
-            report("B：底部标题画在内框左下角（与 A 逐条成对）",
+                "文字墨迹的列 ${bInkCols.firstOrNull()}，色块列 ${bSwatchCols.firstOrNull()}..${bSwatchCols.lastOrNull()}"
+            )
+            val bTitleCols = overInkColumns(
+                overB, (overInnerBottom - overBandH).toInt() + 1,
+                overInnerBottom - 1
+            )
+            report(
+                "B：底部标题画在内框左下角（与 A 逐条成对）",
                 bTitleCols.firstOrNull()?.let { it <= overInnerLeft + 2 } == true,
                 "标题带里最左的墨迹列 ${bTitleCols.firstOrNull()}，期望 ≤ ${overInnerLeft + 2}")
 
@@ -5640,21 +6067,29 @@ class ChartVerifierApp : Application() {
             // 40 个 W（每个约 7px）从局部列 12 起，远超内框宽 104px → 右边必然被切断。
             val cBandTop = overInnerBottom - overBandH
             val cSwatch = overC.countIn(overInnerLeft, 27, overInnerLeft + 5, 32, overSeriesRgb)
-            report("C：底部图例的色块 36 px 且贴内框左下角（局部行 27..32）",
-                cSwatch == 36, "左下角 6×6 里 ${cSwatch} px，期望 36")
+            report(
+                "C：底部图例的色块 36 px 且贴内框左下角（局部行 27..32）",
+                cSwatch == 36, "左下角 6×6 里 ${cSwatch} px，期望 36"
+            )
             val cTextCols = overInkColumns(overC, cBandTop.toInt(), overInnerBottom - 1)
-            report("★ C：超长系列名一直画到内框右边缘的前一列（局部列 $OVER_LOCAL_CUT），" +
-                    "说明它**真的**比带子宽、被切断了",
+            report(
+                "★ C：超长系列名一直画到内框右边缘的前一列（局部列 $OVER_LOCAL_CUT），" +
+                        "说明它**真的**比带子宽、被切断了",
                 cTextCols.lastOrNull() == OVER_LOCAL_CUT,
                 "图例带里文字墨迹的最右一列 ${cTextCols.lastOrNull()}，期望 $OVER_LOCAL_CUT" +
-                        "（比它小说明这条断言是橡皮图章：文字根本没长到那里）")
-            report("★ C：内框右边缘之外（那 2px 外边距）一个墨迹像素都没有——超出的部分被裁掉了",
+                        "（比它小说明这条断言是橡皮图章：文字根本没长到那里）"
+            )
+            report(
+                "★ C：内框右边缘之外（那 2px 外边距）一个墨迹像素都没有——超出的部分被裁掉了",
                 overInk(overC, overInnerRight, 0, OVER_W - 1, OVER_H - 1) == 0,
                 "右边距两列里有 ${overInk(overC, overInnerRight, 0, OVER_W - 1, OVER_H - 1)} px" +
-                        "（不裁的话 40 个 W 会一直画到快 300px 处）")
-            report("C：绘图区里没有长标签的墨迹（带子也挡住了纵向的越界）",
+                        "（不裁的话 40 个 W 会一直画到快 300px 处）"
+            )
+            report(
+                "C：绘图区里没有长标签的墨迹（带子也挡住了纵向的越界）",
                 overInk(overC, 30, overInnerTop, overInnerRight - 1, cBandTop.toInt() - 2) == 0,
-                "绘图区 ${overInk(overC, 30, overInnerTop, overInnerRight - 1, cBandTop.toInt() - 2)} px")
+                "绘图区 ${overInk(overC, 30, overInnerTop, overInnerRight - 1, cBandTop.toInt() - 2)} px"
+            )
 
             // ---- 23e. 变体 D：轴标题 + 刻度预留 ----
             //
@@ -5664,23 +6099,49 @@ class ChartVerifierApp : Application() {
             // 少了轴标题带与预留，绘图区会高 15.2px，线会落到第 10、11 行。
             val dPlotBottom = overInnerBottom - overBandH - OVER_LEGEND_GAP - overBandH -
                     OVER_AXIS_GAP - OVER_TICK_RESERVE
-            val dLineRows = lineRows(overInnerTop.toDouble(),
-                (dPlotBottom - overInnerTop).toDouble())
+            val dLineRows = lineRows(
+                overInnerTop.toDouble(),
+                (dPlotBottom - overInnerTop).toDouble()
+            )
             val dLineCols = overSeriesColumns(overD, dLineRows.first, dLineRows.last)
             val dAxisBandTop = (overInnerBottom - overBandH - OVER_LEGEND_GAP - overBandH).toInt()
             // 轴标题带的上边缘 = 内框下边 - 图例带 - 图例间隙 - 轴标题带高；下边缘 = 减去前两项
             val dAxisBandBottom = overInnerBottom - overBandH - OVER_LEGEND_GAP
-            report("★ D：数据线落在第 $dLineRows 行（轴标题带 + 刻度预留真的把绘图区挤矮了）",
+            report(
+                "★ D：数据线落在第 $dLineRows 行（轴标题带 + 刻度预留真的把绘图区挤矮了）",
                 overD.inkRange(60, overSeriesRgb) == dLineRows,
                 "第 60 列上的系列色行范围 ${overD.inkRange(60, overSeriesRgb)}，期望 $dLineRows" +
-                        "（不挤的话绘图区高 20.2px，线会落到局部第 10、11 行）")
-            report("★ D：轴标题画在轴标题带里（局部行 $dAxisBandTop..${dAxisBandBottom.toInt() - 1}）",
-                overInk(overD, 30, dAxisBandTop, overInnerRight - 1,
-                    dAxisBandBottom.toInt() - 1) > 0,
-                "轴标题带里的墨迹 ${overInk(overD, 30, dAxisBandTop, overInnerRight - 1, dAxisBandBottom.toInt() - 1)} px")
-            report("D：绘图区那几行里没有轴标题的墨迹（它被带子挡在外面）",
+                        "（不挤的话绘图区高 20.2px，线会落到局部第 10、11 行）"
+            )
+            report(
+                "★ D：轴标题画在轴标题带里（局部行 $dAxisBandTop..${dAxisBandBottom.toInt() - 1}）",
+                overInk(
+                    overD, 30, dAxisBandTop, overInnerRight - 1,
+                    dAxisBandBottom.toInt() - 1
+                ) > 0,
+                "轴标题带里的墨迹 ${
+                    overInk(
+                        overD,
+                        30,
+                        dAxisBandTop,
+                        overInnerRight - 1,
+                        dAxisBandBottom.toInt() - 1
+                    )
+                } px"
+            )
+            report(
+                "D：绘图区那几行里没有轴标题的墨迹（它被带子挡在外面）",
                 overInk(overD, 30, overInnerTop, overInnerRight - 1, dAxisBandTop - 2) == 0,
-                "绘图区 + 预留带 + 轴标题间隙里 ${overInk(overD, 30, overInnerTop, overInnerRight - 1, dAxisBandTop - 2)} px")
+                "绘图区 + 预留带 + 轴标题间隙里 ${
+                    overInk(
+                        overD,
+                        30,
+                        overInnerTop,
+                        overInnerRight - 1,
+                        dAxisBandTop - 2
+                    )
+                } px"
+            )
             if (dLineCols.isEmpty()) {
                 report("D：绘图区的横向范围可以从数据线读出来（否则下一条是橡皮图章）", false, "没有读到系列色")
             } else {
@@ -5692,10 +6153,12 @@ class ChartVerifierApp : Application() {
                 // 左对齐时约 0；右对齐时文字右边缘会贴到 plotRight。两条一起把三者分开。
                 val centeredLeft = titleCols.firstOrNull()?.let { it - plotLeft } ?: -1
                 val centeredRight = titleCols.lastOrNull()?.let { plotRight - it } ?: -1
-                report("★ D：轴标题**居中**于轴（不是左对齐也不是右对齐）",
+                report(
+                    "★ D：轴标题**居中**于轴（不是左对齐也不是右对齐）",
                     centeredLeft >= 20 && centeredRight >= 5,
                     "文字左边缘离绘图区左边缘 $centeredLeft px（居中应约 43、左对齐约 0）、" +
-                            "右边缘离右边缘 $centeredRight px（右对齐约 0）")
+                            "右边缘离右边缘 $centeredRight px（右对齐约 0）"
+                )
             }
             // ---- 23f. 变体 E：LINE_AND_MARKERS 的**两个半边都要在** ----
             //
@@ -5708,35 +6171,53 @@ class ChartVerifierApp : Application() {
             // 只画线不画点 → 标记那条红（标记比线高、也比线宽，所以它躲不掉）。
             val eMarkerRows = overE.countIn(0, 16, OVER_W - 1, 17, overSeriesRgb) +
                     overE.countIn(0, 20, OVER_W - 1, 21, overSeriesRgb)
-            report("★ E（LINE_AND_MARKERS）：两个标记各 6×6，线的上下各 2 行里共 48 px 系列色",
+            report(
+                "★ E（LINE_AND_MARKERS）：两个标记各 6×6，线的上下各 2 行里共 48 px 系列色",
                 eMarkerRows == 48,
                 "线的上下各 2 行（局部行 16、17、20、21）里有 $eMarkerRows px，期望 48" +
                         "（2 个标记 × 6 列 × 4 行）——0 说明标记点那一半压根没画；" +
-                        "24 说明标记的边长写成了半径（3 而不是 6）")
+                        "24 说明标记的边长写成了半径（3 而不是 6）"
+            )
             val eMarkerCols = (0 until OVER_W).filter { xx ->
                 (16..17).any { yy -> overE.at(xx, yy) == overSeriesRgb } ||
                         (20..21).any { yy -> overE.at(xx, yy) == overSeriesRgb }
             }
-            report("★ E：标记画在两个样本的位置上（局部列 25..30 与 77..82）",
+            report(
+                "★ E：标记画在两个样本的位置上（局部列 25..30 与 77..82）",
                 eMarkerCols == (25..30).toList() + (77..82).toList(),
-                "标记墨迹的列 $eMarkerCols，期望 ${(25..30).toList() + (77..82).toList()}")
+                "标记墨迹的列 $eMarkerCols，期望 ${(25..30).toList() + (77..82).toList()}"
+            )
             val eLineRows = overE.countIn(0, 18, OVER_W - 1, 19, overSeriesRgb)
             val eLineCols = overSeriesColumns(overE, 18, 19)
             // 线的两端各被标记盖住 3 列（线横跨 28..79，标记横跨 25..30 与 77..82），
             // 所以这两行上的总数 = 52 列 × 2 行 + 6 列 × 2 行 = 104 + 12 = 116。
             // 写成"116"而不是"≥104"：只画点不画线时这里是 24，只画线不画点时是 104，
             // 两者都与 116 差得很远，不必靠容差去猜。
-            report("★ E：折线那一半还在（局部行 18、19 上是 116 px 系列色、列 25..82）",
+            report(
+                "★ E：折线那一半还在（局部行 18、19 上是 116 px 系列色、列 25..82）",
                 eLineRows == 116 && eLineCols == (25..82).toList(),
                 "行 18、19 上有 $eLineRows px、列 ${eLineCols.firstOrNull()}..${eLineCols.lastOrNull()}，" +
                         "期望 116 px、列 25..82（线段 52 列 + 两个标记各探出线端 3 列）" +
-                        "——104 说明标记没画、24 说明折线被丢掉了（只剩一串点，看起来像刻意的散射风格）")
-            report("E：绘图区之外一个像素都没有（标记没有越出裁剪盒）",
+                        "——104 说明标记没画、24 说明折线被丢掉了（只剩一串点，看起来像刻意的散射风格）"
+            )
+            report(
+                "E：绘图区之外一个像素都没有（标记没有越出裁剪盒）",
                 overE.countIn(0, 0, OVER_W - 1, OVER_PADDING.toInt() - 1, overSeriesRgb) == 0 &&
-                        overE.countIn(0, OVER_H - OVER_PADDING.toInt(), OVER_W - 1, OVER_H - 1,
-                            overSeriesRgb) == 0,
+                        overE.countIn(
+                            0, OVER_H - OVER_PADDING.toInt(), OVER_W - 1, OVER_H - 1,
+                            overSeriesRgb
+                        ) == 0,
                 "上下外边距里的系列色 " +
-                        "${overE.countIn(0, 0, OVER_W - 1, OVER_PADDING.toInt() - 1, overSeriesRgb) + overE.countIn(0, OVER_H - OVER_PADDING.toInt(), OVER_W - 1, OVER_H - 1, overSeriesRgb)} px")
+                        "${
+                            overE.countIn(0, 0, OVER_W - 1, OVER_PADDING.toInt() - 1, overSeriesRgb) + overE.countIn(
+                                0,
+                                OVER_H - OVER_PADDING.toInt(),
+                                OVER_W - 1,
+                                OVER_H - 1,
+                                overSeriesRgb
+                            )
+                        } px"
+            )
 
         }
         // ---- 23. ★ 平滑曲线：开关真的生效、边界回退、缺口回退 ----
@@ -5762,23 +6243,30 @@ class ChartVerifierApp : Application() {
             || gapSmoothShot == null || toggledShot == null
         ) {
 
-            report("前提：平滑曲线实验的五张快照都抓到了（否则这一节全是橡皮图章）", false,
+            report(
+                "前提：平滑曲线实验的五张快照都抓到了（否则这一节全是橡皮图章）", false,
                 "曲线不平滑=$curvePlainShot、曲线平滑=$curveSmoothShot、" +
-                        "缺口不平滑=$gapPlainShot、缺口平滑=$gapSmoothShot、开关重建=$toggledShot")
+                        "缺口不平滑=$gapPlainShot、缺口平滑=$gapSmoothShot、开关重建=$toggledShot"
+            )
         } else {
             fun inkOf(s: Shot) = s.countNonBackgroundInRows(0, s.h - 1, background)
 
             // ---- 23a. 前提：两幕都真的画了 ----
             val curvePlainInk = inkOf(curvePlainShot)
             val curveSmoothInk = inkOf(curveSmoothShot)
-            report("前提：不平滑那一幕真的画了（否则下面两条恒真）", curvePlainInk > 0,
-                "非背景像素 $curvePlainInk px（局部 ${curvePlainShot.w}×${curvePlainShot.h}）")
-            report("前提：平滑那一幕也真的画了", curveSmoothInk > 0,
-                "非背景像素 $curveSmoothInk px")
+            report(
+                "前提：不平滑那一幕真的画了（否则下面两条恒真）", curvePlainInk > 0,
+                "非背景像素 $curvePlainInk px（局部 ${curvePlainShot.w}×${curvePlainShot.h}）"
+            )
+            report(
+                "前提：平滑那一幕也真的画了", curveSmoothInk > 0,
+                "非背景像素 $curveSmoothInk px"
+            )
 
             // ---- 23b. 判据一：开关真的生效 ----
             val curveDiff = curvePlainShot.diffIn(0, curvePlainShot.w - 1, curveSmoothShot)
-            report("★ ① 平滑与不平滑画出来必须不同（开关真的接到了渲染路径上）",
+            report(
+                "★ ① 平滑与不平滑画出来必须不同（开关真的接到了渲染路径上）",
                 curveDiff >= 20,
                 "两张快照有 $curveDiff px 不同（期望 ≥ 20；墨迹 $curvePlainInk / " +
                         "$curveSmoothInk px）。**0 说明开关根本没生效**——逐像素相同就等于" +
@@ -5786,53 +6274,69 @@ class ChartVerifierApp : Application() {
                         "下界的出处：段中偏差手算 0.075 值 × 绘图区高 " +
                         "${SMOOTH_PLOT_H.toInt()} = 1.65 px（y 窗口跨度是 1，见上面的手算），" +
                         "而带子只有 ${SMOOTH_LINE_WIDTH.toInt()}px 高——" +
-                        "四段曲线各有几十列会整行地换位置")
+                        "四段曲线各有几十列会整行地换位置"
+            )
 
             // ---- 23c. 判据二：首末两段不与邻居相连 ----
             // 判据是"那一段与不平滑那版**逐像素相同**"：没有外侧邻居时只能画直线，
             // 而"弯一下"与"直着"的差别只有一两像素——肉眼看不出来，逐像素比才拦得住。
             val headDiff = curvePlainShot.diffIn(SMOOTH_HEAD_FROM, SMOOTH_HEAD_TO, curveSmoothShot)
-            report("★ ② 首段（局部列 $SMOOTH_HEAD_FROM..$SMOOTH_HEAD_TO）不与邻居相连：" +
-                    "与不平滑那版逐像素相同", headDiff == 0,
+            report(
+                "★ ② 首段（局部列 $SMOOTH_HEAD_FROM..$SMOOTH_HEAD_TO）不与邻居相连：" +
+                        "与不平滑那版逐像素相同", headDiff == 0,
                 "不同像素 $headDiff 个（期望 0）——非 0 说明这一段用了不存在的控制点：" +
-                        "左端那个邻居在缓冲里是**陈旧数据**（不是 NaN，NaN 反而会露出来）")
+                        "左端那个邻居在缓冲里是**陈旧数据**（不是 NaN，NaN 反而会露出来）"
+            )
             val tailDiff = curvePlainShot.diffIn(SMOOTH_TAIL_FROM, SMOOTH_TAIL_TO, curveSmoothShot)
-            report("★ ② 末段（局部列 $SMOOTH_TAIL_FROM..$SMOOTH_TAIL_TO）同样逐像素相同",
+            report(
+                "★ ② 末段（局部列 $SMOOTH_TAIL_FROM..$SMOOTH_TAIL_TO）同样逐像素相同",
                 tailDiff == 0,
                 "不同像素 $tailDiff 个（期望 0）——末段的右邻居是**还没采到的样本**：" +
-                        "拿那个槽位当控制点（静态数据里它是 0）会让曲线朝 0 弯过去")
+                        "拿那个槽位当控制点（静态数据里它是 0）会让曲线朝 0 弯过去"
+            )
             val headInkCol = (SMOOTH_HEAD_FROM + SMOOTH_HEAD_TO) / 2
             val tailInkCol = (SMOOTH_TAIL_FROM + SMOOTH_TAIL_TO) / 2
-            report("前提：首段与末段里真的各有一条线（否则上面两条对「两版都没画」同样成立）",
+            report(
+                "前提：首段与末段里真的各有一条线（否则上面两条对「两版都没画」同样成立）",
                 curvePlainShot.topInkRow(headInkCol, smoothCurveRgb) != null &&
                         curvePlainShot.topInkRow(tailInkCol, smoothCurveRgb) != null,
                 "列 $headInkCol 的最高墨迹行 ${curvePlainShot.topInkRow(headInkCol, smoothCurveRgb)}、" +
                         "列 $tailInkCol 的最高墨迹行 " +
-                        "${curvePlainShot.topInkRow(tailInkCol, smoothCurveRgb)}（期望都不是 null）")
+                        "${curvePlainShot.topInkRow(tailInkCol, smoothCurveRgb)}（期望都不是 null）"
+            )
 
             // ---- 23d. 判据三：缺口不被插值过去 ----
             val gapPlainInk = inkOf(gapPlainShot)
             val gapSmoothInk = inkOf(gapSmoothShot)
             val gapDiff = gapPlainShot.diffIn(0, gapPlainShot.w - 1, gapSmoothShot)
-            report("★ ③ 缺口两侧：平滑与不平滑**逐像素相同**（缺口没有被插值）",
+            report(
+                "★ ③ 缺口两侧：平滑与不平滑**逐像素相同**（缺口没有被插值）",
                 gapDiff == 0 && gapSmoothInk > 0,
                 "不同像素 $gapDiff 个（期望 0）、平滑那一幕的墨迹 $gapSmoothInk px（期望 > 0）" +
                         "——非 0 说明缺口旁那几段用了含 NaN 的控制点（整段消失或画出垃圾），" +
-                        "而「缺口被连过去」那条线显示的是一个不存在的信号")
-            report("前提：不平滑那一幕也真的画了（否则「逐像素相同」对「两幕都空」同样成立）",
-                gapPlainInk > 0, "非背景像素 $gapPlainInk px")
+                        "而「缺口被连过去」那条线显示的是一个不存在的信号"
+            )
+            report(
+                "前提：不平滑那一幕也真的画了（否则「逐像素相同」对「两幕都空」同样成立）",
+                gapPlainInk > 0, "非背景像素 $gapPlainInk px"
+            )
             val gapBlank = gapSmoothShot.countNonBackgroundInCols(
-                SMOOTH_GAP_BLANK_FROM, SMOOTH_GAP_BLANK_TO, background)
+                SMOOTH_GAP_BLANK_FROM, SMOOTH_GAP_BLANK_TO, background
+            )
             val gapLeftInk = gapSmoothShot.countNonBackgroundInCols(70, 80, background)
             val gapRightInk = gapSmoothShot.countNonBackgroundInCols(160, 170, background)
-            report("★ ③ 缺口那一段（局部列 $SMOOTH_GAP_BLANK_FROM..$SMOOTH_GAP_BLANK_TO）" +
-                    "一个像素都没有：平滑没有把缺口连过去", gapBlank == 0,
+            report(
+                "★ ③ 缺口那一段（局部列 $SMOOTH_GAP_BLANK_FROM..$SMOOTH_GAP_BLANK_TO）" +
+                        "一个像素都没有：平滑没有把缺口连过去", gapBlank == 0,
                 "那几列里不是背景的像素 $gapBlank 个（期望 0）——非 0 说明曲线跨过了" +
                         "下标 $SMOOTH_GAP_NAN_INDEX 那个缺口（两侧平台的高度差 0.6 × " +
-                        "${SMOOTH_GAP_PLOT_H.toInt()} = 13 px，连过去一眼可辨）")
-            report("★ ③ 缺口两侧都有墨迹（上一条的成对反证：整条曲线没画也会让它是 0）",
+                        "${SMOOTH_GAP_PLOT_H.toInt()} = 13 px，连过去一眼可辨）"
+            )
+            report(
+                "★ ③ 缺口两侧都有墨迹（上一条的成对反证：整条曲线没画也会让它是 0）",
                 gapLeftInk > 0 && gapRightInk > 0,
-                "左侧（列 70..80）$gapLeftInk px、右侧（列 160..170）$gapRightInk px")
+                "左侧（列 70..80）$gapLeftInk px、右侧（列 160..170）$gapRightInk px"
+            )
 
             // ---- 23e. 判据四：改开关要重建缓冲 ----
             // 前四幕用的是**不同的 Series 对象**，所以缓冲从头就是对的；这一幕把
@@ -5841,11 +6345,13 @@ class ChartVerifierApp : Application() {
             // 各说各话：曲线弯向别的样本，而画面"只是一条形状略有出入的曲线"。
             val toggledInk = inkOf(toggledShot)
             val toggleDiff = toggledShot.diffIn(0, toggledShot.w - 1, curveSmoothShot)
-            report("★ ④ 同一个 Series 把开关改成 true 之后，画面与「一开始就是 true」逐像素相同",
+            report(
+                "★ ④ 同一个 Series 把开关改成 true 之后，画面与「一开始就是 true」逐像素相同",
                 toggleDiff == 0 && toggledInk > 0,
                 "与第 2 幕（一开始就 true）不同像素 $toggleDiff 个（期望 0）、本幕墨迹 " +
                         "$toggledInk px（期望 > 0）——非 0 说明改开关没有重建缓冲：" +
-                        "属性偏移与 uSmooth 不一致，而那种错在画面上是一条「形状略有出入的曲线」")
+                        "属性偏移与 uSmooth 不一致，而那种错在画面上是一条「形状略有出入的曲线」"
+            )
         }
 
         // ---- 23f. 跨环绕：环的物理两端（三个镜像）必须真的对上 ----
@@ -5861,23 +6367,31 @@ class ChartVerifierApp : Application() {
         val wrapPlainShot = smoothWrapPlainShot
         val wrapSmoothShot = smoothWrapSmoothShot
         if (wrapPlainShot == null || wrapSmoothShot == null) {
-            report("前提：跨环绕那一对的两张快照都抓到了", false,
-                "不平滑=$wrapPlainShot、平滑=$wrapSmoothShot")
+            report(
+                "前提：跨环绕那一对的两张快照都抓到了", false,
+                "不平滑=$wrapPlainShot、平滑=$wrapSmoothShot"
+            )
         } else {
             val wrapDiff = wrapPlainShot.diffIn(0, wrapPlainShot.w - 1, wrapSmoothShot)
-            val wrapSmoothInk = wrapSmoothShot.countNonBackgroundInRows(0, wrapSmoothShot.h - 1,
-                background)
-            report("★ ⑤ 跨环绕的一对：共线数据上平滑与不平滑**逐像素相同**" +
-                    "（三个镜像真的被 GPU 读到了）", wrapDiff == 0 && wrapSmoothInk > 0,
+            val wrapSmoothInk = wrapSmoothShot.countNonBackgroundInRows(
+                0, wrapSmoothShot.h - 1,
+                background
+            )
+            report(
+                "★ ⑤ 跨环绕的一对：共线数据上平滑与不平滑**逐像素相同**" +
+                        "（三个镜像真的被 GPU 读到了）", wrapDiff == 0 && wrapSmoothInk > 0,
                 "不同像素 $wrapDiff 个（期望 0）、平滑那版墨迹 $wrapSmoothInk px（期望 > 0）；" +
                         "窗口 [12, 20] 跨过环绕点 16（环容量 8、写 20 个样本）——" +
                         "被测的那几个实例分别读前置余量、镜像 cap、镜像 cap+1，" +
-                        "少同步一份它们就读到 0 并朝 0 弯过去")
-            report("前提：这一对确实画在环绕点上（否则上一条恒真）",
+                        "少同步一份它们就读到 0 并朝 0 弯过去"
+            )
+            report(
+                "前提：这一对确实画在环绕点上（否则上一条恒真）",
                 wrapData.writeIndex() == WRAP_TOTAL.toLong() && wrapData.itemCount() == WRAP_CAPACITY,
                 "写入总数 ${wrapData.writeIndex()}（期望 $WRAP_TOTAL）、" +
                         "环里 ${wrapData.itemCount()} 个样本（期望容量 $WRAP_CAPACITY，" +
-                        "即 20 > 8：槽位与数据下标已经彻底错开）")
+                        "即 20 > 8：槽位与数据下标已经彻底错开）"
+            )
         }
 
         // ---- 23g. 面积图的顶边（填充与轮廓线必须是同一条曲线）----
@@ -5885,27 +6399,35 @@ class ChartVerifierApp : Application() {
         val areaPlainShot = smoothAreaPlainShot
         val areaSmoothShot = smoothAreaSmoothShot
         if (areaPlainShot == null || areaSmoothShot == null) {
-            report("前提：面积实验的两张快照都抓到了", false,
-                "不平滑=$areaPlainShot、平滑=$areaSmoothShot")
+            report(
+                "前提：面积实验的两张快照都抓到了", false,
+                "不平滑=$areaPlainShot、平滑=$areaSmoothShot"
+            )
         } else {
-            val areaPlainInk = areaPlainShot.countNonBackgroundInRows(0, areaPlainShot.h - 1,
-                background)
+            val areaPlainInk = areaPlainShot.countNonBackgroundInRows(
+                0, areaPlainShot.h - 1,
+                background
+            )
             val areaDiff = areaPlainShot.diffIn(0, areaPlainShot.w - 1, areaSmoothShot)
-            report("★ ⑥ 面积图的**顶边**也平滑（填充那一半真的接上了 uSmooth）",
+            report(
+                "★ ⑥ 面积图的**顶边**也平滑（填充那一半真的接上了 uSmooth）",
                 areaDiff > 0 && areaPlainInk > 0,
                 "两版不同像素 $areaDiff 个（期望 > 0）、不平滑那版墨迹 $areaPlainInk px。" +
                         "0 说明面积填充那条路径漏接了 uSmooth——而「填充的顶边还是折线」在画面上" +
-                        "只会被看成「这条曲线不够顺」")
+                        "只会被看成「这条曲线不够顺」"
+            )
             val plainTop = areaPlainShot.topInkRow(SMOOTH_AREA_PROBE_COL, smoothAreaRgb)
             val smoothTop = areaSmoothShot.topInkRow(SMOOTH_AREA_PROBE_COL, smoothAreaRgb)
-            report("★ ⑥ 段 1 的 t=0.25 那一列（局部列 $SMOOTH_AREA_PROBE_COL）：" +
-                    "平滑版的最高墨迹行**更靠上**（行号更小）",
+            report(
+                "★ ⑥ 段 1 的 t=0.25 那一列（局部列 $SMOOTH_AREA_PROBE_COL）：" +
+                        "平滑版的最高墨迹行**更靠上**（行号更小）",
                 plainTop != null && smoothTop != null && smoothTop < plainTop,
                 "不平滑 $plainTop 行、平滑 $smoothTop 行（期望平滑的更小）。" +
                         "手算：这一段的值从 0.9 降到 0.1，曲线在 t<0.5 时比弦**高** 0.075 ⇒ " +
                         "屏幕上高 0.075 × ${SMOOTH_PLOT_H.toInt()} = 1.65 px ⇒ " +
                         "最高墨迹行必然跨过至少一行（手算的绝对行是 5 与 3）；" +
-                        "两者取不到墨迹说明那一列压根没有曲线")
+                        "两者取不到墨迹说明那一列压根没有曲线"
+            )
         }
 
         // ---- Task 5：图表系列的解析式抗锯齿（六个图型 + 折线的四条判据）----
@@ -5936,6 +6458,7 @@ class ChartVerifierApp : Application() {
     private companion object {
         /** 移动方块的边长。 */
         const val SQUARE = 40
+
         @JvmStatic
         fun main(args: Array<String>) {
             launch(ChartVerifierApp::class.java, *args)

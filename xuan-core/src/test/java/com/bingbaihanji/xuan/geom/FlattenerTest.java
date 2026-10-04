@@ -1,9 +1,26 @@
 package com.bingbaihanji.xuan.geom;
 
 import org.junit.jupiter.api.Test;
-import static org.junit.jupiter.api.Assertions.*;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FlattenerTest {
+
+    /** 返回点 ({@code px}, {@code py}) 到折线所有线段的最短距离。 */
+    private static float distanceToPolyline(Flattener f, float px, float py) {
+        float best = Float.MAX_VALUE;
+        for (int i = 0; i + 1 < f.pointCount(); i++) {
+            float ax = f.x(i), ay = f.y(i);
+            float dx = f.x(i + 1) - ax, dy = f.y(i + 1) - ay;
+            float len2 = dx * dx + dy * dy;
+            float u = len2 < 1e-12f ? 0f : ((px - ax) * dx + (py - ay) * dy) / len2;
+            u = Math.max(0f, Math.min(1f, u));
+            best = Math.min(best, (float) Math.hypot(px - (ax + u * dx), py - (ay + u * dy)));
+        }
+        return best;
+    }
 
     @Test
     void 直线段原样输出() {
@@ -193,19 +210,5 @@ class FlattenerTest {
         Flattener f = new Flattener();
         f.flatten(p, 1f);
         assertThrows(IllegalArgumentException.class, () -> f.copyPointsTo(new float[5]));
-    }
-
-    /** 返回点 ({@code px}, {@code py}) 到折线所有线段的最短距离。 */
-    private static float distanceToPolyline(Flattener f, float px, float py) {
-        float best = Float.MAX_VALUE;
-        for (int i = 0; i + 1 < f.pointCount(); i++) {
-            float ax = f.x(i), ay = f.y(i);
-            float dx = f.x(i + 1) - ax, dy = f.y(i + 1) - ay;
-            float len2 = dx * dx + dy * dy;
-            float u = len2 < 1e-12f ? 0f : ((px - ax) * dx + (py - ay) * dy) / len2;
-            u = Math.max(0f, Math.min(1f, u));
-            best = Math.min(best, (float) Math.hypot(px - (ax + u * dx), py - (ay + u * dy)));
-        }
-        return best;
     }
 }

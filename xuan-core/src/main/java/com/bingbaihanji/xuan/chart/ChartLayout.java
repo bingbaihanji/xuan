@@ -188,21 +188,6 @@ public final class ChartLayout {
     }
 
     /**
-     * 一条轴标题：文字 + 它所在的带子 + 文字基线的 y。
-     *
-     * <p>与 {@link LegendItem} 一样，这里给的是<b>文字</b>的落点
-     * （{@code (x, baseline)}，与 {@code Gc.drawText} 同口径），
-     * 而 {@code rect} 只是带子——绘制那一层不需要再算任何坐标。
-     *
-     * @param text     标题文字（由 {@code AxisRange} 的 name / unit 拼成）
-     * @param rect     轴标题带（设备像素），也是它的裁剪矩形
-     * @param x        文字起点 x
-     * @param baseline 文字的基线 y
-     */
-    public record AxisTitle(String text, Rect rect, float x, float baseline) {
-    }
-
-    /**
      * 把外框切成标题带、图例带与绘图区。
      *
      * <p><b>没有任何装饰时，绘图区就是外框本身</b>（逐字段相等）——
@@ -366,28 +351,10 @@ public final class ChartLayout {
         return name + UNIT_PREFIX + unit + ")";
     }
 
-    /**
-     * 图例项：一个色块 + 一行文字。
-     *
-     * <p>{@code labelX} 与 {@code labelBaseline} 是<b>文字</b>的起点与基线
-     * （{@code Gc.drawText} 的口径：{@code (x, y)} 是基线的起点，不是左上角）。
-     * 色块自己是一个 {@link Rect}。
-     *
-     * @param label          文字
-     * @param argb           色块的颜色（ARGB），取自系列主色
-     * @param swatch         色块矩形，设备像素
-     * @param labelX         文字的起点 x
-     * @param labelBaseline  文字的基线 y
-     */
-    public record LegendItem(String label, int argb, Rect swatch,
-                             float labelX, float labelBaseline) {
-    }
-
     private static boolean isHorizontal(ChartSide side) {
         return side == ChartSide.TOP || side == ChartSide.BOTTOM;
     }
 
-    /** 每一行文字需要的高度（与字体无关，见类文档）。 */
     /**
      * 某一方向上刻度文字要占的预留量（像素）。**两条来源，二选一**。
      *
@@ -424,6 +391,8 @@ public final class ChartLayout {
         return metrics.lineHeight(fontSize);
     }
 
+    /** 每一行文字需要的高度（与字体无关，见类文档）。 */
+
     /** 收集图例项：每个系列一项，顺序就是绘制顺序（层序优先、层内其次）。 */
     private static List<LegendItem> legendItems(Chart chart) {
         List<LegendItem> items = new ArrayList<>();
@@ -437,7 +406,7 @@ public final class ChartLayout {
 
     /** 把色块与文字摆进图例带子。 */
     private static List<LegendItem> placeItems(Chart chart, ChartTextMetrics metrics,
-                                              List<LegendItem> items, Rect band) {
+                                               List<LegendItem> items, Rect band) {
         float swatch = chart.legendSwatchSize();
         float fontSize = chart.legendFontSize();
         List<LegendItem> placed = new ArrayList<>(items.size());
@@ -516,5 +485,37 @@ public final class ChartLayout {
      */
     public Rect plotRect() {
         return plotRect;
+    }
+
+    /**
+     * 一条轴标题：文字 + 它所在的带子 + 文字基线的 y。
+     *
+     * <p>与 {@link LegendItem} 一样，这里给的是<b>文字</b>的落点
+     * （{@code (x, baseline)}，与 {@code Gc.drawText} 同口径），
+     * 而 {@code rect} 只是带子——绘制那一层不需要再算任何坐标。
+     *
+     * @param text     标题文字（由 {@code AxisRange} 的 name / unit 拼成）
+     * @param rect     轴标题带（设备像素），也是它的裁剪矩形
+     * @param x        文字起点 x
+     * @param baseline 文字的基线 y
+     */
+    public record AxisTitle(String text, Rect rect, float x, float baseline) {
+    }
+
+    /**
+     * 图例项：一个色块 + 一行文字。
+     *
+     * <p>{@code labelX} 与 {@code labelBaseline} 是<b>文字</b>的起点与基线
+     * （{@code Gc.drawText} 的口径：{@code (x, y)} 是基线的起点，不是左上角）。
+     * 色块自己是一个 {@link Rect}。
+     *
+     * @param label          文字
+     * @param argb           色块的颜色（ARGB），取自系列主色
+     * @param swatch         色块矩形，设备像素
+     * @param labelX         文字的起点 x
+     * @param labelBaseline  文字的基线 y
+     */
+    public record LegendItem(String label, int argb, Rect swatch,
+                             float labelX, float labelBaseline) {
     }
 }

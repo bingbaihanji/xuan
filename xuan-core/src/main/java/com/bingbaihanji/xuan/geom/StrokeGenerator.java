@@ -96,6 +96,36 @@ public final class StrokeGenerator {
     }
 
     /**
+     * 把沿路径的弧长换算成"沿向边距"（已归一化到半线宽）。
+     *
+     * <p>开放路径取"到<strong>最近</strong>端帽的距离" ⇒ 两端附近接近 0、中段最大
+     * （{@code totalLength/2/half}）。闭合路径没有端帽，取 {@code arc + totalLength}
+     * ⇒ <strong>恒 ≥ {@code totalLength/half}</strong>，远离 0 ⇒ 那片区域的沿向测试恒为
+     * "完全覆盖"，不会在路径起点<strong>凭空造出一条羽化边</strong>。
+     *
+     * <p><strong>本方法恒 ≥ 0</strong>（两条分支都是）：弧长只累加有效段、而
+     * {@code totalLength} 连退化段一起累加 ⇒ 恒有 {@code arc ≤ totalLength}，所以开放
+     * 分支的 {@code totalLength - arc} 不会变负——<strong>"带外为负"不可能从这里出来</strong>。
+     * 带外的负沿向只有一条来路：{@link #stroke} 的 {@code capExtension}，由
+     * {@link #emitCap} 在真实端线之外显式铺出来。别指望"把折线两端延长"能得到负值
+     * （见 {@link #rawEdges()}）。
+     *
+     * <p>为什么闭合路径不能也写成 {@code min(arc, totalLength - arc)}：那样弧长 0 处的
+     * 顶点沿向为 0，而闭合路径<strong>没有端帽</strong>——着色器会在那里按"端线附近"羽化，
+     * 于是一条本该处处实心的闭合轮廓，在起点处凭空多出一道两端渐隐的接缝。
+     *
+     * @param arc         顶点沿路径的弧长（顶点落在段上时取该处弧长，落在接头/端帽上时取拐点弧长）
+     * @param totalLength 整条路径的总弧长
+     * @param half        半线宽
+     * @param closed      是否闭合
+     * @return 沿向边距（开放路径：端线处为 0、带内为正、越过端线为负；闭合路径恒 ≥ {@code totalLength/half}）
+     */
+    private static float alongAt(float arc, float totalLength, float half, boolean closed) {
+        float d = closed ? (arc + totalLength) : Math.min(arc, totalLength - arc);
+        return d / half;
+    }
+
+    /**
      * 返回已生成的三角形数量。
      *
      * @return 三角形个数
@@ -602,36 +632,6 @@ public final class StrokeGenerator {
             // 终点封口落在最后一段有效段的终点上
             emitCap(lastX, lastY, lastDx, lastDy, half, cap, roundSegments, lastAlong, capExtension);
         }
-    }
-
-    /**
-     * 把沿路径的弧长换算成"沿向边距"（已归一化到半线宽）。
-     *
-     * <p>开放路径取"到<strong>最近</strong>端帽的距离" ⇒ 两端附近接近 0、中段最大
-     * （{@code totalLength/2/half}）。闭合路径没有端帽，取 {@code arc + totalLength}
-     * ⇒ <strong>恒 ≥ {@code totalLength/half}</strong>，远离 0 ⇒ 那片区域的沿向测试恒为
-     * "完全覆盖"，不会在路径起点<strong>凭空造出一条羽化边</strong>。
-     *
-     * <p><strong>本方法恒 ≥ 0</strong>（两条分支都是）：弧长只累加有效段、而
-     * {@code totalLength} 连退化段一起累加 ⇒ 恒有 {@code arc ≤ totalLength}，所以开放
-     * 分支的 {@code totalLength - arc} 不会变负——<strong>"带外为负"不可能从这里出来</strong>。
-     * 带外的负沿向只有一条来路：{@link #stroke} 的 {@code capExtension}，由
-     * {@link #emitCap} 在真实端线之外显式铺出来。别指望"把折线两端延长"能得到负值
-     * （见 {@link #rawEdges()}）。
-     *
-     * <p>为什么闭合路径不能也写成 {@code min(arc, totalLength - arc)}：那样弧长 0 处的
-     * 顶点沿向为 0，而闭合路径<strong>没有端帽</strong>——着色器会在那里按"端线附近"羽化，
-     * 于是一条本该处处实心的闭合轮廓，在起点处凭空多出一道两端渐隐的接缝。
-     *
-     * @param arc         顶点沿路径的弧长（顶点落在段上时取该处弧长，落在接头/端帽上时取拐点弧长）
-     * @param totalLength 整条路径的总弧长
-     * @param half        半线宽
-     * @param closed      是否闭合
-     * @return 沿向边距（开放路径：端线处为 0、带内为正、越过端线为负；闭合路径恒 ≥ {@code totalLength/half}）
-     */
-    private static float alongAt(float arc, float totalLength, float half, boolean closed) {
-        float d = closed ? (arc + totalLength) : Math.min(arc, totalLength - arc);
-        return d / half;
     }
 
     /**

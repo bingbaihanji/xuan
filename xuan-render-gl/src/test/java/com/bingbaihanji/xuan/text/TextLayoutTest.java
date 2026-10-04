@@ -8,7 +8,9 @@ import org.junit.jupiter.api.Test;
 import java.nio.ByteBuffer;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link TextLayout} 的单测：**纯算术**，用真的 {@link VertexWriter} 与真的
@@ -20,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class TextLayoutTest {
 
     private static final int W = 800;
+
     private static final int H = 600;
 
     /** 测试用的基础矩阵：用户坐标 1:1 映射到设备像素，与管线一致。 */

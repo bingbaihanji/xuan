@@ -1,9 +1,11 @@
 package com.bingbaihanji.xuan.renderer;
 
 import org.junit.jupiter.api.Test;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import static org.junit.jupiter.api.Assertions.*;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class VertexFormatTest {
 

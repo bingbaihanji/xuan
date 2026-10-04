@@ -12,11 +12,7 @@ import javafx.stage.Stage
 import org.lwjgl.BufferUtils
 import org.lwjgl.opengl.GL11.*
 import org.lwjgl.opengl.GL43.*
-import kotlin.math.PI
-import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.hypot
-import kotlin.math.sin
+import kotlin.math.*
 import kotlin.system.exitProcess
 
 /**
@@ -464,8 +460,10 @@ class FftVerifierApp : Application() {
                 println("\n  --- k0 = $k0 ---")
                 if (r != null) {
                     println("  幅值最大的 4 个 bin：${topBins(r.mag, 4)}")
-                    println("  |X[$k0]| = ${"%.6f".format(r.mag[k0])}（期望 1.0）；" +
-                            "非峰最大 ${"%.3e".format(r.rest)}；与 CPU 参考最大相对偏差 ${"%.3e".format(r.err)}")
+                    println(
+                        "  |X[$k0]| = ${"%.6f".format(r.mag[k0])}（期望 1.0）；" +
+                                "非峰最大 ${"%.3e".format(r.rest)}；与 CPU 参考最大相对偏差 ${"%.3e".format(r.err)}"
+                    )
                 }
 
                 // 位置：唯一能把"对的"与"错位的"分开的量。去掉了位反转的实现在这里必然倒下

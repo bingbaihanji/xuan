@@ -2,7 +2,9 @@ package com.bingbaihanji.xuan.gpu;
 
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link FftWindow} 的单元测试。**纯算术，零 GL 依赖。**
@@ -35,6 +37,23 @@ class FftWindowTest {
             im -= w * x * Math.sin(angle);
         }
         return Math.hypot(re, im);
+    }
+
+    /** 取 k0=17 时，离主瓣足够远处的最大谱幅度（近似旁瓣底）。 */
+    private static double sidebandFloor(FftWindow w) {
+        int n = 1024;
+        double peak = 0;
+        for (int k = 40; k <= n / 2; k++) {
+            double re = 0, im = 0;
+            for (int i = 0; i < n; i++) {
+                double c = w.coefficient(i, n);
+                double a = 2.0 * Math.PI * (17 - k) * i / n;
+                re += c * Math.cos(a);
+                im += c * Math.sin(a);
+            }
+            peak = Math.max(peak, Math.hypot(re, im));
+        }
+        return peak / (n / 2.0);
     }
 
     @Test
@@ -129,23 +148,6 @@ class FftWindowTest {
         double hann = sidebandFloor(FftWindow.HANN);
         assertTrue(bh < hann * 0.1,
                 "BH 的旁瓣应当比 Hann 低至少一个量级：BH=" + bh + " Hann=" + hann);
-    }
-
-    /** 取 k0=17 时，离主瓣足够远处的最大谱幅度（近似旁瓣底）。 */
-    private static double sidebandFloor(FftWindow w) {
-        int n = 1024;
-        double peak = 0;
-        for (int k = 40; k <= n / 2; k++) {
-            double re = 0, im = 0;
-            for (int i = 0; i < n; i++) {
-                double c = w.coefficient(i, n);
-                double a = 2.0 * Math.PI * (17 - k) * i / n;
-                re += c * Math.cos(a);
-                im += c * Math.sin(a);
-            }
-            peak = Math.max(peak, Math.hypot(re, im));
-        }
-        return peak / (n / 2.0);
     }
 
     @Test

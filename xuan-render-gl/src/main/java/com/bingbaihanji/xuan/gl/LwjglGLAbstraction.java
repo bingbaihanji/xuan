@@ -46,6 +46,32 @@ public class LwjglGLAbstraction implements GLAbstraction {
         return BufferUtils.createIntBuffer(pixels);
     }
 
+    /**
+     * 把公共 API 的 ARGB 整数像素转换成 OpenGL 上传所需的 RGBA 字节流。
+     *
+     * <p>不能直接把 {@code int[]} 交给 {@code glTexImage2D}：在小端机器上，
+     * {@code 0xAARRGGBB} 的内存顺序是 B,G,R,A，蓝红通道会互换。该转换保持
+     * 颜色契约与 {@link com.bingbaihanji.xuan.util.Color}、图表和 JavaFX 互操作一致。
+     */
+    static ByteBuffer argbToRgba(int width, int height, int[] pixels) {
+        if (width <= 0 || height <= 0) {
+            throw new IllegalArgumentException("纹理尺寸必须为正数：" + width + "x" + height);
+        }
+        if (pixels == null || pixels.length != width * height) {
+            throw new IllegalArgumentException(
+                    "像素数量必须等于纹理面积，实际为 " + (pixels == null ? 0 : pixels.length)
+                            + "，期望 " + (width * height));
+        }
+        ByteBuffer rgba = BufferUtils.createByteBuffer(width * height * 4);
+        for (int pixel : pixels) {
+            rgba.put((byte) ((pixel >>> 16) & 0xFF));
+            rgba.put((byte) ((pixel >>> 8) & 0xFF));
+            rgba.put((byte) (pixel & 0xFF));
+            rgba.put((byte) ((pixel >>> 24) & 0xFF));
+        }
+        return rgba.flip();
+    }
+
     @Override
     public void initialize() {
         // 从 GLCanvas 的回调进来时 GL 上下文已经 current，这里无事可做。
@@ -200,32 +226,6 @@ public class LwjglGLAbstraction implements GLAbstraction {
         );
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
         return texture;
-    }
-
-    /**
-     * 把公共 API 的 ARGB 整数像素转换成 OpenGL 上传所需的 RGBA 字节流。
-     *
-     * <p>不能直接把 {@code int[]} 交给 {@code glTexImage2D}：在小端机器上，
-     * {@code 0xAARRGGBB} 的内存顺序是 B,G,R,A，蓝红通道会互换。该转换保持
-     * 颜色契约与 {@link com.bingbaihanji.xuan.util.Color}、图表和 JavaFX 互操作一致。
-     */
-    static ByteBuffer argbToRgba(int width, int height, int[] pixels) {
-        if (width <= 0 || height <= 0) {
-            throw new IllegalArgumentException("纹理尺寸必须为正数：" + width + "x" + height);
-        }
-        if (pixels == null || pixels.length != width * height) {
-            throw new IllegalArgumentException(
-                    "像素数量必须等于纹理面积，实际为 " + (pixels == null ? 0 : pixels.length)
-                            + "，期望 " + (width * height));
-        }
-        ByteBuffer rgba = BufferUtils.createByteBuffer(width * height * 4);
-        for (int pixel : pixels) {
-            rgba.put((byte) ((pixel >>> 16) & 0xFF));
-            rgba.put((byte) ((pixel >>> 8) & 0xFF));
-            rgba.put((byte) (pixel & 0xFF));
-            rgba.put((byte) ((pixel >>> 24) & 0xFF));
-        }
-        return rgba.flip();
     }
 
     @Override
