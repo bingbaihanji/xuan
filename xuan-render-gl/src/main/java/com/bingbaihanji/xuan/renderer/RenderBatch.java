@@ -257,6 +257,15 @@ public final class RenderBatch implements Disposable {
     /** 字形图集，与颜色 pass 用同一张纹理。 */
     private final GlyphAtlas glyphAtlas;
 
+    /**
+     * 图片纹理的缓存与回收（{@code Gc.drawImage} 用）。
+     *
+     * <p><strong>不懒创建，也不需要懒创建</strong>：构造它不调任何 GL，只是一张空的
+     * {@code IdentityHashMap}；不画图片的应用一个字节的显存都不多花。
+     * （{@code Gc.charts} 之所以懒创建，是因为它一建就编译 10 个着色器程序。）
+     */
+    private final ImageStore imageStore;
+
     /** 本帧的拾取缓冲是否已被清空（每帧最多清一次，懒执行）。 */
     private boolean pickBufferCleared = false;
 
@@ -307,6 +316,7 @@ public final class RenderBatch implements Disposable {
         this.pickBuffer = new PickBuffer(gl, 1, 1);
 
         this.sdfShader = gl.createShader(VERTEX_SHADER, SDF_FRAGMENT_SHADER);
+        this.imageStore = new ImageStore(gl);
         // ★ 字体**由调用方给**（2026-09-28 起）。本类不再从 classpath 加载自带字体：
         //   仓库里那份 simhei.ttf 是专有字体，与 MIT 声明冲突。
         //   没给字体时下面两件都是 null，文本相关方法由 Gc 抛异常——**不是静默不画**。
@@ -423,6 +433,11 @@ public final class RenderBatch implements Disposable {
         if (glyphAtlas != null) {
             glyphAtlas.beginFrame();
         }
+        // 图片纹理的帧边界钩子：回收连续两代没被画到的图片，并进入下一代。
+        // 与上面那条同理——回收只能发生在帧边界，否则绘制中途会有纹理被删掉。
+        // 它每帧都要走一次（不像图集那样"正常帧是零开销"），但表为空时就是一次
+        // 空迭代 + 一个自增，与"这张表里有东西"的情形没有任何差别。
+        imageStore.beginFrame();
     }
 
     /**
@@ -472,6 +487,19 @@ public final class RenderBatch implements Disposable {
      */
     public GLAbstraction glAbstraction() {
         return gl;
+    }
+
+    /**
+     * 返回图片纹理的缓存。
+     *
+     * <p>{@code Gc.drawImage} 需要它来把像素数组换成纹理 ID；{@code Gc.createImage}
+     * 也需要它来把句柄绑定到同一个缓存上——<strong>两条入口共用同一个 store 是承重的</strong>：
+     * 各自持一个 store 的话，同一张图用两种方式画会上传两次。
+     *
+     * @return 图片纹理缓存
+     */
+    public ImageStore imageStore() {
+        return imageStore;
     }
 
     /**
@@ -767,6 +795,7 @@ public final class RenderBatch implements Disposable {
         if (glyphAtlas != null) {
             glyphAtlas.dispose();
         }
+        imageStore.dispose();
         if (font != null) {
             font.dispose();
         }

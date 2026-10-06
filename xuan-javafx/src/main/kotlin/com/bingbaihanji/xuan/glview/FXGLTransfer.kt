@@ -22,6 +22,18 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
+/** JavaFX 逻辑坐标到 OpenGL 设备像素的 X/Y 缩放因子。 */
+data class DeviceScale(val x: Double, val y: Double) {
+    init {
+        require(x.isFinite() && x > 0.0) { "x 缩放因子必须为正数: $x" }
+        require(y.isFinite() && y > 0.0) { "y 缩放因子必须为正数: $y" }
+    }
+
+    companion object {
+        val UNITY = DeviceScale(1.0, 1.0)
+    }
+}
+
 /**
  * JavaFX 与 OpenGL 的桥接封装，提供可配置的 GLCanvas 及事件管理。
  *
@@ -81,6 +93,12 @@ class FXGLTransfer(
      */
     val font: FontFile? = null
 ) {
+
+    /** ACTIVE -> DISPOSING -> DISPOSED；关闭后不再接受新的渲染或拾取请求。 */
+    private val lifecycle = TransferLifecycle()
+
+    /** GLCanvas 的所有 GL 资源操作必须固定在初始化时绑定的线程。 */
+    private val glThread = ThreadAffinity()
 
     /**
      * 只给字体的便捷构造——**给 Java 用**。
@@ -198,6 +216,7 @@ class FXGLTransfer(
     ).apply {
         // 初始化：创建批处理提交器与绘制上下文
         addOnInitEvent {
+            glThread.bindCurrentThread("GL 初始化")
             glClearColor(0.2f, 0.2f, 0.2f, 1.0f)
             val gl = LwjglGLAbstraction()
             // RenderBatch 在构造期就编译着色器、生成 VAO/VBO/纹理，必须有活着的 GL 上下文，
@@ -210,6 +229,7 @@ class FXGLTransfer(
 
         // 渲染：开一帧、交给逐帧回调画、提交
         addOnRenderEvent {
+            glThread.checkCurrentThread("GL 渲染")
             glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
             val context = gc
             // 画布尺寸在首帧布局完成前可能还是 0，而 beginFrame 要求正尺寸；
@@ -238,11 +258,14 @@ class FXGLTransfer(
         // 这里同步 GL 视口即可。reshape 事件带的宽高正是 DPI 缩放后的帧缓冲尺寸，
         // 与 beginFrame 用的是同一套值，两者不会对不上。
         addOnReshapeEvent { event ->
+            glThread.checkCurrentThread("GL reshape")
             glViewport(0, 0, event.width, event.height)
         }
 
         // 释放：销毁批处理提交器持有的全部 GL 资源
         addOnDisposeEvent {
+            glThread.checkCurrentThread("GL 销毁")
+            lifecycle.beginDispose()
             var callbackFailure: Throwable? = null
             try {
                 onDisposeCallback?.invoke()
@@ -251,10 +274,12 @@ class FXGLTransfer(
             } finally {
                 // 图表后端在上层，先放它再放批处理：所有权链条是
                 // FXGLTransfer → RenderBatch，而 Gc.charts 挂在这条链的下游。
+                cancelPendingPicks()
                 gc?.disposeCharts()
                 renderBatch?.dispose()
                 renderBatch = null
                 gc = null
+                lifecycle.markDisposed()
             }
             callbackFailure?.let { reportRenderFailure(it) }
         }
@@ -268,12 +293,23 @@ class FXGLTransfer(
     /**
      * 手动触发重绘（当 fps = 0 时尤其有用）。
      */
-    fun repaint() = canvas.repaint()
+    fun repaint() {
+        check(lifecycle.isActive()) { "FXGLTransfer 已释放，不能重绘" }
+        canvas.repaint()
+    }
 
     /**
      * 释放所有 OpenGL 资源（在窗口关闭时调用）。
      */
-    fun dispose() = canvas.dispose()
+    fun dispose() {
+        if (lifecycle.beginDispose()) {
+            canvas.dispose()
+        }
+    }
+
+    /** 是否已经释放。 */
+    val isDisposed: Boolean
+        get() = lifecycle.isClosed()
 
     // 可选：暴露画布的宽高（DPI 缩放后）
     val scaledWidth: Int get() = canvas.scaledWidth
@@ -360,6 +396,7 @@ class FXGLTransfer(
      * @param callback 接收当前帧绘制上下文的回调
      */
     fun onFrame(callback: (Gc) -> Unit) {
+        check(lifecycle.isActive()) { "FXGLTransfer 已释放，不能注册 onFrame" }
         onFrameCallback = callback
     }
 
@@ -367,6 +404,7 @@ class FXGLTransfer(
      * 设置GL初始化时的回调
      */
     fun onInit(callback: () -> Unit) {
+        check(lifecycle.isActive()) { "FXGLTransfer 已释放，不能注册 onInit" }
         onInitCallback = callback
     }
 
@@ -381,6 +419,7 @@ class FXGLTransfer(
      * 设置释放时的回调
      */
     fun onDispose(callback: () -> Unit) {
+        check(lifecycle.isActive()) { "FXGLTransfer 已释放，不能注册 onDispose" }
         onDisposeCallback = callback
     }
 
@@ -449,7 +488,20 @@ class FXGLTransfer(
      * @param callback 结果回调，在 JavaFX 应用线程上被调用；未命中时参数为 null
      */
     fun pickAsync(x: Float, y: Float, callback: (PickHit?) -> Unit) {
-        pendingPick.set(PickRequest(x, y, callback))
+        if (lifecycle.isClosed()) {
+            dispatchPickCallback(PickRequest(x, y, callback), null)
+            return
+        }
+        val request = PickRequest(x, y, callback)
+        pendingPick.getAndSet(request)?.let { previous ->
+            dispatchPickCallback(previous, null)
+        }
+        if (lifecycle.isClosed()) {
+            val pending = pendingPick.getAndSet(null)
+            if (pending != null) {
+                dispatchPickCallback(pending, null)
+            }
+        }
     }
 
     /**
@@ -474,8 +526,8 @@ class FXGLTransfer(
      * @param callback 结果回调，在 JavaFX 应用线程上被调用；未命中时参数为 null
      */
     fun pickAsyncAtNode(node: Node, x: Double, y: Double, callback: (PickHit?) -> Unit) {
-        val scale = deviceScale(node)
-        pickAsync((x * scale).toFloat(), (y * scale).toFloat(), callback)
+        val scale = deviceScaleXY(node)
+        pickAsync((x * scale.x).toFloat(), (y * scale.y).toFloat(), callback)
     }
 
     /**
@@ -491,8 +543,8 @@ class FXGLTransfer(
      * @param callback 结果回调，在 JavaFX 应用线程上被调用；未命中时参数为 null
      */
     fun clickAsyncAtNode(node: Node, x: Double, y: Double, callback: (PickHit?) -> Unit) {
-        val scale = deviceScale(node)
-        clickAsync((x * scale).toFloat(), (y * scale).toFloat(), callback)
+        val scale = deviceScaleXY(node)
+        clickAsync((x * scale.x).toFloat(), (y * scale.y).toFloat(), callback)
     }
 
     /**
@@ -577,8 +629,15 @@ class FXGLTransfer(
      * @param callback 结果回调，在 JavaFX 应用线程上被调用；未命中时参数为 null
      */
     fun clickAsync(x: Float, y: Float, callback: (PickHit?) -> Unit) {
+        if (lifecycle.isClosed()) {
+            dispatchPickCallback(PickRequest(x, y, callback), null)
+            return
+        }
         val request = PickRequest(x, y, callback)
         if (clickQueue.offer(request)) {
+            if (lifecycle.isClosed() && clickQueue.remove(request)) {
+                dispatchPickCallback(request, null)
+            }
             return
         }
         // 满：腾一格给这一条（丢最旧的）。每一次丢弃都要计数，包括下面那次兜底，
@@ -586,9 +645,13 @@ class FXGLTransfer(
         val dropped = clickQueue.poll()
         if (dropped != null) {
             droppedClicks.incrementAndGet()
+            dispatchPickCallback(dropped, null)
         }
         if (!clickQueue.offer(request)) {
             droppedClicks.incrementAndGet()
+        }
+        if (lifecycle.isClosed() && clickQueue.remove(request)) {
+            dispatchPickCallback(request, null)
         }
     }
 
@@ -639,7 +702,8 @@ class FXGLTransfer(
     private class PickRequest(
         val x: Float,
         val y: Float,
-        val callback: (PickHit?) -> Unit
+        val callback: (PickHit?) -> Unit,
+        val completion: RequestCompletion = RequestCompletion()
     )
 
     /**
@@ -662,7 +726,42 @@ class FXGLTransfer(
      * 与画布原点差一个布局偏移，乘出来是静默错位的。）
      * （**两轴都用它**，理由见 [pickAsyncAtNode]）。
      */
-    fun deviceScale(node: Node): Double = node.scene?.window?.outputScaleY ?: 1.0
+    /** 返回 X/Y 独立的设备像素缩放；窗口尚未显示时返回 1:1。 */
+    fun deviceScaleXY(node: Node): DeviceScale {
+        val window = node.scene?.window ?: return DeviceScale.UNITY
+        return DeviceScale(window.outputScaleX, window.outputScaleY)
+    }
+
+    /** 兼容旧 API 的统一缩放值，新代码优先使用 [deviceScaleXY]。 */
+    fun deviceScale(node: Node): Double = deviceScaleXY(node).y
+
+    private fun dispatchPickCallback(request: PickRequest, hit: PickHit?) {
+        if (!request.completion.tryComplete()) {
+            return
+        }
+        if (Platform.isFxApplicationThread()) {
+            request.callback(hit)
+        } else {
+            Platform.runLater { request.callback(hit) }
+        }
+    }
+
+    private fun cancelPendingPicks() {
+        pendingPick.getAndSet(null)?.let { request ->
+            dispatchPickCallback(request, null)
+        }
+        while (true) {
+            val request = clickQueue.poll() ?: break
+            dispatchPickCallback(request, null)
+        }
+        if (inFlightPicks.isNotEmpty()) {
+            val requests = inFlightPicks.values.toList()
+            inFlightPicks.clear()
+            requests.forEach { request ->
+                dispatchPickCallback(request, null)
+            }
+        }
+    }
 
     /**
      * 非阻塞地消费 PBO 结果，再把下一条请求提交给空闲 PBO。
@@ -685,7 +784,7 @@ class FXGLTransfer(
             } else {
                 PickHit(result.id(), context.pickRegistry.resolve(result.id()), request.x, request.y)
             }
-            Platform.runLater { request.callback(hit) }
+            dispatchPickCallback(request, hit)
         }
 
         // 点击队列优先。**peek 而不是 poll**：只有真正提交成功（或明确判定为
@@ -718,7 +817,7 @@ class FXGLTransfer(
                 if (fromClickQueue) {
                     takeFromClickQueue(request)
                 }
-                Platform.runLater { request.callback(null) }
+                dispatchPickCallback(request, null)
             }
         }
     }

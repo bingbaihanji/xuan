@@ -434,6 +434,31 @@ public final class FakeGLAbstraction implements GLAbstraction {
     @Override
     public int createTexture(int w, int h, int[] p) {throw new UnsupportedOperationException();}
 
+    /**
+     * 记录创建，并校验尺寸。
+     *
+     * <p><b>刻意不做预乘</b>：那份算术在 {@code LwjglGLAbstraction.premultipliedArgbToRgba}
+     * 里，是纯函数、脱离 GL 上下文由 {@code LwjglGLAbstractionTest} 钉住。
+     * 这里再算一遍只会变成"同一份契约的第二份实现"——本仓库为那种漂移吃过亏
+     * （{@code gl/Texture} 里那份独立拷贝把 RGB 写成 BGR，谁都没发现）。
+     * 假实现只关心"传没传、传了几次"。
+     *
+     * <p><b>但尺寸必须校验</b>：真 GL 上 {@code pixels.length != width * height}
+     * 会在 {@code argbToRgba} 里抛 {@link IllegalArgumentException}。假实现若放过它，
+     * "调用方把 w/h 传错了"这类缺陷在单测里就是静默通过的——而那正是本仓库最防的形状。
+     */
+    @Override
+    public int createPremultipliedTexture(int width, int height, int[] pixels) {
+        if (width <= 0 || height <= 0 || pixels == null || pixels.length != width * height) {
+            throw new IllegalArgumentException(
+                    "预乘纹理尺寸非法：" + width + "x" + height
+                            + "，像素数 " + (pixels == null ? 0 : pixels.length));
+        }
+        int id = nextId++;
+        createdTextures.add(id);
+        return id;
+    }
+
     @Override
     public void setVertexAttribDivisor(int index, int divisor) {throw new UnsupportedOperationException();}
 

@@ -258,6 +258,32 @@ public interface GLAbstraction extends Disposable {
     int createTexture(int width, int height, int[] pixels);
 
     /**
+     * 创建一张<strong>预乘 alpha</strong>的纹理。
+     *
+     * <p>与 {@link #createTexture} 只差一件事：每个颜色通道先乘一次自身的 alpha
+     * （{@code round(c * a / 255)}，通道顺序不变）。
+     *
+     * <h2>什么时候必须用它</h2>
+     * <p>{@code RenderBatch} 的混合因子是 {@code GL_ONE / GL_ONE_MINUS_SRC_ALPHA}，
+     * 即<strong>预乘 alpha 的混合公式</strong>。顶点色在 CPU 侧已经预乘过
+     * （{@code VertexFormat.packPremultiplied}），但<strong>纹素是直接采样的</strong>——
+     * 着色器不会替它补上这一步。所以任何<strong>带 alpha 的图片</strong>都必须走本方法上传，
+     * 否则半透明像素会<strong>过亮</strong>：50% 透明纯红画在黑底上，正确的读数是
+     * {@code (128,0,0)}，不预乘会读成 {@code (255,0,0)}——而画面只是"颜色艳了点"，不报错。
+     *
+     * <p>反过来说，{@code 0xFFFFFFFF} 这类不透明像素两条路等价（a=255 时预乘是恒等），
+     * 所以纯色绘制绑定的 1×1 白纹理走 {@link #createTexture} 就够了，
+     * <strong>不要因为"反正一样"就把两件事合并成一个方法</strong>：调用点上分不出来
+     * "这一张要不要预乘"，而分不出来的后果正是上面那条过亮。
+     *
+     * @param width  纹理宽度
+     * @param height 纹理高度
+     * @param pixels 像素数据，{@code 0xAARRGGBB}，长度必须等于 {@code width * height}
+     * @return 纹理的 ID
+     */
+    int createPremultipliedTexture(int width, int height, int[] pixels);
+
+    /**
      * 创建一张 {@code GL_R8} 单通道归一化纹理，内容未初始化。
      *
      * <p>与拾取用的 {@code GL_R32UI} 只差两个字母，但语义相反：

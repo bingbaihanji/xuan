@@ -203,7 +203,8 @@ xuan-core/src/test/.../chart/      TickGeneratorTest、AxisTest、ArrayChartData
                                                 ColorMappingTest、ChartTest、
                                                 ChartLayoutTest、ChartPackageIsolationTest
 xuan-render-gl/src/test/.../renderer/   VertexFormatTest、VertexWriterTest、ViewTransformTest、
-                                                PickRegistryTest、PickBufferTest
+                                                PickRegistryTest、PickBufferTest、
+                                                ImageStoreTest、ImageHandleTest
 xuan-render-gl/src/test/.../gl/         FramebufferTest、LwjglGLAbstractionTest、
                                                 FakeGLAbstractionGuardTest
 xuan-render-gl/src/test/.../text/       SdfGeneratorTest、GlyphAtlasTest、FontFileTest、
@@ -216,19 +217,22 @@ xuan-render-gl/src/test/.../gpu/        FftWindowTest、FftKernelTest
 ```
 
 （`...` 是 `java/com/bingbaihanji/xuan`。`xuan-javafx` 没有 surefire 测试——它的
-`example/` 里那**九个**校验器是**手动跑的 main**，不是单测：
-**七个像素校验器**（`Pipeline` / `Path` / `Pick` / `Click` / `Text` / `Chart` / `Axis`
-——靠 `glReadPixels` 从**画布 FBO** 回读；`Axis` 是 2026-09-28 坐标系入库时加的）
+`example/` 里那**十个**校验器是**手动跑的 main**，不是单测：
+**八个像素校验器**（`Pipeline` / `Path` / `Pick` / `Click` / `Text` / `Chart` / `Axis` / `Image`
+——靠 `glReadPixels` 从**画布 FBO** 回读；`Axis` 是 2026-09-28 坐标系入库时加的，
+`Image` 是图片绘制入库时加的，见「图片」一节）
 + `FftVerifier`（**不画任何东西**，读的是 SSBO，不是像素校验器）
 + `MsaaVerifier`（**要跑三次**：`msaa=0` / `4` / `-1`，由 `xuan-javafx/scripts/msaa-verify.sh` 比对）。
-后两者的处境与那七个的区别见「抗锯齿」一节。）
+后两者的处境与那八个的区别见「抗锯齿」一节。）
 
-当前 **422 个测试，0 失败**；**跳过数取决于有没有给字体**（2026-09-28 起本库不再自带）：
+当前 **442 个测试，0 失败**；**跳过数取决于有没有给字体**（2026-09-28 起本库不再自带）：
 **给了 `-Dxuan.text.font=<路径>` ⇒ 2 跳过**（`TessellatorRegressionTest` 里两条 `@Disabled`）；
 **没给 ⇒ 11 跳过**（多出的 9 条是 `FontFileTest` 5 + `GlyphRasterizerTest` 4，
 **记成 `Skipped` 而不是消失**——理由见「发布」一节里那个 `@BeforeAll` 的坑）。单测命令：`mvn test -Dtest=类名`（跨模块加 `-pl 模块名`）。
-分布：`geom/` 102、`renderer/` 107、`gl/` 13、`text/` 32、`chart/` 85、`chartrender/` 69、
-`gpu/` 14（合计 422 = `xuan-core` 187 + `xuan-render-gl` 235；
+分布：`geom/` 102、`renderer/` 124、`gl/` 16、`text/` 32、`chart/` 85、`chartrender/` 69、
+`gpu/` 14（合计 442 = `xuan-core` 187 + `xuan-render-gl` 255；
+图片那一步加了 20 条——`renderer/` +17（新的 `ImageStoreTest` 10 + `ImageHandleTest` 7）、
+`gl/` +3（`LwjglGLAbstractionTest` 的预乘转换与取整方向），理由见「图片」一节；
 路径命中那一步给 `geom/` 加了 10 条——`PathHitTest`，理由见「已实现 vs 未实现」里那一条；
 虚线那一步又给 `geom/` 加了 1 条——`StrokeDashTest`
 「每一项都低于阈值的模式不产生三角形而不是死循环」，理由见「已实现 vs 未实现」里那条；
@@ -422,6 +426,100 @@ Main.kt                     设置 prism.* 系统属性
   `xuan-render-gl/src/main/resources/fonts/README.md`。
 - 本期**不做**字距/连字/bidi、多行与对齐、富文本、多字体回退、MSDF。这些是刻意
   不做，不是漏了。
+
+### 图片
+
+在 `Gc` 上，**两条入口、一套机制**：收 `IntArray` 的便捷重载，与 `createImage` 返回的
+`ImageHandle`（`renderer/ImageHandle` + `renderer/ImageStore`）。
+
+```kotlin
+// 入口一：便捷，库内部按数组对象身份缓存
+gc.drawImage(pixels, width, height, dx, dy)                    // 原尺寸
+gc.drawImage(pixels, width, height, dx, dy, dw, dh)            // 缩放到目标矩形
+
+// 入口二：显式句柄（构造是纯 CPU，不碰 GL；第一次画才上传）
+val img: ImageHandle = gc.createImage(pixels, width, height)
+gc.drawImage(img, dx, dy)
+gc.drawImage(img, dx, dy, dw, dh)
+img.dispose()                                                  // 可选：提前释放
+```
+
+- **像素排布是 `0xAARRGGBB`**，长度必须等于 `width * height`，与 `util/Color` 同一个契约。
+  **数组第 0 行 = 图像的顶行**，于是不需要任何翻转；JavaFX 侧逐位就是这个契约：
+  `pixelReader.getPixels(0, 0, w, h, PixelFormat.getIntArgbInstance(), argb, 0, w)`。
+  **本库不做加载**（不认文件、不认流），调用方自己读成数组。
+- ★ **`(dx, dy)` 是目标矩形的左上角**（用户坐标、受变换影响），**不是基线**——
+  与 [drawText] 的 `y` 是两回事，容易猜错。目标尺寸为 0 或负时**什么都不画**（零面积），
+  且**不触发上传**；含 NaN/±Infinity 则**明确抛异常**（理由与 `dashPhase` 那条一字不差：
+  NaN 顶点让整个图元静默消失）。
+- ★ **上传时做 alpha 预乘**（`gl/LwjglGLAbstraction.premultipliedArgbToRgba`，与既有的
+  `argbToRgba` **共用唯一一份字节序核心**）。批处理的混合因子是
+  `GL_ONE / GL_ONE_MINUS_SRC_ALPHA`（预乘），而纹素是直接采样的——着色器
+  `texture(uTex, vUV) * vColor` 不会替纹理补上预乘。**不做的话半透明像素过亮一倍**
+  （50% 透明纯红画在黑底上读 `(255,0,0)` 而不是 `(128,0,0)`），而画面只是"颜色艳了点"。
+  不做在着色器里是因为上传只发生一次，着色器里做会让每个像素每帧多乘一次。
+  取整是四舍五入 `(c * a + 127) / 255`——截断会让极低 alpha 的图系统性偏暗。
+- ★ **顶点色恒白**（只乘 `globalAlpha`，**不取 `fill`**）：`fill` 是环境状态，
+  给文字设了 `fill = 黑` 不该让图片跟着变黑——那种染色错了画面"只是颜色不对"，极难归因。
+- ★ **缓存按像素数组的<对象身份>索引，两条入口共用同一条槽**：同一张图用哪种方式画
+  都只上传一次。由此有一个**必须知道的约定**：交进去的数组**改了内容不会被感知**
+  （键没变 ⇒ 不重传）——要更新一张图请传**新的数组**（新数组会重新上传，旧的连续两代
+  没被画到后自动释放）。同一个数组配**两个尺寸**会**明确抛异常**（不拦的话会拿旧尺寸的
+  纹理按错误跨距解释，画出一张**扭曲但完全正常**的图）。
+- ★ **不再画的图连续两代没被画到就自动释放**（`ImageStore.beginFrame`，由
+  `RenderBatch.beginFrame` 每帧调一次；判据 `generation - lastSeen >= GRACE_GENERATIONS`，
+  与 `ChartRenderer.releaseUnused` 同构）。**宽限两代是承重的**：取 1 的话
+  "每隔一帧画一次"那种用法会**每画一次就销毁又重建**（= 重传整张图），而画面逐像素相同。
+  ⇒ **没有 `retain`/`release` 这类要记得调的 API**，忘记 `ImageHandle.dispose()` 的后果
+  只是"多占两帧"，不是泄漏显存。`dispose()` 只做两件事：删 GPU 副本、丢弃 CPU 那份
+  像素引用（4K 图一份 33 MB）；它**必须在 GL 线程调**，且**幂等**。
+- ★ **它是一类普通图元**：走现有批处理管线 ⇒ 裁剪、z 序、合批、变换、GPU 拾取
+  **全部自动成立**。两件随之而来的已声明行为：**拾取范围是整个矩形，包括全透明的
+  像素**（ID pass 不看 alpha，与"全透明图元照样能命中"「文本可拾取范围比墨迹大一圈」同类，
+  有断言钉着，**不要当 bug 修**）；**`Gc.antialias` 对图片无效**（填充类几何没有中心线，
+  与 `fillRect` 同类），要边缘 AA 请用构造期的 `msaa`。
+- **不新增 `Material` 常量**：`COLOR` 那一支本来就是 `texture(uTex, vUV) * vColor`，
+  而图片四边形写 `aEdge = (0,0)` ⇒ `fwidth == 0` ⇒ 两个覆盖率都是 1。`Material` 的类注释
+  曾把"图像"列成将来的材质常量，**那条预期是错的**——别照着它去"补全"。
+- **已知降级（不是缺陷）**：`createTexture`/`createPremultipliedTexture` 一律
+  `GL_LINEAR` 且**不生成 mipmap** ⇒ 大幅缩小时有摩尔纹。
+- 本期**不做**：源子矩形（精灵图请自己裁数组，或每个子图建一个句柄）、染色重载、
+  过滤模式选择、从文件/流加载、图集打包、翻转参数（`gc.scale(-1, 1)` 能做）。
+
+**验收**：第十个校验器 **`ImageVerifier`**（**24 条**，退出码 0/1）。
+它证的：纹素**逐点**画对了（3×2 六格图整 21 倍放大后按格心回读，**逐格精确相等**）、
+方向没翻（上半红绿蓝 / 下半黄青）、alpha 生效（全透明那格露出背景）、
+**预乘**（50% 透明红 × 黑底 = `(128,0,0)` 而不是 `(255,0,0)`）、`globalAlpha`、
+裁剪、拾取（**含全透明格**）、以及两条**与像素无关**的：**只上传一次**（第 2 帧 0 张）
+与**回收真的发生了**（隔两帧后重画必须重传 1 张）。
+
+- ★ **后两条只有计数能证**：每帧全量重传与只传一次**画出来逐像素相同**，
+  回收与不回收也逐像素相同（泄漏要几千帧后才显形）。所以 `ImageStore` 暴露了两个
+  "为断言而存在的观测口"（`imageTextureCount()` / `takeUploadedImageCount()`，
+  经 `Gc.imageStore` 取），与 `ChartRenderer.cachedBufferCount()` / `takeUploadedBytes()`
+  同一类，**生产代码不该依赖**。
+- ★ **"逐格精确相等"依赖一个相位条件**：探针的放大倍数必须是**奇数**（取 21）。
+  纹素中心落在 `dx + S*(k+0.5)`，而设备像素中心落在"整数 + 0.5"——只有 `S` 为奇数时
+  两者才重合、线性过滤的权重才是 1.0/0.0，读到的才是**纯纹素**。取偶数时每个采样点
+  落在两个纹素交界（97.5% / 2.5%），判据会退化成"两个颜色混得像不像"。
+- ★ **全透明那一格的 RGB 刻意非零**（`0x00FF00FF`）：写 `0x00000000` 的话，
+  "alpha 没生效"与"alpha 生效了、露出的正好是黑底"**逐位相同**，那条断言就成了橡皮图章。
+  它另有半条判据：**只有在同一张图的不透明格已经断言通过时才有意义**——
+  否则"图片压根没画"也满足它。
+- **变异实测（每条只让定向的那几条倒）**：UV 写成常量 ⇒ **7 条**倒（且第 (0,0) 格照过——
+  它本来就该采到纹素 0，说明断言是**位置敏感**的）；`v0`/`v1` 对调 ⇒ **8 条**倒；
+  上传漏掉预乘 ⇒ **2 条**倒（预乘探针读到 `FF0000`，以及那个"全透明但 RGB 非零"的格子
+  露出品红）；`GRACE_GENERATIONS` 2 → 1 ⇒ **恰好 1 条**倒（宽限那条，回收那条照过——
+  两者合起来才把 `GRACE == 2` 钉死）；完全不回收 ⇒ **恰好 1 条**倒；
+  顶点色写死成不透明白（不吃 `globalAlpha`）⇒ **恰好 1 条**倒；
+  零宽矩形的早退写成 `&&` ⇒ **2 条**倒（本帧上传数 + 缓存数）。
+- ⚠️ **它不需要字体**（一个字符都不画），`-Dxuan.text.font` 对它是可选的。
+- ⚠️ **写这个校验器时踩的坑**：`VertexWriter.quad` 收的是 **NDC**（位置已在别处烘焙好），
+  不是用户坐标——把 `dx/dy` 直接传进去会让四边形整个落在裁剪体之外，
+  **一个片元都不产生**，而画面上"什么都没画"与"背景色"逐像素相同。
+  它当时的表现是**所有像素断言一起读到 `000000`**，与"回读坏了"分不开——
+  分开它们的是那个纯色 `fillRect` 对照块与颜色直方图两行诊断，
+  **刻意留着**（与 `AxisVerifier` 同一条理由）。
 
 ### 图表
 
@@ -1380,7 +1478,11 @@ no-op，因为上下文已由 `GLCanvas` 置为当前）、`renderer/RenderBatch
 **抗锯齿**：`Gc.antialias`（描边 + 六个图表渲染器，默认关）、顶点属性 `aEdge`
 （横向/沿向，`VertexFormat.OFFSET_EDGE` = 24）、图表侧的 `vEdge` + `uAntialias`、
 `FXGLTransfer(msaa = N)` 与 `FXGLTransfer.canReadPixels`（回读拒绝守卫）、
-DSL 的 `xuan { antialias { msaa = 4 } }`——见「抗锯齿」一节
+DSL 的 `xuan { antialias { msaa = 4 } }`——见「抗锯齿」一节、
+**图片绘制**：`Gc.drawImage`（5 参 = 原尺寸 / 7 参 = 缩放到目标矩形）、
+`Gc.createImage` → `renderer/ImageHandle`、`renderer/ImageStore`（按数组身份缓存 +
+代际自动回收 + 两个观测计数）、`gl/GLAbstraction.createPremultipliedTexture`
+（含 alpha 预乘的 RGBA 上传，与 `argbToRgba` 共用一份字节序核心）——见「图片」一节
 
 **未实现 / 待办**
 - **其余图型的渲染器**：`HEATMAP` / `WATERFALL` 目前一律**抛异常**
@@ -1503,8 +1605,14 @@ DSL 的 `xuan { antialias { msaa = 4 } }`——见「抗锯齿」一节
 - **误差棒、等高线、眼图**：`ChartType` 目前没有覆盖，属于 ③ 或更后面的事。
 - **Paint / 渐变**：所有绘制只接受纯色整数。设计意图是**所有 Paint 归一化为纹理**
   （纯色 = 超白色纹理 + 顶点颜色，渐变 = 1×256 LUT）。
+  ✅ **图片那一半已经落地**（`Gc.drawImage` / `createImage`，见「图片」一节）——
+  它走的正是这条归一化路线的第一段：像素归一化成一张纹理 + 顶点色（恒白）。
+  **渐变仍未实现**。
 - **`createTexture` 已在 LWJGL 入口完成 ARGB→RGBA 通道转换**；新增纹理类型时继续沿用
   `0xAARRGGBB` 公共 API 契约，并为新上传路径补充字节序测试。
+  图片那条路新增的是 **`createPremultipliedTexture`**（多一步 alpha 预乘，见「图片」一节）——
+  它与 `argbToRgba` **共用唯一一份字节序核心**，就是为了不让"同一份契约两份实现"再分家
+  （`gl/Texture` 那份独立拷贝漂移过一次，见「资源释放」一节）。
 - ✅ **已修**：`Gc.strokePath()` 现在按 `Flattener` 的子路径**逐段独立描边**，
   多条子路径之间那段并不存在的连线没有了。判据（末条命令是否为 `CLOSE`）**查的是
   `Path` 的命令表**，不是看点集——平铺后的点集里，`CLOSE` 追加的起点与"用户自己
@@ -1759,12 +1867,14 @@ app 的窗口完全由 JavaFX 管理，GLFW 不参与。
 ```bash
 mvn -o install -DskipTests     # 先在仓库根：子模块从本地仓库解析依赖，
                                # 不 install 的话跨模块改动会"编译不过"（见下面那条坑）
-mvn -o test                    # 411 / 0 失败 / 2 跳过
+mvn -o test                    # 442 / 0 失败 / 2 跳过（没给字体时 11 跳过）
 ```
 
-再加**九个校验器**（`PipelineVerifier` / `PathVerifier` / `PickVerifier` /
-`ClickVerifier` / `TextVerifier` / `ChartVerifier` / `FftVerifier` / **`AxisVerifier`**，
-逐个退出码 0；`AxisVerifier` 是 2026-09-28 坐标系入库时新增的第九个，见「坐标系」一节）、
+再加**十个校验器**（`PipelineVerifier` / `PathVerifier` / `PickVerifier` /
+`ClickVerifier` / `TextVerifier` / `ChartVerifier` / `FftVerifier` / **`AxisVerifier`** /
+**`ImageVerifier`**，逐个退出码 0；`AxisVerifier` 是 2026-09-28 坐标系入库时新增的，
+`ImageVerifier` 是图片绘制入库时新增的，见「图片」一节——**它不需要字体**，
+其余几个都要 `-Dxuan.text.font=<路径>`）、
 **demo 合成事件自检**（`-Dxuan.demo.selftest=1`，21 + 14 条）、
 **MSAA 三档跨进程比对**（`bash xuan-javafx/scripts/msaa-verify.sh`）。
 

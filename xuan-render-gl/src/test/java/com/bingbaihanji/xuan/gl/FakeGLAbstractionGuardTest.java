@@ -80,7 +80,13 @@ class FakeGLAbstractionGuardTest {
             "dispose()",
             // 顶点缓冲路径（图表后端）
             "createVbo()", "bindVbo(int)", "deleteVbo(int)",
-            "uploadVboData(float[])", "uploadVboSubData(int,ByteBuffer)");
+            "uploadVboData(float[])", "uploadVboSubData(int,ByteBuffer)",
+            // 图像路径：放开的是"记录创建 + 校验尺寸"，预乘算术不在这里
+            // （它由 LwjglGLAbstractionTest 以纯函数钉住，见该方法的说明）。
+            // 放开它的理由是 ImageStore 的缓存/回收逻辑必须能脱离 GL 上下文单测——
+            // 那套逻辑的成效在画面上**没有任何痕迹**（回收只发生在"不再画了"之后），
+            // 只有计数能证。createTexture 本身仍然抛：没有任何调用方需要它。
+            "createPremultipliedTexture(int,int,int[])");
 
     private static String signature(Method m) {
         return m.getName() + Arrays.stream(m.getParameterTypes())

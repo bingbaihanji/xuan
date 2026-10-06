@@ -9,6 +9,7 @@
     </parent>
     <artifactId>xuan-core</artifactId>
     <name>Xuan Core</name>
+    <description>负责纯数学/几何/图表模型</description>
     <dependencies>
         <dependency>
             <groupId>org.slf4j</groupId>

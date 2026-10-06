@@ -498,6 +498,22 @@ class Gc constructor(private val batch: RenderBatch) {
         }
     }
 
+    /**
+     * 图片纹理的缓存，**为断言而开放的观测口**
+     *
+     * <p>它公开的理由与 [ChartRenderer.cachedBufferCount] / `takeUploadedBytes` 一字不差：
+     * 图片缓存的两件成效——"一张图只上传一次"与"不再画的自动释放"——
+     * 在画面上**没有任何痕迹**（重传与不重传逐像素相同；泄漏要几千帧后才显形）
+     * 没有这个入口，那两条断言只能退化成"跑完没崩"
+     *
+     * <p>**生产代码不该依赖它**：它是 [ImageStore] 的透传，不含任何算术。
+     * 应用要画图片请用 [drawImage] / [createImage]；这里只是让校验器能读数
+     *
+     * <p>与 [charts] 不同，本属性**不懒创建**：图片缓存构造时不调任何 GL，
+     * 只是一张空表
+     */
+    val imageStore: ImageStore get() = batch.imageStore()
+
     /** 样式栈的整数部分：每层 [INTS_PER_STYLE_LEVEL] 个值(fill、stroke、pickId、antialias) */
     private var styleInts = IntArray(INITIAL_STACK_LEVELS * INTS_PER_STYLE_LEVEL)
 
@@ -848,6 +864,168 @@ class Gc constructor(private val batch: RenderBatch) {
             index += Character.charCount(codepoint)
         }
         return width
+    }
+
+    // ------------------------------------------------------------------
+    // 图片
+    // ------------------------------------------------------------------
+
+    /**
+     * 把一张像素图登记成一个 [ImageHandle]，之后可以反复交给 [drawImage] 绘制
+     *
+     * <h2>它只是"同一个键的另一种传法"</h2>
+     * <p>本方法与那几个收 `IntArray` 的 [drawImage] 重载<strong>共用同一份纹理缓存</strong>，
+     * 而缓存的键就是交进来的那个数组<strong>本身</strong>。所以：
+     * <pre>
+     * gc.drawImage(pixels, w, h, 10f, 10f)          // 上传一次
+     * val img = gc.createImage(pixels, w, h)
+     * gc.drawImage(img, 20f, 20f)                   // 命中同一张纹理，不再上传
+     * </pre>
+     *
+     * <h2>调用它是纯 CPU 的，一个字节都不上传</h2>
+     * <p>纹理在**第一次真正绘制**时才建（见 [ImageStore]）。于是"建了句柄却从没画过"
+     * 的代价是零显存；反过来说，本方法不校验宽高之外的任何东西，
+     * 也不会因为图太大而在这一刻失败
+     *
+     * <h2>像素数组的排布</h2>
+     * <p>`0xAARRGGBB`，与 [com.bingbaihanji.xuan.util.Color] 同一个契约，
+     * 长度必须等于 `width * height`。**第 0 行是图像的顶行**
+     * ——JavaFX 的读法逐位就是这个契约：
+     * <pre>
+     * val argb = IntArray(w * h)
+     * image.pixelReader.getPixels(0, 0, w, h, PixelFormat.getIntArgbInstance(), argb, 0, w)
+     * </pre>
+     *
+     * @param pixels 像素数据，`0xAARRGGBB`，同时充当缓存的键(按**对象身份**)
+     * @param width  图像宽度(像素)
+     * @param height 图像高度(像素)
+     * @return 句柄；**不必**调它的 `dispose()`(连续两代没画到会自动释放)
+     * @throws IllegalArgumentException 像素数与面积不匹配
+     */
+    fun createImage(pixels: IntArray, width: Int, height: Int): ImageHandle =
+        ImageHandle(batch.imageStore(), pixels, width, height)
+
+    /**
+     * 按图像的**原始像素尺寸**绘制
+     *
+     * <p>`(dx, dy)` 是目标矩形的**左上角**(用户坐标，受当前变换影响)——
+     * **不是基线**。这条要和 [drawText] 对照着看：那个的 `y` 是基线，两者不一样
+     *
+     * @param pixels 像素数据，`0xAARRGGBB`，长度必须等于 `width * height`
+     * @param width  图像的像素宽度
+     * @param height 图像的像素高度
+     * @param dx     目标矩形左上角 x(用户坐标)
+     * @param dy     目标矩形左上角 y(用户坐标)
+     */
+    fun drawImage(pixels: IntArray, width: Int, height: Int, dx: Float, dy: Float) {
+        drawImage(pixels, width, height, dx, dy, width.toFloat(), height.toFloat())
+    }
+
+    /**
+     * 把一张像素图缩放到目标矩形绘制
+     *
+     * <p>与 [drawImage] 的 5 参重载只差一个缩放：目标矩形由 `(dx, dy, dw, dh)` 给出，
+     * 图像被线性重采样铺满它
+     *
+     * @param pixels 像素数据，`0xAARRGGBB`，长度必须等于 `width * height`
+     * @param width  图像的像素宽度
+     * @param height 图像的像素高度
+     * @param dx     目标矩形左上角 x(用户坐标)
+     * @param dy     目标矩形左上角 y(用户坐标)
+     * @param dw     目标矩形宽度；**&le; 0 时什么都不画**(零面积，几何上就该如此)
+     * @param dh     目标矩形高度；同上
+     * @throws IllegalArgumentException 目标矩形含 NaN/±Infinity，或像素数与面积不匹配
+     */
+    fun drawImage(
+        pixels: IntArray, width: Int, height: Int,
+        dx: Float, dy: Float, dw: Float, dh: Float
+    ) {
+        // ★ 非有限数必须在入口挡住。NaN 顶点在光栅化阶段会让**整个图元静默消失**，
+        //   与"用户把这张图设成不画"在画面上逐像素相同——与 dashPhase 那条同一条理由
+        require(dx.isFinite() && dy.isFinite() && dw.isFinite() && dh.isFinite()) {
+            "drawImage 的目标矩形必须是有限数：dx=$dx dy=$dy dw=$dw dh=$dh" +
+                    "(NaN/Infinity 的顶点会让整个图元静默消失，画面上与「没画」一模一样)"
+        }
+        // 零/负面积不画，且**不触发上传**：几何上它就是零个像素，
+        // 与 strokeOutline 在 lineWidth <= 0 时直接返回同一条口径
+        if (dw <= 0f || dh <= 0f) {
+            return
+        }
+        // 与 drawText 同序：先 flushIfNeeded 再 syncState——reset() 会把写入器带回
+        // "尚未设置状态"，必须在它之后重新设上
+        flushIfNeeded()
+        // 材质用 COLOR(不是新加一个"图像"材质)：那一支本来就是 texture(uTex, vUV) * vColor，
+        // 而下面的四边形写 aEdge = (0,0) ⇒ fwidth == 0 ⇒ 两个覆盖率都是 1，正是要的
+        syncState(batch.imageStore().textureFor(pixels, width, height), Material.COLOR)
+        emitImageQuad(dx, dy, dw, dh)
+    }
+
+    /**
+     * 按句柄里记着的**原始像素尺寸**绘制
+     *
+     * @param image 句柄
+     * @param dx    目标矩形左上角 x(用户坐标)
+     * @param dy    目标矩形左上角 y(用户坐标)
+     * @throws IllegalStateException 句柄已释放
+     */
+    fun drawImage(image: ImageHandle, dx: Float, dy: Float) {
+        drawImage(image, dx, dy, image.width().toFloat(), image.height().toFloat())
+    }
+
+    /**
+     * 把句柄里的图缩放到目标矩形绘制
+     *
+     * @param image 句柄
+     * @param dx    目标矩形左上角 x(用户坐标)
+     * @param dy    目标矩形左上角 y(用户坐标)
+     * @param dw    目标矩形宽度；**&le; 0 时什么都不画**
+     * @param dh    目标矩形高度；同上
+     * @throws IllegalStateException    句柄已释放
+     * @throws IllegalArgumentException 目标矩形含 NaN/±Infinity
+     */
+    fun drawImage(image: ImageHandle, dx: Float, dy: Float, dw: Float, dh: Float) {
+        // requirePixels() 是**已释放句柄**的唯一守卫：取像素只有这一个入口，
+        // 所以"用了已释放的句柄"在那条路径上必然被拦住，不必在这里再写一遍判据
+        drawImage(image.requirePixels(), image.width(), image.height(), dx, dy, dw, dh)
+    }
+
+    /**
+     * 发射图片的那个四边形
+     *
+     * <h2>★ UV 的两个角决定图像正不正</h2>
+     * <p>左上角取 `(0,0)`：纹理坐标 `v = 0` 对应上传数据的**第 0 行**，
+     * 而那个契约是"第 0 行 = 图像的顶行"(见 [createImage])，于是图像正着画出来
+     * **不需要任何翻转**。把 `v0`/`v1` 写反的症状是**一张完整、正常、只是上下颠倒的图**
+     * ——所以要有一条像素断言钉它(上半红下半蓝的探针图)
+     *
+     * <h2>顶点色恒白</h2>
+     * <p>只乘 [globalAlpha]，**不取 [fill]**：`fill` 是环境状态，用户给文字设了
+     * `fill = 黑` 不该让图片跟着变黑——而那种染色错了画面"只是颜色不对"，极难归因
+     *
+     * <h2>这个四边形是"填充类"几何</h2>
+     * <p>它写 `aEdge = (0,0)`，所以 [antialias] 对它**无效**(那条路只覆盖描边与图表系列)。
+     * 图片边缘要抗锯齿请用构造期的 `msaa`——与 `fillRect` 同类
+     *
+     * <p>它同时自动继承管线的一切既有行为：受变换与 [clipRect] 影响、
+     * 参与 z 序与合批、[pickId] 照常生效(**整个矩形都可拾取，包括全透明的像素**
+     * ——ID pass 不看 alpha，与"全透明图元照样能命中"同一条已声明行为)
+     */
+    private fun emitImageQuad(dx: Float, dy: Float, dw: Float, dh: Float) {
+        // ★ 四个角必须**逐个过当前变换**再交给 writer：`VertexWriter` 收的是
+        //   **NDC**(位置已在别处烘焙好)，不是用户坐标。直接把 dx/dy 传进去的话，
+        //   一个画在 (40,40) 的四边形会被当成 NDC 的 (40,40)——整个落在裁剪体之外，
+        //   **一个片元都不产生**，而画面上"什么都没画"与"背景色"逐像素相同。
+        //   文本那条路是 `TextLayout` 自己带着 state 做这件事的，本类这里自己做。
+        val x1 = dx + dw
+        val y1 = dy + dh
+        writer().quad(
+            state.transformX(dx, dy), state.transformY(dx, dy),
+            state.transformX(x1, dy), state.transformY(x1, dy),
+            state.transformX(x1, y1), state.transformY(x1, y1),
+            state.transformX(dx, y1), state.transformY(dx, y1),
+            0f, 0f, 1f, 1f,
+            packColor(WHITE), pickId
+        )
     }
 
     /**
@@ -2133,6 +2311,15 @@ class Gc constructor(private val batch: RenderBatch) {
 
         /** 样式栈每层占用的 float 个数：lineWidth、globalAlpha、fontSize */
         private const val FLOATS_PER_STYLE_LEVEL = 4
+
+        /**
+         * 图片四边形的顶点色：不透明白。
+         *
+         * <p>它的作用只是让 `packColor` 把 [globalAlpha] 折进去——
+         * `texture(uTex, vUV) * vColor` 里白色的 rgb 是 1，于是采样结果原样通过、
+         * 只有 alpha 被缩放。**刻意不取 [fill]**，理由见 `emitImageQuad`
+         */
+        private const val WHITE = 0xFFFFFFFF.toInt()
     }
 }
 

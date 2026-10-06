@@ -9,6 +9,7 @@
     </parent>
     <artifactId>xuan-render-gl</artifactId>
     <name>Xuan OpenGL Renderer</name>
+    <description>负责GL 资源和批处理</description>
     <dependencies>
         <dependency>
             <groupId>com.bingbaihanji</groupId>

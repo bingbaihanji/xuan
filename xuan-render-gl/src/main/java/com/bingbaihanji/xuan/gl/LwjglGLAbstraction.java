@@ -54,6 +54,52 @@ public class LwjglGLAbstraction implements GLAbstraction {
      * 颜色契约与 {@link com.bingbaihanji.xuan.util.Color}、图表和 JavaFX 互操作一致。
      */
     static ByteBuffer argbToRgba(int width, int height, int[] pixels) {
+        return argbToRgba(width, height, pixels, false);
+    }
+
+    /**
+     * 与 {@link #argbToRgba} 同一份转换，但顺带做 <strong>alpha 预乘</strong>。
+     *
+     * <h2>为什么图片这条路必须预乘，而纯色那一条不必</h2>
+     * <p>{@code RenderBatch} 的混合因子是 {@code GL_ONE / GL_ONE_MINUS_SRC_ALPHA}，
+     * 也就是<strong>预乘 alpha</strong> 的混合公式。纯色绘制没有这个问题：顶点色在
+     * {@code VertexFormat.packPremultiplied} 里已经乘过 alpha 了。而<strong>纹理是
+     * 直接采样的</strong>——纹素里存什么就是什么，着色器最后那一句
+     * {@code texture(uTex, vUV) * vColor} 只会再乘一个顶点色，<strong>不会替纹理补上预乘</strong>。
+     *
+     * <p>不做这一步的症状是<strong>半透明像素过亮</strong>：50% 透明纯红画在黑底上，
+     * 正确的读数是 {@code (128,0,0)}，不预乘会读成 {@code (255,0,0)}——一倍亮，
+     * 而画面看起来只是"颜色艳了点"，不报任何错。
+     *
+     * <p>做在<strong>上传时</strong>而不是每帧、也不在着色器里：上传一张图只发生一次
+     * （见 {@code ImageStore} 的缓存），而着色器里做会让每个像素每帧都多乘一次。
+     *
+     * <p>取整是<strong>四舍五入</strong>（{@code (c * a + 127) / 255}），不是截断——
+     * 截断会让 {@code (255, alpha=1)} 变成 0 而不是 1，整张图在极低 alpha 下系统性偏暗。
+     *
+     * @param width  纹理宽度
+     * @param height 纹理高度
+     * @param pixels 像素数据，{@code 0xAARRGGBB}，长度必须等于 {@code width * height}
+     * @return 预乘后的 RGBA 字节流，通道顺序与 {@link #argbToRgba} 相同
+     */
+    static ByteBuffer premultipliedArgbToRgba(int width, int height, int[] pixels) {
+        return argbToRgba(width, height, pixels, true);
+    }
+
+    /**
+     * 两个入口<strong>唯一的一份</strong>转换实现。
+     *
+     * <p>刻意做成"一个核心 + 两个具名入口"而不是两份拷贝：本仓库已经为"同一份契约、
+     * 两份实现"付过代价——{@code gl/Texture} 里那份独立拷贝把 RGB 写成了 BGR，
+     * <strong>没有任何东西发现它</strong>，直到两边都补了测试才对照出来。
+     * 字节序只写一次，就没有让它们分家的机会。
+     *
+     * <p>刻意<strong>不</strong>把 {@code premultiply} 暴露成一个公开的布尔参数：
+     * 调用点上写 {@code argbToRgba(w, h, px, true)} 读不出"true 是哪一件事"，
+     * 而写错这一个布尔量的后果正是上面那段描述的"过亮一倍"。
+     */
+    private static ByteBuffer argbToRgba(int width, int height, int[] pixels,
+                                         boolean premultiply) {
         if (width <= 0 || height <= 0) {
             throw new IllegalArgumentException("纹理尺寸必须为正数：" + width + "x" + height);
         }
@@ -64,12 +110,32 @@ public class LwjglGLAbstraction implements GLAbstraction {
         }
         ByteBuffer rgba = BufferUtils.createByteBuffer(width * height * 4);
         for (int pixel : pixels) {
-            rgba.put((byte) ((pixel >>> 16) & 0xFF));
-            rgba.put((byte) ((pixel >>> 8) & 0xFF));
-            rgba.put((byte) (pixel & 0xFF));
-            rgba.put((byte) ((pixel >>> 24) & 0xFF));
+            int a = (pixel >>> 24) & 0xFF;
+            // 预乘时每个颜色通道都乘 a。未预乘那一支 r/g/b 原样写出——
+            // 这正是两条入口唯一的差别，也是唯一一处需要同时维护的分支。
+            int r = premultiply(pixel >>> 16 & 0xFF, a, premultiply);
+            int g = premultiply(pixel >>> 8 & 0xFF, a, premultiply);
+            int b = premultiply(pixel & 0xFF, a, premultiply);
+            rgba.put((byte) r);
+            rgba.put((byte) g);
+            rgba.put((byte) b);
+            rgba.put((byte) a);
         }
         return rgba.flip();
+    }
+
+    /**
+     * 单个通道的预乘：{@code round(channel * alpha / 255)}。
+     *
+     * <p>{@code +127} 是四舍五入的整数写法（{@code 255 / 2 = 127.5}，取 127 与
+     * 先乘后除的浮点写法在全部 65536 种输入上等价，且没有任何浮点舍入的余地）。
+     * 不预乘时原样返回，避免多一次无意义的乘除。
+     */
+    private static int premultiply(int channel, int alpha, boolean premultiply) {
+        if (!premultiply) {
+            return channel;
+        }
+        return (channel * alpha + 127) / 255;
     }
 
     @Override
@@ -212,7 +278,29 @@ public class LwjglGLAbstraction implements GLAbstraction {
 
     @Override
     public int createTexture(int width, int height, int[] pixels) {
-        ByteBuffer rgba = argbToRgba(width, height, pixels);
+        // 转换先于 glGenTextures 求值：参数不合法时异常在**创建任何 GL 对象之前**抛出，
+        // 不会留下一个没人删得掉的名字（Disposable 契约第 3 条）。
+        return uploadTexture(width, height, argbToRgba(width, height, pixels));
+    }
+
+    @Override
+    public int createPremultipliedTexture(int width, int height, int[] pixels) {
+        return uploadTexture(width, height, premultipliedArgbToRgba(width, height, pixels));
+    }
+
+    /**
+     * 两条上传路径<strong>唯一的一份</strong> GL 调用序列。
+     *
+     * <p>线程与状态无关性都靠这里统一：过滤方式是 {@code GL_LINEAR}（放大时平滑）、
+     * 环绕方式是 {@code GL_CLAMP_TO_EDGE}（uv 取到 1.0 时不会绕回另一侧采到边缘的
+     * 反面像素），上传后把绑定还原成 0。
+     *
+     * <p><strong>不生成 mipmap</strong>，{@code MIN_FILTER} 也就是 {@code GL_LINEAR}
+     * 而不是 {@code GL_LINEAR_MIPMAP_LINEAR}：图片被缩到很小时会有摩尔纹。
+     * 这是<strong>已声明的降级</strong>，不是漏了——两条路径都一样，且生成 mipmap
+     * 会让"上传一张图"这件事带上与尺寸相关的额外开销。
+     */
+    private static int uploadTexture(int width, int height, ByteBuffer rgba) {
         int texture = GL11.glGenTextures();
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
         GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
