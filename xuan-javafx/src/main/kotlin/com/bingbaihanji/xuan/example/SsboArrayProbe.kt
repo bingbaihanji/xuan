@@ -83,6 +83,10 @@ private fun probe(): Int {
     println("GL_VERSION  = ${glGetString(GL_VERSION)}")
     println("GL_RENDERER = ${glGetString(GL_RENDERER)}")
     println("GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS = ${glGetInteger(GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS)}")
+    // ★ 真正决定数组块能开多大的**不是**上面那个（96 个绑定点），而是这个：
+    //   "一个 compute 着色器里最多有几个 SSBO **块**"。数组块 ch[N] 算 N 个块。
+    println("GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS = ${glGetInteger(GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS)}")
+    println("GL_MAX_SHADER_STORAGE_BLOCK_SIZE    = ${glGetInteger(GL_MAX_SHADER_STORAGE_BLOCK_SIZE)}")
 
     var failures = 0
     fun report(label: String, ok: Boolean, detail: String) {

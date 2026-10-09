@@ -3,6 +3,7 @@ package com.bingbaihanji.xuan.example
 import com.bingbaihanji.xuan.gl.LwjglGLAbstraction
 import com.bingbaihanji.xuan.glview.FXGLTransfer
 import com.bingbaihanji.xuan.gpu.ComplexFft
+import com.bingbaihanji.xuan.gpu.FftBatchKernel
 import com.bingbaihanji.xuan.gpu.FftKernel
 import com.bingbaihanji.xuan.gpu.FftWindow
 import com.bingbaihanji.xuan.view.MainView
@@ -393,6 +394,8 @@ class FftVerifierApp : Application() {
         fun harness(n: Int): FftHarness = FftHarness(gl, n, RING_CAP).also { harnesses.add(it) }
         // ComplexFft 那一节的夹具（类型不同，单独一张表；同样在 finally 里释放）。
         val complexHarnesses = ArrayList<ComplexFftHarness>()
+        // FftBatchKernel 那一节的夹具。
+        val batchHarnesses = ArrayList<FftBatchHarness>()
 
         println("=== Xuan FFT 校验器（gpu/FftKernel.java）===")
         println("主长度 N = $N_MAIN（半谱 $N_MAIN/2+1 个 bin），频率 k0 = ${K0_LIST.joinToString()}，环容量 $RING_CAP")
@@ -1090,9 +1093,108 @@ class FftVerifierApp : Application() {
                 cxProbe?.close()
             }
 
+            // ==================================================================
+            // 十、FftBatchKernel：批量第 c 路 == 同数据单路 FftKernel（+ R2 计时）
+            // ==================================================================
+            //
+            // 判据为什么是"批量 == 单路"：两者**数学上完全等价**（同一段着色器逻辑，
+            // 只多了数组块与 batch 维度），所以任何差异都只可能来自"数组块取错了缓冲"
+            // 或"切片偏移写错了"——而那两者在画面上都是**完全正常**的谱。
+            println("\n-- 十、FftBatchKernel：批量第 c 路与单路 FftKernel 同数据结果一致 --")
+
+            var batchBlocker: Throwable? = null
+            val bx = try {
+                FftBatchHarness(gl, N_MAIN, RING_CAP, BATCH_CH).also { batchHarnesses.add(it) }
+            } catch (t: Throwable) {
+                batchBlocker = t
+                null
+            }
+            report(
+                "★ FftBatchKernel 的着色器能编译并链接（数组块，$BATCH_CH 路）",
+                batchBlocker == null,
+                batchBlocker?.message?.trim()?.take(500)
+                    ?: "编译并链接通过——被测对象是可运行状态"
+            )
+            fun bxBlocked(): String =
+                batchBlocker?.let { "无法评估：FftBatchKernel 没能构造出来 —— ${it.message?.trim()?.take(200)}" }
+                    ?: "无法评估（夹具为 null）"
+
+            if (bx != null) {
+                // 每一路喂一个**不同频率**的正弦：切片串了的话，各路的谱会彼此相同。
+                val batchK0 = IntArray(BATCH_CH) { 100 + it * 50 }
+                for (c in 0 until BATCH_CH) bx.upload(c, cosineInput(N_MAIN, batchK0[c]), 0)
+
+                // 单路参考：每一路各跑一次 FftKernel（= 现状的逐路路径）。
+                val singles8 = Array(BATCH_CH) { c ->
+                    harness(N_MAIN).also { it.uploadRing(cosineInput(N_MAIN, batchK0[c]), 0) }
+                }
+                for (h in singles8) {
+                    h.kernel.execute(h.inputBuffer, 0, FftWindow.BLACKMAN_HARRIS)
+                }
+                val singleSpec = Array(BATCH_CH) { c ->
+                    val bins = singles8[c].kernel.binCount()
+                    val fb = BufferUtils.createFloatBuffer(bins)
+                    glBindBuffer(GL_SHADER_STORAGE_BUFFER, singles8[c].kernel.outputBufferId())
+                    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0L, fb)
+                    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+                    DoubleArray(bins) { fb.get(it).toDouble() }
+                }
+
+                bx.run(BATCH_CH, 0, FftWindow.BLACKMAN_HARRIS)
+                var worst = 0.0
+                val peaks = IntArray(BATCH_CH)
+                for (c in 0 until BATCH_CH) {
+                    val got = bx.readChannel(c)
+                    worst = maxOf(worst, maxAbsDiff(got, singleSpec[c]))
+                    peaks[c] = peakIndex(got)
+                }
+                report(
+                    "★ 批量第 c 路与同数据单路 FftKernel 逐 bin 一致（每个 workgroup 读到的是自己那个缓冲）",
+                    worst <= BATCH_SINGLE_TOL,
+                    "与单路结果的最大绝对差 ${"%.3e".format(worst)}（门槛 $BATCH_SINGLE_TOL）"
+                )
+                report(
+                    "★ 批量 $BATCH_CH 路的峰各自落在自己那个频率上（切片偏移不串）",
+                    (0 until BATCH_CH).all { peaks[it] == batchK0[it] },
+                    "期望峰 ${batchK0.joinToString()}，实测峰 ${peaks.joinToString()}——" +
+                            "若几路相同，就是切片偏移按 0 算了"
+                )
+
+                // ── R2：逐路 N 次 dispatch vs 批量 1 次 dispatch ──
+                // ⚠️ 绝对毫秒在这台机器上单独拿出来不可比（笔记本 GPU 负载升频、SM 时钟游走），
+                //    所以**在同一轮里交替测**两条路径，只看比值。上传不计（两条路径一样）。
+                repeat(3) {
+                    for (h in singles8) h.kernel.execute(h.inputBuffer, 0, FftWindow.BLACKMAN_HARRIS)
+                    bx.run(BATCH_CH, 0, FftWindow.BLACKMAN_HARRIS)
+                }
+                var bestSingle = Double.MAX_VALUE
+                var bestBatch = Double.MAX_VALUE
+                repeat(R2_ROUNDS) {
+                    var t0 = System.nanoTime()
+                    for (h in singles8) h.kernel.execute(h.inputBuffer, 0, FftWindow.BLACKMAN_HARRIS)
+                    glFinish()
+                    bestSingle = minOf(bestSingle, (System.nanoTime() - t0) / 1e6)
+
+                    t0 = System.nanoTime()
+                    bx.run(BATCH_CH, 0, FftWindow.BLACKMAN_HARRIS)
+                    glFinish()
+                    bestBatch = minOf(bestBatch, (System.nanoTime() - t0) / 1e6)
+                }
+                info(
+                    "R2（$BATCH_CH 路，$R2_ROUNDS 轮里各取最快，只算 dispatch 不含上传）",
+                    "逐路 ${BATCH_CH} 次：${"%.3f".format(bestSingle)} ms；" +
+                            "批量 1 次：${"%.3f".format(bestBatch)} ms；" +
+                            "批量快 ${"%.2f".format(bestSingle / bestBatch)}×"
+                )
+            } else {
+                report("★ 批量第 c 路与同数据单路 FftKernel 逐 bin 一致", false, bxBlocked())
+                report("★ 批量 $BATCH_CH 路的峰各自落在自己那个频率上（切片偏移不串）", false, bxBlocked())
+            }
+
             return finish(failures)
         } finally {
             // GL 资源必须在 GL 线程上释放，而这里正是 GL 线程；异常路径上也走到。
+            batchHarnesses.asReversed().forEach { it.close() }
             complexHarnesses.asReversed().forEach { it.close() }
             harnesses.asReversed().forEach { it.close() }
             drainGlError()
@@ -1673,6 +1775,21 @@ private class ComplexFftHarness(
     }
 }
 
+/** 第十节（FftBatchKernel）一次批量跑几路。取 8：够暴露"切片串"，也够看出批量的收益。 */
+private const val BATCH_CH = 8
+
+/**
+ * "批量第 c 路 == 同数据单路 FftKernel"那条的门槛。
+ *
+ * <p>两者是**同一段着色器逻辑**（批量只是多了数组块与 workgroup 下标），
+ * 所以理论上逐位相同；留一点余量是因为两次运行是不同的 dispatch，
+ * 驱动不保证浮点收缩逐位一致。
+ */
+private const val BATCH_SINGLE_TOL = 1e-5
+
+/** R2 计时取几轮（每轮各取最快）。 */
+private const val R2_ROUNDS = 5
+
 /**
  * 朴素 O(N²) **复数** DFT 参考：`X[k] = Σ x[t]·exp(−2πi·k·t/n)`，**不归一**，出完整谱。
  *
@@ -1709,5 +1826,61 @@ private class CpuComplexReference(private val n: Int) {
             out[2 * k + 1] = si
         }
         return out
+    }
+}
+
+/**
+ * `FftBatchKernel` 的夹具：`channels` 个**各自独立**的环 VBO + 被测核 + 按路读回。
+ *
+ * <p>每个通道一个 VBO 是刻意的——它正是"每个系列保留自己的 `SeriesBuffer`"那件事的替身。
+ * 批量核靠 SSBO 数组块把它们绑到绑定点 0..C-1 上；**数据层一行没动**。
+ */
+private class FftBatchHarness(
+    private val gl: LwjglGLAbstraction,
+    val n: Int,
+    val ringCap: Int,
+    val channels: Int,
+) : AutoCloseable {
+
+    val inputBuffers = IntArray(channels) { gl.createBuffer() }
+
+    init {
+        for (b in inputBuffers) {
+            gl.bindShaderStorageBuffer(b)
+            gl.allocateBufferStorage(ringCap.toLong() * Float.SIZE_BYTES)
+            gl.bindShaderStorageBuffer(0)
+        }
+    }
+
+    val kernel = FftBatchKernel(gl, n)
+
+    /** 把 `x[0..n)` 依环形语义放进第 `ch` 路的环里，其余槽位填 [POISON]。 */
+    fun upload(ch: Int, x: DoubleArray, ringStart: Int) {
+        require(x.size == n) { "输入长度 ${x.size} 与变换长度 $n 不符" }
+        val data = FloatArray(ringCap) { POISON }
+        for (i in 0 until n) data[(ringStart + i) and (ringCap - 1)] = x[i].toFloat()
+        val bytes = BufferUtils.createByteBuffer(ringCap * Float.SIZE_BYTES)
+        bytes.asFloatBuffer().put(data)
+        gl.bindShaderStorageBuffer(inputBuffers[ch])
+        gl.uploadBufferSubData(0L, bytes)
+        gl.bindShaderStorageBuffer(0)
+    }
+
+    fun run(count: Int, ringStart: Int, window: FftWindow) =
+        kernel.execute(inputBuffers, count, ringStart, ringCap, window)
+
+    /** 读回第 c 路那一段半谱（`binCount` 个幅值）。 */
+    fun readChannel(c: Int): DoubleArray {
+        val bins = kernel.binCount()
+        val fb = BufferUtils.createFloatBuffer(bins)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, kernel.outputBufferId())
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, (c.toLong() * bins) * Float.SIZE_BYTES, fb)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+        return DoubleArray(bins) { fb.get(it).toDouble() }
+    }
+
+    override fun close() {
+        kernel.dispose()
+        inputBuffers.forEach { gl.deleteBuffer(it) }
     }
 }
