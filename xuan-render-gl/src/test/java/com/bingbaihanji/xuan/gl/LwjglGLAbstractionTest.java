@@ -110,13 +110,4 @@ class LwjglGLAbstractionTest {
         assertThrows(IllegalArgumentException.class,
                 () -> LwjglGLAbstraction.premultipliedArgbToRgba(2, 1, new int[1]));
     }
-
-    @Test
-    void 公开Texture封装也遵守ARGB到RGBA契约() {
-        ByteBuffer rgba = Texture.argbToRgba(1, 1, new int[]{0x80_12_34_56});
-        assertEquals(0x12, rgba.get() & 0xFF);
-        assertEquals(0x34, rgba.get() & 0xFF);
-        assertEquals(0x56, rgba.get() & 0xFF);
-        assertEquals(0x80, rgba.get() & 0xFF);
-    }
 }

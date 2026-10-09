@@ -93,6 +93,8 @@ public class LwjglGLAbstraction implements GLAbstraction {
      * 两份实现"付过代价——{@code gl/Texture} 里那份独立拷贝把 RGB 写成了 BGR，
      * <strong>没有任何东西发现它</strong>，直到两边都补了测试才对照出来。
      * 字节序只写一次，就没有让它们分家的机会。
+     * （<strong>那个类已于 2026-10-09 删除</strong>：它全仓零引用，两份拷贝的收口方式
+     * 是删掉没人用的那一份，而不是再补一条交叉断言。）
      *
      * <p>刻意<strong>不</strong>把 {@code premultiply} 暴露成一个公开的布尔参数：
      * 调用点上写 {@code argbToRgba(w, h, px, true)} 读不出"true 是哪一件事"，
