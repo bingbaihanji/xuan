@@ -14,23 +14,16 @@ import org.lwjgl.opengl.GL43.*
 import kotlin.system.exitProcess
 
 /**
- * **R1 探针**：本机驱动是否支持"运行时下标访问 SSBO 数组块"。
+ * R1 探针：本机驱动是否支持"运行时下标访问 SSBO 数组块"。
  *
- * <p>这是多路频谱批处理（交付物 C）的**命门**：C 的方案是"每个系列保留自己的 VBO，
- * 把它们分别 `glBindBufferBase` 到绑定点 0..C-1，着色器里 `ch[gl_WorkGroupID.x]` 取"。
- * `ARB_shader_storage_buffer_object`（OpenGL 4.3 核心）**规范上**支持数组块，
- * 且 `gl_WorkGroupID.x` 是 dynamically uniform 表达式（满足"下标必须 dynamically uniform"的要求），
- * 但**本机没有被实测过**——所以先测。
+ * <p>这是多路频谱批处理（交付物 C）的命门——C 要"每个系列保留自己的 VBO，分别
+ * `glBindBufferBase` 到绑定点 0..C-1，着色器里 `ch[gl_WorkGroupID.x]` 取"。
+ * `ARB_shader_storage_buffer_object`（OpenGL 4.3 核心）规范上支持数组块，且
+ * `gl_WorkGroupID.x` 是 dynamically uniform 表达式，但本机没被实测过，所以先测。
  *
- * <p>通过判据（缺一不可）：
- * <ol>
- *   <li>数组块着色器能编译并链接；</li>
- *   <li>`ch[gl_WorkGroupID.x]` 读到的**确实是各自绑定点上那个缓冲**的数据
- *       （两路数据不同，串了立刻现形）；</li>
- *   <li>全程 `glGetError() == 0`。</li>
- * </ol>
- *
- * <p>顺带打印 `GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS`——它决定 C 里 `MAX_BATCH` 能取多大。
+ * <p>通过判据（缺一不可）：① 数组块着色器能编译并链接；② `ch[gl_WorkGroupID.x]` 读到的
+ * 确实是各自绑定点上那个缓冲的数据（两路数据不同，串了立刻现形）；③ 全程 `glGetError() == 0`。
+ * 顺带打印 `GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS`——它决定 C 里 `MAX_BATCH` 能取多大。
  */
 @JvmName("main")
 fun ssboArrayProbeMain() {
@@ -83,8 +76,8 @@ private fun probe(): Int {
     println("GL_VERSION  = ${glGetString(GL_VERSION)}")
     println("GL_RENDERER = ${glGetString(GL_RENDERER)}")
     println("GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS = ${glGetInteger(GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS)}")
-    // ★ 真正决定数组块能开多大的**不是**上面那个（96 个绑定点），而是这个：
-    //   "一个 compute 着色器里最多有几个 SSBO **块**"。数组块 ch[N] 算 N 个块。
+    // 真正决定数组块能开多大的不是上面那个（96 个绑定点），而是这个：
+    // "一个 compute 着色器里最多有几个 SSBO 块"。数组块 ch[N] 算 N 个块。
     println("GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS = ${glGetInteger(GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS)}")
     println("GL_MAX_SHADER_STORAGE_BLOCK_SIZE    = ${glGetInteger(GL_MAX_SHADER_STORAGE_BLOCK_SIZE)}")
 
@@ -136,7 +129,7 @@ private fun probe(): Int {
         compileError = t
     }
     report(
-        "★ 数组块着色器能编译并链接",
+        "数组块着色器能编译并链接",
         shader != null,
         compileError?.message?.trim()?.take(400) ?: "编译并链接通过"
     )
@@ -173,7 +166,7 @@ private fun probe(): Int {
         for (i in 0 until 3) seen.append("${fb.get(c * LEN + i)} ")
     }
     report(
-        "★ ch[gl_WorkGroupID.x] 读到的是各自绑定点上缓冲的数据（两路不串）",
+        "ch[gl_WorkGroupID.x] 读到的是各自绑定点上缓冲的数据（两路不串）",
         dataOk,
         "$seen（期望各路是 (c*100+i)*2）"
     )

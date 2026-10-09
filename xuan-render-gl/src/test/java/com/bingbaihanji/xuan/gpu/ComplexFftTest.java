@@ -5,27 +5,15 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * {@link ComplexFft} 的<strong>零 GL 单测</strong>——只测它生成的那段着色器源码，
- * 以及归一化算式这个纯算术。
+ * {@link ComplexFft} 的零 GL 单测——只测它生成的那段着色器源码，以及归一化算式这个纯算术。
  *
- * <h2>为什么这些断言值得写</h2>
- * <p>前半组与 {@code FftKernelTest} 逐条同源（"不看字符串就发现不了"的三个格式/脱钩坑），
- * 后半组是本类特有的——它们钉的正是当年把 {@code GPUFFT} 埋掉的那三条线，
- * 以及本规格新增的两处设计：
- *
- * <ul>
- *   <li><strong>缺陷①</strong>：GLSL <b>保留字</b>当标识符（{@code half}）⇒ 编译不过，
- *       失败晚到很久才暴露；</li>
- *   <li><strong>缺陷②</strong>：{@code uniform uint} 配 {@code glUniform1i} ⇒
- *       {@code GL_INVALID_OPERATION} <b>且值不生效</b>（静默）；</li>
- *   <li><strong>批量维度</strong>：必须由 {@code gl_WorkGroupID.x} 选取——
- *       写成常量 0 的话每一路都算成第一路，<b>画面完全正常</b>；</li>
- *   <li><strong>实数快通道</strong>：{@code u_InStride} 必须在——它决定"一个缓冲两种含义"，
- *       是本规格最容易静默出错的设计。</li>
- * </ul>
- *
- * <p>判据为什么必须同时落在 {@code shaderTemplate()} 与 {@code shaderSource()} 上，
- * 见 {@code FftKernelTest} 的类文档（{@code %n} 会被 {@code formatted} 吃掉）。
+ * <p>前半组与 {@code FftKernelTest} 逐条同源（"不看字符串就发现不了"的三个格式/脱钩坑，
+ * 判据为什么必须同时落在 {@code shaderTemplate()} 与 {@code shaderSource()} 上见那里）；
+ * 后半组钉的是当年把 {@code GPUFFT} 埋掉的那几条线，以及本规格新增的两处设计：
+ * 缺陷① GLSL 保留字当标识符（{@code half}）⇒ 编译不过；缺陷② {@code uniform uint} 配
+ * {@code glUniform1i} ⇒ {@code GL_INVALID_OPERATION} 且值不生效（静默）；批量维度必须由
+ * {@code gl_WorkGroupID.x} 选取（写成常量 0 的话每一路都算成第一路，画面完全正常）；
+ * 实数快通道靠 {@code u_InStride} 决定"一个缓冲两种含义"。
  */
 class ComplexFftTest {
 
@@ -72,7 +60,7 @@ class ComplexFftTest {
 
     @Test
     void 模板里每一个百分号都必须是占位符或转义() {
-        // %n 这类不消耗实参的说明符**不会抛异常**，会被静默替换成换行符，着色器照样编译通过。
+        // %n 这类不消耗实参的说明符不会抛异常，会被静默替换成换行符，着色器照样编译通过。
         // 所以"能跑"证明不了它不存在——只有扫描模板能（生成串里它已经被吃掉了）。
         String template = ComplexFft.shaderTemplate();
         int placeholders = 0;
@@ -103,8 +91,8 @@ class ComplexFftTest {
 
     @Test
     void uniform_不得声明成_uint() {
-        // ★ 缺陷②（当年 GPUFFT 就死在这一条上，而且是静默的）：
-        //   声明成 uint 而用 glUniform1i 赋值 ⇒ GL_INVALID_OPERATION 且**值不生效**。
+        // 缺陷②（当年 GPUFFT 就死在这一条上，而且是静默的）：
+        // 声明成 uint 而用 glUniform1i 赋值 ⇒ GL_INVALID_OPERATION 且值不生效。
         assertFalse(ComplexFft.shaderTemplate().contains("uniform uint"),
                 "uniform 一律声明成 int / float，与 setUniform 的 glUniform1i / glUniform1f 配对");
         assertFalse(ComplexFft.shaderTemplate().contains("uniform uvec"),
@@ -113,11 +101,10 @@ class ComplexFftTest {
 
     @Test
     void 不得使用_GLSL_保留字_half_当标识符() {
-        // ★ 缺陷①（当年 GPUFFT 的默认着色器就编译不过）。
-        //   两个技术点，都是这条断言本身踩出来的：
-        //   ① 用词边界匹配——`halfLen` 里含 half 不算违规，独立的 half 才算；
-        //   ② **必须先剥注释**——着色器里那句"不要用 half 当变量名"的注释本身含 half，
-        //      不剥的话这条断言恒假（实测：第一版就是这么红的）。
+        // 缺陷①（当年 GPUFFT 的默认着色器就编译不过）。两个技术点，都是这条断言本身踩出来的：
+        // ① 用词边界匹配——`halfLen` 里含 half 不算违规，独立的 half 才算；
+        // ② 必须先剥注释——着色器里那句"不要用 half 当变量名"的注释本身含 half，
+        //    不剥的话这条断言恒假（实测：第一版就是这么红的）。
         String code = ComplexFft.shaderSource()
                 .replaceAll("(?s)/\\*.*?\\*/", "")   // 块注释
                 .replaceAll("//[^\\n]*", "");        // 行注释
@@ -127,8 +114,8 @@ class ComplexFftTest {
 
     @Test
     void 批量维度必须由_gl_WorkGroupID_x_选取() {
-        // ★ 钉住"batch 偏移写成常量 0"那类缺陷：写成 0 的话每一路都算成第一路，
-        //   而**画面完全正常**（每条谱线形状都对，只是内容都是第 0 路）。
+        // 钉住"batch 偏移写成常量 0"那类缺陷：写成 0 的话每一路都算成第一路，
+        // 而画面完全正常（每条谱线形状都对，只是内容都是第 0 路）。
         assertTrue(ComplexFft.shaderTemplate().contains("gl_WorkGroupID.x"),
                 "批量维度必须由 gl_WorkGroupID.x 选取，不能写死");
     }
@@ -141,7 +128,7 @@ class ComplexFftTest {
 
     @Test
     void 归一化_正向不归一_逆向乘_n_分之一() {
-        // ★ 只允许一种约定（原规格 R5 批评过"两套约定差 3 dB"）。
+        // 只允许一种约定（原规格 R5 批评过"两套约定差 3 dB"）。
         assertEquals(1.0f, ComplexFft.scaleFor(2048, false), 0f,
                 "正向不归一：单位幅度余弦的谱峰是 N/2");
         assertEquals(1.0f / 2048f, ComplexFft.scaleFor(2048, true), 0f,

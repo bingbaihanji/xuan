@@ -891,12 +891,12 @@ class FftVerifierApp : Application() {
             }
 
             // ==================================================================
-            // 七、ComplexFft：通用复数正/逆变换（真 GL 上算得对不对）
+            // 九、ComplexFft：通用复数正/逆变换（真 GL 上算得对不对）
             // ==================================================================
             //
-            // 这一节与上面六节的分工：上面测的是 FftKernel（实数 → 加窗 → 半谱幅度），
-            // 这里测的是 ComplexFft（复数 → 复数、正/逆、批量）。两者的输出格式不同，
-            // 参考实现也不同（这里要**完整复数谱**，不是半谱），所以各持一份夹具与参考。
+            // 与上面几节的分工：上面测 FftKernel（实数 → 加窗 → 半谱幅度），本节测
+            // ComplexFft（复数 → 复数、正/逆、批量）。两者输出格式与参考实现都不同
+            // （这里要**完整复数谱**，不是半谱），各持一份夹具与参考。
             println("\n-- 九、ComplexFft：复数正向对 CPU 参考、正逆往返、批量、实/复两路一致 --")
 
             var complexBlocker: Throwable? = null
@@ -907,7 +907,7 @@ class FftVerifierApp : Application() {
                 null
             }
             report(
-                "★ ComplexFft 的着色器能编译并链接（N=$COMPLEX_N）",
+                "ComplexFft 的着色器能编译并链接（N=$COMPLEX_N）",
                 complexBlocker == null,
                 complexBlocker?.message?.trim()?.take(500)
                     ?: "编译并链接通过——被测对象是可运行状态"
@@ -918,7 +918,7 @@ class FftVerifierApp : Application() {
                     ?: "无法评估（夹具为 null）"
 
             // ── 7.1 复数正向与 CPU 复数 DFT 逐点比对 ──────────────────────────
-            // 输入刻意**实部虚部都非零**（余弦 + 正弦）：只喂纯实数的话，
+            // 输入**实部虚部都非零**（余弦 + 正弦）：只喂纯实数的话，
             // "实虚部串扰"（t3 = (b−d)·(−i) 写错、cmul 的交叉项写反）全都看不出来。
             val cRe = DoubleArray(COMPLEX_N) { (cos(2.0 * PI * COMPLEX_K0 * it / COMPLEX_N)).toFloat().toDouble() }
             val cIm = DoubleArray(COMPLEX_N) { (sin(2.0 * PI * COMPLEX_K0 * it / COMPLEX_N)).toFloat().toDouble() }
@@ -931,7 +931,7 @@ class FftVerifierApp : Application() {
             }
             val cErr = if (cGot != null) maxRelError(cGot, cWant, complexPeak(cWant)) else Double.NaN
             report(
-                "★ ComplexFft 复数正向与 CPU 复数 DFT 逐点一致（实虚部都非零）",
+                "ComplexFft 复数正向与 CPU 复数 DFT 逐点一致（实虚部都非零）",
                 cGot != null && cErr < COMPLEX_REF_TOL,
                 if (cGot == null) cxBlocked()
                 else "相对峰值最大误差 ${"%.3e".format(cErr)}（门槛 $COMPLEX_REF_TOL）；" +
@@ -958,7 +958,7 @@ class FftVerifierApp : Application() {
                 rtDiff = worst
             }
             report(
-                "★ ComplexFft 正逆往返恢复原信号（逆向的 1/N 归一化）",
+                "ComplexFft 正逆往返恢复原信号（逆向的 1/N 归一化）",
                 rtDiff < ROUND_TRIP_TOL,
                 if (rtDiff.isNaN()) cxBlocked()
                 else "往返后与原始信号的最大绝对差 ${"%.3e".format(rtDiff)}（门槛 $ROUND_TRIP_TOL）"
@@ -980,7 +980,7 @@ class FftVerifierApp : Application() {
                 batchDiff = worst
             }
             report(
-                "★ ComplexFft 批量与单路逐位一致（batched[0] == single）",
+                "ComplexFft 批量与单路逐位一致（batched[0] == single）",
                 batchDiff <= EXACT_TOL,
                 if (batchDiff.isNaN()) cxBlocked()
                 else "最大绝对差 ${"%.3e".format(batchDiff)}（门槛 $EXACT_TOL，0 表示逐位相同）"
@@ -988,7 +988,7 @@ class FftVerifierApp : Application() {
 
             // ── 7.4 实/复两条路一致 ───────────────────────────────────────────
             // 同一实数信号：stride=1（实数快通道）与 stride=2（补零虚部）必须给出同样的谱。
-            // ★ 这条封的是本类最容易静默出错的设计——"一个缓冲两种含义"。
+            // 注意：这条封的是本类最容易静默出错的设计——"一个缓冲两种含义"。
             var strideDiff = Double.NaN
             if (cx != null) {
                 val x = cosineInput(COMPLEX_N, COMPLEX_K0)
@@ -1003,7 +1003,7 @@ class FftVerifierApp : Application() {
                 strideDiff = worst
             }
             report(
-                "★ ComplexFft 实数快通道与复数通道给出同一结果（stride=1 vs stride=2）",
+                "ComplexFft 实数快通道与复数通道给出同一结果（stride=1 vs stride=2）",
                 strideDiff <= EXACT_TOL,
                 if (strideDiff.isNaN()) cxBlocked()
                 else "最大绝对差 ${"%.3e".format(strideDiff)}（门槛 $EXACT_TOL）"
@@ -1020,14 +1020,14 @@ class FftVerifierApp : Application() {
                 peakRel = abs(mag - COMPLEX_N / 2.0) / (COMPLEX_N / 2.0)
             }
             report(
-                "★ ComplexFft 正向不归一：单位幅度余弦的谱峰 = N/2",
+                "ComplexFft 正向不归一：单位幅度余弦的谱峰 = N/2",
                 peakRel < AMP_TOL,
                 if (peakRel.isNaN()) cxBlocked()
                 else "偏差 ${"%.3e".format(peakRel)}（门槛 $AMP_TOL，期望峰高 ${COMPLEX_N / 2.0}）"
             )
 
             // ── 7.6 batch 偏移不串：第 c 路的峰必须落在第 c 路自己的输出段 ──────
-            // ★ 这条钉的是"batch 偏移写成 0"那类缺陷——写成 0 的话每一路都算成第一路，
+            // 注意：这条钉的是"batch 偏移写成 0"那类缺陷——写成 0 的话每一路都算成第一路，
             //   而**画面完全正常**（每条谱线形状都对，只是内容都是第 0 路）。
             //   判据不是"峰在正确的 bin"（那对第 0 路也成立），而是**每一路的峰各不相同、
             //   且各自等于自己那个频率**。
@@ -1048,17 +1048,15 @@ class FftVerifierApp : Application() {
                     }
                     gotPeaks[c] = best
                 }
-                // ★ 判据只能写"落在自己那一对**共轭**里"，不能写 `== k0`。
-                //   实数正弦的谱有**两个**等高的峰（k 与 N−k），谁被选成"最大值"
-                //   由 float32 舍入方向决定——实测第一版写成 ==k0 时，
-                //   第 0、3 路落在 k0 上，第 1、2 路落在 N−k0 上，于是那条假红。
-                //   而"偏移写成 0"的签名是**几路完全相同**，不是"落在共轭上"。
+                // 判据只能写"落在自己那一对**共轭**里"，不能写 `== k0`：实数正弦有两个等高峰
+                //   （k 与 N−k），谁最大由 float32 舍入方向决定（实测 ==k0 时第 0、3 路落 k0、
+                //   第 1、2 路落 N−k0，于是那条假红）。"偏移写成 0"的签名是几路完全相同。
                 peaksOk = (0 until COMPLEX_BATCH).all { c ->
                     gotPeaks[c] == expectK[c] || gotPeaks[c] == COMPLEX_N - expectK[c]
                 }
             }
             report(
-                "★ ComplexFft 批量：第 c 路的谱峰落在第 c 路自己的输出段（偏移不串）",
+                "ComplexFft 批量：第 c 路的谱峰落在第 c 路自己的输出段（偏移不串）",
                 peaksOk,
                 if (cx == null) cxBlocked()
                 else "每路期望频率 ${expectK.joinToString()}（峰落在 k0 或 N−k0 都算对），" +
@@ -1080,7 +1078,7 @@ class FftVerifierApp : Application() {
                     COMPLEX_UNIFORM_NAMES.filter { requireNotNull(cxProbe).location(it) < 0 }
                 } else emptyList()
                 report(
-                    "★ ComplexFft 的 ${COMPLEX_UNIFORM_NAMES.size} 个 uniform 名字都能解析出 location",
+                    "ComplexFft 的 ${COMPLEX_UNIFORM_NAMES.size} 个 uniform 名字都能解析出 location",
                     cxCompiled && unresolved.isEmpty(),
                     when {
                         cxProbeErr != null -> cxProbeErr.message?.trim()?.take(200) ?: cxProbeErr.toString()
@@ -1110,7 +1108,7 @@ class FftVerifierApp : Application() {
                 null
             }
             report(
-                "★ FftBatchKernel 的着色器能编译并链接（数组块，$BATCH_CH 路）",
+                "FftBatchKernel 的着色器能编译并链接（数组块，$BATCH_CH 路）",
                 batchBlocker == null,
                 batchBlocker?.message?.trim()?.take(500)
                     ?: "编译并链接通过——被测对象是可运行状态"
@@ -1149,19 +1147,19 @@ class FftVerifierApp : Application() {
                     peaks[c] = peakIndex(got)
                 }
                 report(
-                    "★ 批量第 c 路与同数据单路 FftKernel 逐 bin 一致（每个 workgroup 读到的是自己那个缓冲）",
+                    "批量第 c 路与同数据单路 FftKernel 逐 bin 一致（每个 workgroup 读到的是自己那个缓冲）",
                     worst <= BATCH_SINGLE_TOL,
                     "与单路结果的最大绝对差 ${"%.3e".format(worst)}（门槛 $BATCH_SINGLE_TOL）"
                 )
                 report(
-                    "★ 批量 $BATCH_CH 路的峰各自落在自己那个频率上（切片偏移不串）",
+                    "批量 $BATCH_CH 路的峰各自落在自己那个频率上（切片偏移不串）",
                     (0 until BATCH_CH).all { peaks[it] == batchK0[it] },
                     "期望峰 ${batchK0.joinToString()}，实测峰 ${peaks.joinToString()}——" +
                             "若几路相同，就是切片偏移按 0 算了"
                 )
 
                 // ── R2：逐路 N 次 dispatch vs 批量 1 次 dispatch ──
-                // ⚠️ 绝对毫秒在这台机器上单独拿出来不可比（笔记本 GPU 负载升频、SM 时钟游走），
+                // 注意：绝对毫秒在这台机器上单独拿出来不可比（笔记本 GPU 负载升频、SM 时钟游走），
                 //    所以**在同一轮里交替测**两条路径，只看比值。上传不计（两条路径一样）。
                 repeat(3) {
                     for (h in singles8) h.kernel.execute(h.inputBuffer, 0, FftWindow.BLACKMAN_HARRIS)
@@ -1187,8 +1185,8 @@ class FftVerifierApp : Application() {
                             "批量快 ${"%.2f".format(bestSingle / bestBatch)}×"
                 )
             } else {
-                report("★ 批量第 c 路与同数据单路 FftKernel 逐 bin 一致", false, bxBlocked())
-                report("★ 批量 $BATCH_CH 路的峰各自落在自己那个频率上（切片偏移不串）", false, bxBlocked())
+                report("批量第 c 路与同数据单路 FftKernel 逐 bin 一致", false, bxBlocked())
+                report("批量 $BATCH_CH 路的峰各自落在自己那个频率上（切片偏移不串）", false, bxBlocked())
             }
 
             return finish(failures)
@@ -1327,9 +1325,8 @@ class FftVerifierApp : Application() {
     /**
      * 同 [readShaderSource]，但对着任意一个核的类——ComplexFft 那一节用它。
      *
-     * <p>反射而不是手抄：手抄的那份会随上游改动**静默失真**。
-     * `shaderSource()` 在 Java 侧是**包级可见**（本项目刻意的可测性做法），
-     * Kotlin 跨包调不到，所以只能反射。
+     * <p>用反射而不是手抄：手抄的那份会随上游改动**静默失真**；
+     * `shaderSource()` 在 Java 侧是包级可见，Kotlin 跨包调不到，只能反射。
      */
     private fun readShaderSourceOf(clazz: Class<*>): String? = try {
         val method = clazz.getDeclaredMethod("shaderSource")
@@ -1647,18 +1644,18 @@ private fun cosineInput(n: Int, k0: Int, amp: Double = 1.0): DoubleArray =
 // ---------------------------------------------------------------------------
 
 /**
- * 第七节（ComplexFft）用的变换长度。
+ * 第九节（ComplexFft）用的变换长度。
  *
- * <p>比主干那个 `N_MAIN` **小**：那一节的参考是**朴素 O(N²) DFT**（复数、完整谱、N 个 bin），
- * 而这一节要跑好几趟（正向 / 往返 / 批量 / 实复两路 / 归一化 / 批量偏移）。
+ * <p>比主干 `N_MAIN` **小**：参考是**朴素 O(N²) DFT**（复数、完整谱、N 个 bin），
+ * 而本节要跑好几趟（正向 / 往返 / 批量 / 实复两路 / 归一化 / 批量偏移）。
  * N=1024 时单趟约一百万次复数乘加，几趟下来仍在秒级以内。
  */
 private const val COMPLEX_N = 1024
 
-/** 第七节批量那几条用的路数（≥2 才能验"偏移不串"）。 */
+/** 第九节批量那几条用的路数（≥2 才能验"偏移不串"）。 */
 private const val COMPLEX_BATCH = 4
 
-/** 第七节复数正向那一路的频率。取既非 0 也非 N/2 的位置。 */
+/** 第九节复数正向那一路的频率。取既非 0 也非 N/2 的位置。 */
 private const val COMPLEX_K0 = 100
 
 /** 与 CPU 复数参考逐点比对的门槛（相对峰值）。与 [CPU_REF_TOL] 同源同理由。 */
@@ -1679,9 +1676,8 @@ private const val EXACT_TOL = 1e-12
 /**
  * `ComplexFft` 会去设置的那 4 个 uniform 名字。
  *
- * <p>与 [UNIFORM_NAMES] 同一条理由：手写一份、与生产代码各持——
- * 着色器里改名而 Java 侧没跟着改时，`glGetUniformLocation` 返回 −1 而
- * `glUniform1i` **不报错**，值静默不生效。
+ * <p>与 [UNIFORM_NAMES] 同一条理由：手写一份、与生产代码各持——着色器里改名而 Java 侧
+ * 没跟着改时，`glGetUniformLocation` 返回 −1 而 `glUniform1i` **不报错**，值静默不生效。
  */
 private val COMPLEX_UNIFORM_NAMES = listOf("u_N", "u_InStride", "u_Inverse", "u_Scale")
 
@@ -1781,9 +1777,8 @@ private const val BATCH_CH = 8
 /**
  * "批量第 c 路 == 同数据单路 FftKernel"那条的门槛。
  *
- * <p>两者是**同一段着色器逻辑**（批量只是多了数组块与 workgroup 下标），
- * 所以理论上逐位相同；留一点余量是因为两次运行是不同的 dispatch，
- * 驱动不保证浮点收缩逐位一致。
+ * <p>两者是**同一段着色器逻辑**（批量只是多了数组块与 workgroup 下标），理论上逐位相同；
+ * 留一点余量是因为两次运行是不同的 dispatch，驱动不保证浮点收缩逐位一致。
  */
 private const val BATCH_SINGLE_TOL = 1e-5
 
@@ -1794,7 +1789,7 @@ private const val R2_ROUNDS = 5
  * 朴素 O(N²) **复数** DFT 参考：`X[k] = Σ x[t]·exp(−2πi·k·t/n)`，**不归一**，出完整谱。
  *
  * <p>与 [CpuReference] 同一套理由：刻意**不写成 FFT**——它的全部价值在于**显然是对的**。
- * 与生产代码共享的只有"三角函数的定义"这一件事，变换本身各写各的。
+ * 与生产代码共享的只有"三角函数的定义"，变换本身各写各的。
  *
  * <p>归一化刻意**不在这里做**：正向就是不归一（`ComplexFft.scaleFor(n, false) == 1`），
  * 所以参考里连乘号都没有——这样"正向不该乘任何东西"这条才真的被钉住。

@@ -1,23 +1,17 @@
 package com.bingbaihanji.xuan.gpu;
 
 /**
- * FFT 的窗函数，以及它的<strong>相干增益补偿</strong>。
+ * FFT 的窗函数，以及它的相干增益补偿。
  *
- * <h2>为什么必须补偿</h2>
- * <p>加窗会让谱峰变矮——变矮的比例就是窗的<b>相干增益</b>（系数的平均值）。
- * 不补偿的话，<b>用户换一个窗、幅度读数就变了</b>，而画面上完全看不出来：
- * 谱的形状是对的，只是整体矮了一截。这是典型的静默错误。
+ * <p>加窗会按相干增益（系数的平均值）压低谱峰，不补偿的话用户换一个窗幅度读数就变了，
+ * 而画面完全看不出来——谱的形状是对的，只是整体矮了一截。典型的静默错误。
  *
- * <h2>为什么这里不写死具体系数</h2>
- * <p>参考项目 ngscopeclient 的系数是 2.013 / 1.862 / 2.805，而教科书值应当是
- * 2.0 / 1.852 / …——<b>两者对不上，原因不明</b>。而那份代码里确实有一个被它的单元测试
- * 掩盖的 BH 窗公式 bug（测试的黄金模型照抄了同一个公式）。
+ * <p>参考项目 ngscopeclient 的系数是 2.013 / 1.862 / 2.805，与教科书值 2.0 / 1.852 对不上，
+ * 原因不明；而那份代码里确实有一个被它的单元测试掩盖的 BH 窗公式 bug（黄金模型照抄了同一公式）。
+ * 所以本类一律从定义推导：{@code coherentGain = mean(w)}、{@code compensation = 1 / coherentGain}。
+ * 不要替换成任何写死的魔数。
  *
- * <p>所以本类<b>一律从定义推导</b>：{@code coherentGain = mean(w)}，
- * {@code compensation = 1 / coherentGain}。<b>不要替换成任何写死的魔数。</b>
- *
- * <h2>默认为什么是 Blackman-Harris</h2>
- * <p>示波器场景常要在<b>大载波旁边看小谐波</b>。BH 的旁瓣比 Hann 低一个量级以上，
+ * <p>默认 Blackman-Harris：示波器要在大载波旁边看小谐波，BH 的旁瓣比 Hann 低一个量级以上，
  * 而旁瓣高看起来像"底噪抬起来了"，不像 bug。
  */
 public enum FftWindow {
@@ -47,12 +41,11 @@ public enum FftWindow {
     },
 
     /**
-     * Blackman-Harris 窗（四项），<b>默认</b>。旁瓣约 −92 dB。
+     * Blackman-Harris 窗（四项），默认。旁瓣约 −92 dB。
      *
-     * <p><strong>三项余弦必须依次是 {@code cos(x)} / {@code cos(2x)} / {@code cos(3x)}，
-     * 其中 {@code x = 2πi/(N−1)}。</strong> 参考项目把它写成了 {@code cos(6·num)}
-     * （其中 {@code num = 2πi/N}），于是实际算的是 {@code cos(12πi/N)}——
-     * <b>而它的单元测试照抄了同一个公式，抓不到</b>。
+     * <p>三项余弦必须依次是 {@code cos(x)} / {@code cos(2x)} / {@code cos(3x)}，
+     * 其中 {@code x = 2πi/(N−1)}。参考项目写成 {@code cos(6·num)}（{@code num = 2πi/N}），
+     * 实际算的是 {@code cos(12πi/N)}——而它的单元测试照抄了同一公式，抓不到。
      */
     BLACKMAN_HARRIS {
         @Override
@@ -74,13 +67,11 @@ public enum FftWindow {
     public abstract double coefficient(int i, int n);
 
     /**
-     * 相干增益：系数的平均值。
-     *
-     * <p><b>由定义求和得到，不要替换成写死的常数。</b>
+     * 相干增益：系数的平均值。由定义求和得到，不要替换成写死的常数。
      *
      * @throws IllegalArgumentException {@code n < 2}，或该窗在这个长度上退化成零增益
-     *         （例如 HANN 在 {@code n = 2} 时两个系数都是 0——<b>那种窗会把信号整个抹掉，
-     *         补偿是无穷大，静默返回它会一路传到顶点位置上</b>）
+     *         （例如 HANN 在 {@code n = 2} 时两个系数都是 0——那种窗会把信号整个抹掉，
+     *         补偿是无穷大，静默返回它会一路传到顶点位置上）
      */
     public double coherentGain(int n) {
         if (n < 2) {

@@ -84,21 +84,21 @@ import kotlin.system.exitProcess
  * 只有那两条 ★ 失败，其余 12 条全绿）。这与折返图那条判据（[ZIG_VALUES]）是同一件事，
  * 只是这里把"两个实例之间"的分辨尺度交给了 FFT 的主瓣。
  *
- * <p>子项目 D-③ 的**多路频谱**（一次批量 dispatch 算 C 路半谱）补了第 20 节，它守的是
- * `SpectrumSeriesRenderer.prepareFrame` 那条**批量分支**——上面第 19 节的场景里
- * **同时只有一条** `SPECTRUM` 系列，那条分支根本走不到（`spectrumSeries.size() < 2`
- * 直接返回），所以第 19 节的 14 条全绿与它无关。
+ * <p>子项目 D-③ 的**多路频谱**（一次批量 dispatch 算 C 路半谱）补了第 20 节，守的是
+ * `SpectrumSeriesRenderer.prepareFrame` 那条**批量分支**——第 19 节的场景里**同时只有一条**
+ * `SPECTRUM` 系列，那条分支走不到（`spectrumSeries.size() < 2` 直接返回），所以第 19 节的
+ * 14 条全绿与它无关。
  *
  * <p><b>它的判据是"每一条谱的峰落在它自己那个频率的列上"</b>：把渲染器里的
  * `firstInstanceBase`（"本系列从批输出的哪一片取数"）写成 0 之后，两条谱的
  * **形状都完全正常**、峰高也对、峰所在的列也在绘图区里——唯一看得见它的地方是
  * **"第 1 条的峰落在哪一列"**（变异实测：这一节 6 条里 4 条倒，其余 170 条全绿）。
  *
- * <p>★ **这一节第一次跑就撞出一条真缺陷**：帧前预扫用 `ctx.bufferFor` 取缓冲，而那个入口
+ * <p>**这一节第一次跑就撞出一条真缺陷**：帧前预扫用 `ctx.bufferFor` 取缓冲，而那个入口
  * 有一道"必须是当前正在渲染的那个系列"的守卫，预扫却跑在 `ChartRenderer` 设置它**之前**
  * ⇒ 只要图里有 ≥2 条 `SPECTRUM` 系列就必然抛 `IllegalStateException`（一条时早在
- * `size() < 2` 那一支返回了，所以这条缺陷在单系列的场景里完全看不见）。
- * 修法是把 `ChartRenderer.bufferFor` 作为参数传进预扫——理由与实测见 `ChartRenderer` 里那段注释。
+ * `size() < 2` 那一支返回了，单系列场景里完全看不见）。修法是把 `ChartRenderer.bufferFor`
+ * 作为参数传进预扫——理由见 `ChartRenderer` 里那段注释。
  *
  * <p>Task 5（子项目 A 的抗锯齿）补了<b>图表系列的解析式 AA</b> 那一节。它守的是
  * 「{@code uAntialias} 真的接到了每一个渲染器上」——而漏接一个的表现是
@@ -773,30 +773,24 @@ private val SPECTRUM_WINDOW = FftWindow.BLACKMAN_HARRIS
 // ---------------------------------------------------------------------------
 // 多路频谱：一次批量 dispatch 算 C 路半谱（`FftBatchKernel`）
 //
-// ★ 这一节守的是 `SpectrumSeriesRenderer.prepareFrame` 那条**批量分支**：
-//   本帧所有 SPECTRUM 系列按 (环容量, 写指针) 分组，≥2 路同组的走**一次**
-//   `FftBatchKernel.execute`，绘制时各自从输出的 `路号 × binCount` 那一片取数
-//   （`render()` 里的 `firstInstanceBase`）。
+// 守的是 `SpectrumSeriesRenderer.prepareFrame` 那条**批量分支**：本帧所有 SPECTRUM 系列按
+//   (环容量, 写指针) 分组，≥2 路同组的走**一次** `FftBatchKernel.execute`，绘制时各自从输出的
+//   `路号 × binCount` 那一片取数（`render()` 里的 `firstInstanceBase`）。
 //
-// ★ 它为什么必须靠像素：把 `firstInstanceBase` 写成 0（每条谱都从第 0 路取数）之后，
-//   两条谱的**形状都完全正常**、峰高也对、峰所在的列也在绘图区里——唯一看得见它的地方
-//   是"**第 1 条的峰落在哪一列**"。既有的第 19 节抓不住它：那一节的场景里同时只有
-//   一条 SPECTRUM 系列，`prepareFrame` 在 `spectrumSeries.size() < 2` 那一支直接返回，
-//   **批量分支根本走不到**（它 14 条全绿与这条路无关）。
+// 它为什么必须靠像素：把 `firstInstanceBase` 写成 0（每条谱都从第 0 路取数）之后，两条谱的
+//   **形状都完全正常**、峰高也对、峰所在的列也在绘图区里——唯一看得见它的是"**第 1 条的峰落在
+//   哪一列**"。第 19 节抓不住它：那一节同时只有一条 SPECTRUM 系列，`size() < 2` 那一支直接返回。
 //
-// 排布：画面已经排满（逐块算过：左上三块、主绘图区、右侧两块、最左一列四张图型、
-//   左下五块、最下一带五块），没有空闲空地——所以这一节**复用第 19 节那块频谱绘图区**，
-//   但只在**观察期之后的空档帧**里画。那时既有的那张频谱图已经收工（它只在
-//   `n < STREAM_FRAMES` 里画），两者不会同帧争同一块地方。
+// 排布：画面已经排满（逐块算过），没有空闲空地，所以本节**复用第 19 节那块频谱绘图区**，
+//   只在**观察期之后的空档帧**里画（那时既有的频谱图已收工，不会同帧争同一块地方）。
 // ---------------------------------------------------------------------------
 
 /**
  * 批量频谱两条系列的频率（bin 下标）。**两者不同**是本节判别式的前提。
  *
- * <p>取窗口 [SPECTRUM_WINDOW_MIN, SPECTRUM_WINDOW_MAX] 的两端各内缩 4 个 bin：
- * BH 窗的主瓣是 ±4 个 bin，主瓣被窗口切掉的话"峰"就不再是一条完整的峰了。
- * 48 → 64 相差 **16 个 bin**，在 220 px 宽的绘图区上是约 **147 px**——
- * 比 [BATCH_SPECTRUM_MIN_SEP_PX] 宽一倍有余，也远超 [SPECTRUM_PEAK_COL_TOL]。
+ * <p>取窗口 [SPECTRUM_WINDOW_MIN, SPECTRUM_WINDOW_MAX] 两端各内缩 4 个 bin（BH 窗主瓣是
+ * ±4 个 bin，主瓣被切掉的峰不完整）。48 → 64 相差 **16 个 bin**，在 220 px 宽的绘图区上
+ * 约 **147 px**，比 [BATCH_SPECTRUM_MIN_SEP_PX] 宽一倍有余，也远超 [SPECTRUM_PEAK_COL_TOL]。
  */
 private const val BATCH_SPECTRUM_K0 = 48
 private const val BATCH_SPECTRUM_K1 = 64
@@ -804,21 +798,19 @@ private const val BATCH_SPECTRUM_K1 = 64
 /**
  * 两条系列的峰列至少要拉开这么宽（px），"第 1 条的峰不在第 0 条那儿"才不是一句空话。
  *
- * <p>实测 16 个 bin 摊在 220 px 上是约 147 px——留一半余量，免得判据退化成
- * "移动了 1 个像素也算移动"（同 [SPECTRUM_MOVE_MIN_PX] 的取舍）。
+ * <p>实测 16 个 bin 摊在 220 px 上是约 147 px，留一半余量——免得判据退化成"移动了 1 个
+ * 像素也算移动"（同 [SPECTRUM_MOVE_MIN_PX] 的取舍）。
  */
 private const val BATCH_SPECTRUM_MIN_SEP_PX = 60.0
 
 /**
  * 批量频谱探针画在哪些**绘制帧**上：观察期结束之后的空档帧 `[100, 103)`。
  *
- * <p>为什么是这个区间：既有的频谱实验图只在 `n < STREAM_FRAMES`（100）里画，
- * 而回收期的三块探针从 `RECLAIM_START`（104）起——**中间这三帧这块绘图区是空的**，
- * 复用它不会与任何东西叠在一起。
+ * <p>既有的频谱实验图只在 `n < STREAM_FRAMES`（100）里画，回收期的三块探针从
+ * `RECLAIM_START`（104）起——中间这三帧这块绘图区是空的，复用它不与任何东西叠在一起。
  *
- * <p>它**不能**画到校验帧上去：校验帧回读到的那一帧（绘制帧 {@code TOTAL_FRAMES − 1}）
- * 要满足"画面恰好只有这 7 种颜色"那条既有断言，常驻一种新颜色会让它失败
- * （与其它只在观察期画的实验图同一条纪律）。
+ * <p>它**不能**画到校验帧上：校验帧回读的那一帧（绘制帧 {@code TOTAL_FRAMES − 1}）要满足
+ * "画面恰好只有这 7 种颜色"那条既有断言，常驻一种新颜色会让它失败（其它实验图同一条纪律）。
  */
 private const val BATCH_SPECTRUM_DRAW_FROM = STREAM_FRAMES
 private const val BATCH_SPECTRUM_DRAW_TO = STREAM_FRAMES + 3
@@ -827,7 +819,7 @@ private const val BATCH_SPECTRUM_DRAW_TO = STREAM_FRAMES + 3
  * 批量频谱快照的抓取帧（`frame` 是"已完成帧数"，故比它所在的绘制帧下标大 1）。
  *
  * <p>取在这一段的**中间**：第一帧要建缓冲并整环上传，隔一帧再取才是稳态
- * （与既有四幕频谱的 `SPECTRUM_SHOT_*` 同一条理由）。
+ * （与既有四幕频谱的 `SPECTRUM_SHOT_*` 同理由）。
  */
 private const val BATCH_SPECTRUM_SHOT = STREAM_FRAMES + 2
 
@@ -1994,17 +1986,16 @@ class ChartVerifierApp : Application() {
     // 多路频谱（一次批量 dispatch 算 C 路半谱）
     //
     // 两条 SPECTRUM 系列、同一张图、**同样的环容量与写指针**、**不同的频率**——
-    // 于是它们必然被分进同一组、走批量分支。见文件上方那一段的说明。
-    // 它复用既有频谱那块绘图区，但只在观察期之后的空档帧里画。
+    // 于是它们必然被分进同一组、走批量分支（见文件上方那一段）。
     // -----------------------------------------------------------------------
 
     /**
      * 批量频谱的两条系列各占一份环形缓冲。**两份容量相同**。
      *
      * <p>轴范围各自新建（而不是共用同一个 `AxisRange[]`）：要被 `prepareFrame` 按
-     * (容量, 写指针) 分组的是这两条**独立**的系列，共用数组只会让"两条是不是同一份数据"
-     * 这件事在代码里读不清楚——而下面那条前提断言恰恰要说清"两条是独立的缓冲，
-     * 只有 (容量, 写指针) 恰好相同"。
+     * (容量, 写指针) 分组的是这两条**独立**的系列，共用数组让"两条是不是同一份数据"
+     * 在代码里读不清楚——而下面那条前提断言恰恰要说清"两条是独立缓冲，只有
+     * (容量, 写指针) 恰好相同"。
      */
     private val batchSpectrumData0 = RingChartData(batchSpectrumRanges(), SPECTRUM_CAPACITY)
     private val batchSpectrumData1 = RingChartData(batchSpectrumRanges(), SPECTRUM_CAPACITY)
@@ -2026,12 +2017,11 @@ class ChartVerifierApp : Application() {
     /**
      * 批量频谱探针图：**一张图、两条 SPECTRUM 系列**。
      *
-     * <p>图里没有别的东西（网格、刻度、底色一概不画），与既有的频谱图同一条理由：
-     * 下面那些断言看的是"**这一种颜色**的墨迹落在哪一列"，多画一样东西就要多解释一次
-     * "那些像素是谁的"。
+     * <p>图里没有别的东西（网格、刻度、底色一概不画），与既有频谱图同一条理由：下面那些
+     * 断言看的是"**这一种颜色**的墨迹落在哪一列"，多画一样就要多解释一次"那些像素是谁的"。
      *
-     * <p>两条的 x 区间**不重叠**（48 与 64 各留 4 个 bin 的主瓣余量），所以谁先画谁后画
-     * 都不影响各自的峰列；顺序是 0 → 1。
+     * <p>两条的 x 区间**不重叠**（48 与 64 各留 4 个 bin 的主瓣余量），谁先画谁后画都不影响
+     * 各自的峰列；顺序是 0 → 1。
      */
     private val batchSpectrumChart: Chart = Chart(batchSpectrumXAxis, batchSpectrumYAxis).apply {
         addLayer("批量频谱").add(batchSpectrumSeries0).add(batchSpectrumSeries1)
@@ -3884,10 +3874,10 @@ class ChartVerifierApp : Application() {
      * 多路频谱探针：**一张图、两条 SPECTRUM 系列**，同一次 `charts.draw` 里交给批量预扫。
      *
      * <p>它复用既有频谱那块绘图区，只在观察期之后的空档帧里画（见
-     * [BATCH_SPECTRUM_DRAW_FROM]）——那时既有的那张频谱图已经收工，这块地方是空的。
+     * [BATCH_SPECTRUM_DRAW_FROM]）——那时既有的频谱图已收工，这块地方是空的。
      *
-     * <p>两条的输入只喂一次：分组键 `(环容量, 写指针)` 里的写指针此后恒等，
-     * 于是**每一帧**这两条都在同一组里（批量分支是逐帧重建的）。
+     * <p>两条的输入只喂一次：分组键 `(环容量, 写指针)` 里的写指针此后恒等，于是**每一帧**
+     * 这两条都在同一组里（批量分支是逐帧重建的）。
      */
     private fun drawBatchSpectrumChart(gc: Gc) {
         if (!batchSpectrumWritten) {
@@ -3901,14 +3891,12 @@ class ChartVerifierApp : Application() {
     /**
      * 往指定的环里附录**整整一环**（[SPECTRUM_CAPACITY] 个样本）单位幅度的正弦。
      *
-     * <p>写法与 [appendSpectrumSine] 逐条相同（样本过一遍 `Float`、先攒成数组再整批
-     * `append`），单独写一份只是为了**不动既有的那一份**——那个系列的输入是第 19 节
-     * 全部期望值的来源。
+     * <p>写法与 [appendSpectrumSine] 逐条相同，单独写一份只是为了**不动既有的那一份**——
+     * 那个系列的输入是第 19 节全部期望值的来源。
      *
-     * <p>**两份的样本数必须一模一样**：`SpectrumSeriesRenderer.prepareFrame` 的分组键是
-     * `(环容量, 写指针)`，差一个样本就分不到一组、两条各自退回单路 `FftKernel`——
-     * 而那条路径改动前就验证过，于是本节所有断言都会**照常通过而什么也没验到**
-     * （有一条前提断言钉着这件事）。
+     * <p>**两份的样本数必须一模一样**：`prepareFrame` 的分组键是 `(环容量, 写指针)`，差一个
+     * 样本就分不到一组、两条各自退回单路 `FftKernel`——而那条路径改动前就验证过，于是本节
+     * 所有断言都会**照常通过而什么也没验到**（有一条前提断言钉着这件事）。
      */
     private fun appendSineInto(data: RingChartData, k0: Int) {
         val samples = DoubleArray(SPECTRUM_CAPACITY) {
@@ -5647,28 +5635,26 @@ class ChartVerifierApp : Application() {
             )
         }
 
-        // ---- 20. ★ 多路频谱：一次批量 dispatch 算出的两条谱，各自画在自己那一片上 ----
+        // ---- 20. 多路频谱：一次批量 dispatch 算出的两条谱，各自画在自己那一片上 ----
         //
-        // 这一节守的是 `SpectrumSeriesRenderer.prepareFrame` 那条**批量分支**：
-        // 本帧所有 SPECTRUM 系列按 (环容量, 写指针) 分组，≥2 路同组的走**一次**
-        // `FftBatchKernel.execute`，绘制时各自从输出的 `路号 × binCount` 那一片取数
-        // （`render()` 里的 `firstInstanceBase`）。
+        // 守的是 `SpectrumSeriesRenderer.prepareFrame` 那条**批量分支**：本帧所有 SPECTRUM
+        // 系列按 (环容量, 写指针) 分组，≥2 路同组的走**一次** `FftBatchKernel.execute`，
+        // 绘制时各自从输出的 `路号 × binCount` 那一片取数（`render()` 里的 `firstInstanceBase`）。
         //
-        // ★ 判别式只有一条：**每一条谱的峰必须落在它自己那个频率的列上**。
-        //   把 `firstInstanceBase` 写成 0（每条谱都从第 0 路取数）之后，两条谱的
-        //   **形状都完全正常**、峰高也对、峰所在的列也在绘图区里——唯一看得见它的地方
-        //   就是"**第 1 条的峰落在哪一列**"。上面第 19 节抓不住它：那一节的场景里同时
-        //   只有一条 SPECTRUM 系列，`prepareFrame` 在 `spectrumSeries.size() < 2`
-        //   那一支直接返回，**批量分支根本走不到**（它 14 条全绿与这条路无关）。
+        // 判别式只有一条：**每一条谱的峰必须落在它自己那个频率的列上**。把
+        // `firstInstanceBase` 写成 0（每条谱都从第 0 路取数）之后，两条谱的**形状都完全正常**、
+        // 峰高也对、峰所在的列也在绘图区里——唯一看得见它的是"**第 1 条的峰落在哪一列**"。
+        // 第 19 节抓不住它：那一节同时只有一条 SPECTRUM 系列，`size() < 2` 那一支直接返回，
+        // **批量分支根本走不到**（它 14 条全绿与这条路无关）。
         //
-        // 两条的 x 区间不重叠（48 与 64 各留 4 个 bin 的主瓣余量），所以按颜色分离像素
-        // 是干净的：下面每一条都只问"**这一种颜色**的最高墨迹在哪一列"。
+        // 两条的 x 区间不重叠（48 与 64 各留 4 个 bin 的主瓣余量），所以按颜色分离像素是干净的：
+        // 下面每一条都只问"**这一种颜色**的最高墨迹在哪一列"。
         //
-        // 变异实测（也就是"批量分支真的被走到了"的证据——这一节没有别的观测口）：
-        // 把 `firstInstanceBase` 改成 0 ⇒ 这一节 **6 条里 4 条倒**（第 1 条的峰列、两条峰列
-        // 相隔、以及"两条都画出来了"与"第 0 条的峰列"——因为第 1 条与第 0 条此时画的是
-        // 同一份几何、后画的把它整个盖掉），其余 **170 条全绿**（含既有的 168 条）。
-        println("\n-- ★ 多路频谱：两条同组系列各自画在自己那一片上 --")
+        // 变异实测（也就是"批量分支真的被走到了"的证据——这一节没有别的观测口）：把
+        // `firstInstanceBase` 改成 0 ⇒ 这一节 **6 条里 4 条倒**（第 1 条的峰列、两条峰列相隔、
+        // 以及"两条都画出来了"与"第 0 条的峰列"——因为第 1 条与第 0 条此时画的是同一份几何、
+        // 后画的把它整个盖掉），其余 **170 条全绿**（含既有的 168 条）。
+        println("\n-- 多路频谱：两条同组系列各自画在自己那一片上 --")
 
         val batchShot = batchSpectrumSnapshot
         if (batchShot == null) {
@@ -5687,10 +5673,9 @@ class ChartVerifierApp : Application() {
 
             // ---- (1) 前提：这两条确实是"同 (容量, 写指针) 的一对" ----
             //
-            // 分组键就是这两个（`SpectrumSeriesRenderer.prepareFrame` 里
-            // `((long) capacity << 40) ^ writeCount`）。有一条不相等，两条就各自走
-            // **单路** `FftKernel`——那条路径改动前就验证过，于是下面每一条断言都会
-            // **照常通过而什么也没验到**。这一条是本节的地基，不是装饰。
+            // 分组键就是这两个（`prepareFrame` 里 `((long) capacity << 40) ^ writeCount`）。
+            // 有一条不相等，两条就各自走**单路** `FftKernel`——那条路径改动前就验证过，于是下面
+            // 每一条断言都会**照常通过而什么也没验到**。这一条是本节的地基，不是装饰。
             val batchCap0 = batchSpectrumData0.capacity()
             val batchCap1 = batchSpectrumData1.capacity()
             val batchW0 = batchSpectrumData0.writeIndex()
@@ -5730,7 +5715,7 @@ class ChartVerifierApp : Application() {
             // 只断言第 0 条是不够的：第 0 路那一片**本来就是对的**，
             // `firstInstanceBase` 写成 0 时它照常通过。抓住那件事的是第 1 条。
             report(
-                "★ 第 0 条（bin $BATCH_SPECTRUM_K0）的峰落在它自己那一列上",
+                "第 0 条（bin $BATCH_SPECTRUM_K0）的峰落在它自己那一列上",
                 batchPeak0 != null &&
                         abs(batchPeak0.column - batchWantX0) <= SPECTRUM_PEAK_COL_TOL,
                 batchPeak0?.let {
@@ -5740,7 +5725,7 @@ class ChartVerifierApp : Application() {
                 } ?: "快照里没有第 0 条那个颜色的像素"
             )
             report(
-                "★ 第 1 条（bin $BATCH_SPECTRUM_K1）的峰落在**它自己**那一列上" +
+                "第 1 条（bin $BATCH_SPECTRUM_K1）的峰落在**它自己**那一列上" +
                         "（不是与第 0 条挤在一起）",
                 batchPeak1 != null &&
                         abs(batchPeak1.column - batchWantX1) <= SPECTRUM_PEAK_COL_TOL,
@@ -5753,7 +5738,7 @@ class ChartVerifierApp : Application() {
                 } ?: "快照里没有第 1 条那个颜色的像素"
             )
             report(
-                "★ 两条的峰相隔 ≥ ${BATCH_SPECTRUM_MIN_SEP_PX.toInt()} px" +
+                "两条的峰相隔 ≥ ${BATCH_SPECTRUM_MIN_SEP_PX.toInt()} px" +
                         "（两条都从第 0 路取数时它们必然重合）",
                 batchPeak0 != null && batchPeak1 != null &&
                         abs(batchPeak1.column - batchPeak0.column) >= BATCH_SPECTRUM_MIN_SEP_PX,

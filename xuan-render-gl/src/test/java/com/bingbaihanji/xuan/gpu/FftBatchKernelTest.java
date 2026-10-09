@@ -5,18 +5,15 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * {@link FftBatchKernel} 的<strong>零 GL 单测</strong>——只测它生成的那段着色器源码。
+ * {@link FftBatchKernel} 的零 GL 单测——只测它生成的那段着色器源码。
  *
  * <p>前六组与 {@code FftKernelTest} / {@code ComplexFftTest} 同源（不看字符串就发现不了的坑）。
- * <strong>后三组是本类独有的</strong>，它们钉的是"数组块 + batch"这一招特有的两个静默错误：
- *
- * <ul>
- *   <li><strong>输出绑定点与输入数组块撞了</strong>：数组块 {@code ch[32]} 占了绑定点
- *       0..31，输出若也写在 0..31 之内，就会**覆盖掉某一路的输入**——而输出形状看着完全正常。
- *       所以输出必须绑在 {@code MAX_BATCH} 上，且这个数字必须跟着常量走；</li>
- *   <li><strong>输出切片的基址写错</strong>：第 c 路必须写 {@code c * binCount} 处，
- *       写成 0 的话每一路都覆盖同一段，<b>画面上每条谱线都正常，只是内容都是最后写的那一路</b>。</li>
- * </ul>
+ * 后三组是本类独有的，钉的是"数组块 + batch"这一招特有的两个静默错误：
+ * ① 输出绑定点与输入数组块撞了——数组块 {@code ch[32]} 占了绑定点 0..31，输出若也写在
+ * 0..31 之内，就会覆盖掉某一路的输入，而输出形状看着完全正常，所以输出必须绑在
+ * {@code MAX_BATCH} 上且这个数字必须跟着常量走；
+ * ② 输出切片的基址写错——第 c 路必须写 {@code c * binCount} 处，写成 0 的话每一路都覆盖
+ * 同一段，画面上每条谱线都正常，只是内容都是最后写的那一路。
  */
 class FftBatchKernelTest {
 
@@ -98,8 +95,8 @@ class FftBatchKernelTest {
 
     @Test
     void 数组块的长度必须跟着_MAX_BATCH_走() {
-        // ★ 写死成 ch[8] 而 MAX_BATCH 改成 32 的话，第 8 路往后根本读不到——
-        //   而"读不到"在 GL 里是**未定义行为**，不报错。
+        // 写死成 ch[8] 而 MAX_BATCH 改成 32 的话，第 8 路往后根本读不到——
+        // 而"读不到"在 GL 里是未定义行为，不报错。
         assertTrue(FftBatchKernel.shaderTemplate().contains("ch[%d]"),
                 "数组块的长度必须是 %d 占位符，不能写死");
         assertTrue(FftBatchKernel.shaderSource().contains("ch[" + FftBatchKernel.MAX_BATCH + "]"),
@@ -108,8 +105,8 @@ class FftBatchKernelTest {
 
     @Test
     void 输出绑定点必须避开输入数组块占的那段绑定点() {
-        // ★ 输入数组块 ch[MAX_BATCH] 占了绑定点 0..MAX_BATCH-1。
-        //   输出若也落在那个区间，就会覆盖掉某一路的输入——而输出的形状看着完全正常。
+        // 输入数组块 ch[MAX_BATCH] 占了绑定点 0..MAX_BATCH-1。
+        // 输出若也落在那个区间，就会覆盖掉某一路的输入——而输出的形状看着完全正常。
         String src = FftBatchKernel.shaderSource();
         assertTrue(src.contains("binding = " + FftBatchKernel.MAX_BATCH),
                 "输出必须绑在绑定点 MAX_BATCH 上（= " + FftBatchKernel.MAX_BATCH + "），"

@@ -128,22 +128,13 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
     private final Map<Integer, FftKernel> kernels = new HashMap<>();
 
     /**
-     * 本帧的**批量结果**：系列 → (批量核, 它在那批里的路号)。
-     *
-     * <p><b>每帧由 {@link #prepareFrame} 重建</b>——写指针每帧都在变，缓存跨帧会画出
-     * 一帧前的谱（形状正常，内容是旧的）。
-     *
-     * <p>不在表里的系列（只有一路、或容量/写指针与别人不同）走**单路 `FftKernel`**，
-     * 即改动前那条**已验证**的路径。
+     * 本帧的批量结果：系列 → (批量核, 它在那批里的路号)。每帧由 {@link #prepareFrame} 重建——
+     * 写指针每帧都在变，缓存跨帧会画出一帧前的谱（形状正常，内容是旧的）。
+     * 不在表里的系列走单路 {@link FftKernel}，即改动前那条已验证的路径。
      */
     private final Map<Series, BatchSlot> batchSlots = new IdentityHashMap<>();
 
-    /**
-     * 变换长度 → 批量核。
-     *
-     * <p>与 {@link #kernels} 同一条理由：批量核把"最多几路"写死在编译期常量里，
-     * 而与容量无关，所以按 `n` 缓存即可。
-     */
+    /** 变换长度 → 批量核。按 `n` 缓存：批量核把"最多几路"写死在编译期常量里，与容量无关。 */
     private final Map<Integer, FftBatchKernel> batchKernels = new HashMap<>();
 
     /** 一次批量里属于某个系列的那一片：哪个核、第几路。 */
@@ -325,19 +316,19 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
         }
         int ringStart = (int) ((writeCount - n) & (ringCapacity - 1));
 
-        // ★ 本系列若已被帧前预扫收进某个批，就**跳过自己的 execute**，
-        //   改从批输出的对应切片取数（firstInstanceBase）。屏障由批量核的 execute
-        //   内部发过，而预扫发生在绘制之前 ⇒ "compute 写 → 顶点属性读"那道屏障照样成立。
+        // 本系列若已被帧前预扫收进某个批，就跳过自己的 execute，改从批输出的对应切片取数。
+        // 屏障由批量核的 execute 内部发过，而预扫在绘制之前，所以"compute 写 → 顶点属性读"照样成立。
         BatchSlot slot = batchSlots.get(series);
         final int outputBuffer;
         final int firstInstanceBase;
         if (slot != null) {
+            // firstInstanceBase：本路在批输出里的起点，= 路号 × 每路的 bin 数。
             outputBuffer = slot.kernel().outputBufferId();
             firstInstanceBase = slot.channel() * slot.kernel().binCount();
         } else {
             FftKernel kernel = kernelFor(ringCapacity, n);
-            // ★ 必须在绘制之前跑：execute 内部的 memoryBarrier 是"compute 写 → 顶点属性读"
-            //   之间唯一的那道屏障（见类文档）。顺序反了读到旧值，数值错而不报错。
+            // 必须在绘制之前跑：execute 内部的 memoryBarrier 是那道唯一的屏障（见类文档）。
+            // 顺序反了会读到旧值，数值错而不报错。
             kernel.execute(buffer.vboId(), ringStart, WINDOW);
             outputBuffer = kernel.outputBufferId();
             firstInstanceBase = 0;
@@ -469,32 +460,20 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
     }
 
     /**
-     * ★ 帧前预扫：把本帧所有 {@code SPECTRUM} 系列按 <b>(环容量, 写指针)</b> 分组，
-     * 每组**一次**批量 dispatch。
+     * 帧前预扫，由 {@code ChartRenderer} 在逐系列绘制之前调用一次：本帧所有 {@code SPECTRUM}
+     * 系列按 (环容量, 写指针) 分组，每组一次批量 dispatch。
      *
-     * <h2>为什么分组键是这两个</h2>
-     * <p>{@link FftBatchKernel} 的 {@code u_RingCapacity} 与 {@code u_RingStart} 是
-     * <b>所有路共享</b>的 uniform，所以一次 batch 只装得下"环容量相同、写指针相同"的系列。
-     * 同步采集（多路同时采样）天然满足；不满足的留在表外，走单路。
+     * <p>分组键只能是这两个：{@link FftBatchKernel} 的 {@code u_RingCapacity} 与
+     * {@code u_RingStart} 是<b>所有路共享</b>的 uniform，一次 batch 只装得下两值都相同的系列
+     * （同步采集天然满足，不满足的留在表外走单路）。先 {@code uploadNewSamples()} 是因为
+     * 写指针取自 {@link SeriesBuffer#writeCount()}；{@link #render} 里再调一次是 no-op，上传口径不变。
      *
-     * <h2>为什么在这里先 uploadNewSamples</h2>
-     * <p>分组键里的"写指针"来自 {@link SeriesBuffer#writeCount()}，不上传的话它是 0。
-     * 提前上传不影响 {@link #render} 里那一次：{@code uploadedCount == written} 时直接返回，
-     * 所以 {@code uploadedBytesThisFrame()} 的口径不变（每系列每帧仍只算一次）。
+     * <p>缓冲必须由参数传进来，不能让渲染器自己调 {@code ctx.bufferFor}：
+     * {@link GLRenderContextImpl#bufferFor} 有一道"必须是当前正在渲染的那个系列"的守卫，
+     * 而 currentSeries 是主循环在预扫<b>之后</b>才设的，所以预扫里调它<b>必然抛
+     * IllegalStateException</b>；≥2 条 SPECTRUM 才会走到，单系列场景里完全看不见。
      *
-     * <p>由 {@code ChartRenderer} 在逐系列绘制<b>之前</b>调用一次（同包，包级可见）。
-     *
-     * <p><b>★ 缓冲为什么由参数传进来，而不是自己调 {@code ctx.bufferFor}。</b>
-     * {@link GLRenderContextImpl#bufferFor} 有一道守卫：传进来的系列必须是"当前正在渲染的
-     * 那个"（拦"渲染器自己缓存了跨系列缓冲引用"）。而那件事是 {@code ChartRenderer} 的
-     * <b>主循环</b>在预扫<b>之后</b>才做的 ⇒ 预扫里调它<b>必然抛 IllegalStateException</b>。
-     * 只要图里有 ≥2 条 SPECTRUM 系列就必然走到（一条时早在下面 {@code size() < 2}
-     * 那一支返回了，所以这条缺陷在单系列的场景里完全看不见）。
-     * {@code ChartRenderer} 因此把 {@code bufferFor} 传进来——预扫取到的是同一个对象
-     * （它是懒创建 + 缓存，主循环再调一次拿到的还是它）。
-     *
-     * @param buffers 系列 → 它的常驻缓冲（渲染器自己看不到兄弟系列，这是它唯一能拿到
-     *                别人缓冲的入口；也只有 {@code ChartRenderer} 有权创建它们）
+     * @param buffers 系列 → 它的常驻缓冲（渲染器看不到兄弟系列，这是它唯一拿到别人缓冲的入口）
      */
     void prepareFrame(List<Series> spectrumSeries, Function<Series, SeriesBuffer> buffers) {
         batchSlots.clear();

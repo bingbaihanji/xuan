@@ -6,89 +6,36 @@ import com.bingbaihanji.xuan.util.Disposable;
 import java.util.Arrays;
 
 /**
- * GPU 上的<strong>多路半谱 FFT</strong>：一次 dispatch 算完 {@code C} 路频谱。
- *
- * <h2>它与 {@link FftKernel} 的关系</h2>
- * <p><b>数学上完全等价</b>——同一个着色器逻辑（取数 → 加窗 → 位反转 → {@code log2(N)} 级蝶形 →
- * 幅度，单 workgroup 全在 shared memory 里做），输出格式也一样（每路 {@code n/2+1} 个 bin 的
- * 线性幅度）。唯一的差别是**多了一个 batch 维度**：
- *
- * <ul>
- *   <li>{@link FftKernel}：一次 dispatch 一路，调用方逐路调；</li>
- *   <li>本类：一次 dispatch {@code C} 路，{@code gl_WorkGroupID.x} 就是路号。</li>
- * </ul>
- *
- * <p><b>为什么值得</b>：{@link FftKernel} 逐路调时，每一路都是"一次 dispatch + 一次
- * {@code glMemoryBarrier}"，而 {@code C} 路是**串行**的（每次一个 workgroup，其余 SM 空转）。
- * 批量之后 {@code C} 个 workgroup **并发**跑，且只剩一次屏障。
- *
- * <h2>输入怎么进同一个 dispatch：SSBO 数组块</h2>
- * <p>一个 compute dispatch 只能读**一个**输入 SSBO，所以多路样本必须"能被同一次 dispatch 读到"。
- * 本类的做法是 <b>{@code ARB_shader_storage_buffer_object} 的数组块</b>：
- *
- * <pre>
- *   layout(std430, binding = 0) readonly buffer In { float y[]; } ch[MAX_BATCH];
- * </pre>
- *
- * <p>数组块配 {@code binding = 0} 时，元素 {@code c} 落在绑定点 {@code c} 上。
- * 于是**每个系列保留自己的 VBO 不动**，调用方把它们分别
- * {@code glBindBufferBase(c, vbo_c)} 即可，**不需要任何数据层改动**
- * （{@code SeriesBuffer} 一行没动）。
- *
- * <p>本机实测（{@code SsboArrayProbe}，2026-10-09）：数组块编译链接通过、
- * {@code ch[gl_WorkGroupID.x]} 读到的确实是各自绑定点上那个缓冲的数据、
- * 全程 {@code glGetError == 0}；{@code GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS = 16}
- * （<b>这个才是 {@link #MAX_BATCH} 的上限</b>，见那个常量的文档）。
- *
- * <h2>⚠️ 输入绑定点 0..MAX_BATCH-1 与输出的关系</h2>
- * <p>数组块占了绑定点 {@code 0..MAX_BATCH-1}，所以**输出必须绑在 {@link #MAX_BATCH} 上**。
- * 写进 0..MAX_BATCH-1 之内就会覆盖掉某一路的输入——而输出的形状看着完全正常。
- * 这条由 {@code FftBatchKernelTest} 钉着。
- *
- * <h2>分组约束：环容量与起始槽位是**共享**的</h2>
- * <p>{@code u_RingCapacity} 与 {@code u_RingStart} 是**所有路共用**的一组 uniform，
- * 所以一次 batch 要求组内所有系列**环容量相同、写指针相同**（同步采集天然满足）。
- * 不满足的必须**回退到单路 {@link FftKernel}**——见 {@code SpectrumSeriesRenderer}。
+ * GPU 上的多路半谱 FFT：一次 dispatch 算完 {@code C} 路频谱。与 {@link FftKernel} 数学上完全等价（同一套取数 → 加窗 → 位反转 → 蝶形 → 幅度，输出也是每路 {@code n/2+1} 个 bin 的线性幅度），只多一个 batch 维度：{@code gl_WorkGroupID.x} 就是路号，{@code C} 个 workgroup 并发跑、只剩一次屏障（逐路调时每路一次 dispatch + 一次 {@code glMemoryBarrier}，且拿到的 workgroup 是串行的）。
+ * <p>多路样本靠 <b>SSBO 数组块</b>进同一次 dispatch：{@code layout(std430, binding = 0) readonly buffer In { float y[]; } ch[MAX_BATCH];}
+ * ——元素 {@code c} 落在绑定点 {@code c} 上，于是每个系列保留自己的 VBO 不动，调用方分别 {@code glBindBufferBase(c, vbo_c)} 即可（{@code SeriesBuffer} 一行没动）。本机实测（{@code SsboArrayProbe}，2026-10-09）：编译链接通过、{@code ch[gl_WorkGroupID.x]} 确实读到各自绑定点上那个缓冲的数据、全程 {@code glGetError == 0}；{@code GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS = 16}，这才是 {@link #MAX_BATCH} 的上限。
+ * <p>数组块占了绑定点 {@code 0..MAX_BATCH-1}，所以输出必须绑在 {@link #MAX_BATCH} 上；写进那个区间会覆盖掉某一路的输入，而输出的形状看着完全正常（{@code FftBatchKernelTest} 钉着）。
+ * <p>{@code u_RingCapacity} 与 {@code u_RingStart} 是<b>所有路共用</b>的 uniform，所以一次 batch 要求组内所有系列环容量相同、写指针相同（同步采集天然满足）；不满足的必须回退到单路 {@link FftKernel}（见 {@code SpectrumSeriesRenderer}）。
  */
 public final class FftBatchKernel implements Disposable {
 
-    /** 本核支持的最大变换长度。由 shared memory 决定（2×MAX_N 个 float）。 */
+    /** 本核支持的最大变换长度，由 shared memory 决定（{@code 2×MAX_N} 个 float）。 */
     public static final int MAX_N = 4096;
 
     /** 本核支持的最小变换长度。 */
     public static final int MIN_N = 256;
 
     /**
-     * 一次 dispatch 最多几路。
+     * 一次 dispatch 最多几路。<b>编译期常量</b>（GLSL 的数组长度必须常量）。上限不是绑定点数，而是"每个 compute 着色器最多几个 SSBO 块"——数组块 {@code ch[N]} 在链接器眼里是 {@code N} 个块，加输出共 {@code N+1} 个；本机实测 {@code GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS = 16}（{@code GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS = 96} 是绑定点总数，不是块数，别混）⇒ {@code MAX_BATCH = 15}。路数超过它时要分批（每批 ≤ 15 路）或回退到单路 {@link FftKernel}。
      *
-     * <p><b>它是编译期常量</b>：GLSL 的数组长度必须常量。
-     *
-     * <p><b>上限不是绑定点数，而是"每个 compute 着色器最多几个 SSBO 块"。</b>
-     * 数组块 {@code ch[N]} 在链接器眼里是 <b>N 个块</b>，再加输出那一个，一共 {@code N+1} 个。
-     * 本机实测 {@code GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS = 16}（而
-     * {@code GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS = 96}——<b>那是绑定点总数，不是块数，别混</b>），
-     * 所以 {@code MAX_BATCH = 15}。
-     *
-     * <p>⚠️ <b>实测踩过</b>：最初按绑定点预算取了 32，结果**编译通过、链接失败**
-     * （33 个块 &gt; 16），而错误信息只有一句 {@code linking failed}。
-     * 换驱动/换机器要重新查这个上限——它不是能"估"的量。
-     *
-     * <p>路数超过 {@link #MAX_BATCH} 时**分批**（每批 ≤ 15 路）或回退到单路 {@link FftKernel}，
-     * 见 {@code SpectrumSeriesRenderer}。
+     * <p>实测踩过：最初按绑定点预算取了 32，结果编译通过、链接失败（33 个块 &gt; 16），错误信息只有一句 {@code linking failed}。换驱动/换机器要重新查这个上限——它不是能"估"的量。
      */
     public static final int MAX_BATCH = 15;
 
-    /** 线程组大小。与共享内存数组长度**无关**（那个由 {@link #MAX_N} 定）。 */
+    /** 线程组大小。与共享内存数组长度<b>无关</b>（那个由 {@link #MAX_N} 定）。 */
     private static final int LOCAL_SIZE = 1024;
 
     /**
-     * 着色器源码模板。
+     * 着色器源码模板。{@code %d} 依次是：workgroup 大小（{@link #LOCAL_SIZE}）、数组块长度与输出
+     * 绑定点（都是 {@link #MAX_BATCH}）、shared 长度 ×2（{@link #MAX_N}）。
      *
-     * <p>{@code %d} 依次是：workgroup 大小（{@link #LOCAL_SIZE}）、数组块长度
-     * （{@link #MAX_BATCH}）、输出绑定点（{@link #MAX_BATCH}）、shared 长度 ×2（{@link #MAX_N}）。
-     *
-     * <p>⚠️ 两个坑与 {@link FftKernel} 逐条相同：GLSL 的取模 {@code %} 要写成 {@code %%}；
-     * 别在注释里写 {@code %} 或 {@code %d}。
+     * <p>两个坑与 {@link FftKernel} 相同：GLSL 的取模 {@code %} 要写成 {@code %%}；注释里别写
+     * {@code %} 或 {@code %d}。
      */
     private static final String SHADER_TEMPLATE = """
                                                   #version 430
@@ -96,7 +43,7 @@ public final class FftBatchKernel implements Disposable {
 
                                                   // 数组块：元素 c 落在绑定点 c 上。于是每路一个 VBO、分别 bindBufferBase 即可。
                                                   layout(std430, binding = 0) readonly  buffer In  { float y[]; } ch[%d];
-                                                  // ⚠️ 输出必须绑在 MAX_BATCH 上：输入数组块占了 0..MAX_BATCH-1。
+                                                  // 输出必须绑在 MAX_BATCH 上：输入数组块占了 0..MAX_BATCH-1。
                                                   layout(std430, binding = %d) writeonly buffer Out { float mag[]; };
 
                                                   // 全部是 int / float —— setUniform 走 glUniform1i / glUniform1f。
@@ -239,11 +186,8 @@ public final class FftBatchKernel implements Disposable {
     }
 
     /**
-     * 对 {@code count} 路做一次批量半谱 FFT。
-     *
-     * <p><strong>环容量与起始槽位是所有路共用的</strong>（见类文档的分组约束）——
-     * 调用方必须保证组内每个系列的环容量与写指针都相同，否则取到错的槽位、
-     * <b>谱形完全正常而峰位偏</b>。
+     * 对 {@code count} 路做一次批量半谱 FFT。<b>环容量与起始槽位是所有路共用的</b>，调用方必须保证
+     * 组内每个系列的环容量与写指针都相同，否则取到错的槽位、<b>谱形完全正常而峰位偏</b>。
      *
      * @param inputBuffers 长度 ≥ {@code count}，第 c 个是第 c 路的环 VBO，会被绑到绑定点 c
      * @param count        本次几路，落在 {@code [1, } {@link #MAX_BATCH}{@code ]}
@@ -275,7 +219,7 @@ public final class FftBatchKernel implements Disposable {
         for (int c = 0; c < count; c++) {
             gl.bindBufferBase(c, inputBuffers[c]);
         }
-        // ★ 输出绑在 MAX_BATCH 上，避开输入数组块占的 0..MAX_BATCH-1。
+        // 输出绑在 MAX_BATCH 上，避开输入数组块占的 0..MAX_BATCH-1。
         gl.bindBufferBase(MAX_BATCH, outputBuffer);
         shader.dispatch(count, 1, 1);
         shader.memoryBarrier();

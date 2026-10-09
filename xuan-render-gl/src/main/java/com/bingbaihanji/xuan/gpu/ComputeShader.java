@@ -8,11 +8,7 @@ import java.nio.IntBuffer;
 import static org.lwjgl.opengl.GL43.*;
 
 /**
- * Represents an OpenGL 4.3 compute shader program.
- * <p>
- * Compiles the given GLSL compute shader source, links it into a program,
- * and provides convenience methods for dispatching compute work and setting uniforms.
- * </p>
+ * OpenGL 计算着色器程序：编译 GLSL 源码、链接成 program，并提供 dispatch 与 uniform 的便捷方法。
  */
 public class ComputeShader implements Disposable {
 
@@ -21,10 +17,8 @@ public class ComputeShader implements Disposable {
     private boolean disposed = false;
 
     /**
-     * Creates a new compute shader from the given GLSL source code.
-     *
-     * @param source the GLSL compute shader source code
-     * @throws RuntimeException if compilation or linking fails
+     * @param source GLSL 计算着色器源码
+     * @throws RuntimeException 编译或链接失败
      */
     public ComputeShader(String source) {
         int shaderId = glCreateShader(GL_COMPUTE_SHADER);
@@ -60,38 +54,35 @@ public class ComputeShader implements Disposable {
     }
 
     /**
-     * Binds this compute shader program as the active program.
+     * 绑定为当前 program。
      *
-     * @return this instance for method chaining
+     * @return this，便于链式调用
      */
     public ComputeShader use() {
         glUseProgram(programId);
         return this;
     }
 
-    /**
-     * Unbinds any compute shader program (sets the active program to 0).
-     */
+    /** 解绑 program（置为 0）。 */
     public void unuse() {
         glUseProgram(0);
     }
 
     /**
-     * Dispatches compute work groups.
+     * 派发计算工作组。
      *
-     * @param numGroupsX number of work groups in the X dimension
-     * @param numGroupsY number of work groups in the Y dimension
-     * @param numGroupsZ number of work groups in the Z dimension
+     * @param numGroupsX X 维工作组数
+     * @param numGroupsY Y 维工作组数
+     * @param numGroupsZ Z 维工作组数
      */
     public void dispatch(int numGroupsX, int numGroupsY, int numGroupsZ) {
         glDispatchCompute(numGroupsX, numGroupsY, numGroupsZ);
     }
 
     /**
-     * Issues a memory barrier to ensure prior compute shader writes are visible
-     * to subsequent operations.
+     * 插入内存屏障（GL_ALL_BARRIER_BITS），保证此前的计算写入对后续操作可见。
      *
-     * @return this instance for method chaining
+     * @return this，便于链式调用
      */
     public ComputeShader memoryBarrier() {
         glMemoryBarrier(GL_ALL_BARRIER_BITS);
@@ -99,39 +90,31 @@ public class ComputeShader implements Disposable {
     }
 
     /**
-     * Retrieves the location of a uniform variable in this shader program.
-     *
-     * @param name the name of the uniform variable
-     * @return the uniform location, or -1 if not found
+     * @param name uniform 名
+     * @return uniform 位置，未找到时返回 -1
      */
     public int getUniformLocation(String name) {
         return glGetUniformLocation(programId, name);
     }
 
     /**
-     * Sets an integer uniform value.
-     *
-     * @param name  the name of the uniform variable
-     * @param value the integer value to set
+     * @param name  uniform 名
+     * @param value 整数值
      */
     public void setUniform(String name, int value) {
         glUniform1i(getUniformLocation(name), value);
     }
 
     /**
-     * Sets a float uniform value.
-     *
-     * @param name  the name of the uniform variable
-     * @param value the float value to set
+     * @param name  uniform 名
+     * @param value 浮点值
      */
     public void setUniform(String name, float value) {
         glUniform1f(getUniformLocation(name), value);
     }
 
     /**
-     * Returns the OpenGL program ID.
-     *
-     * @return the program ID
+     * @return OpenGL program ID
      */
     public int getProgramId() {
         return programId;

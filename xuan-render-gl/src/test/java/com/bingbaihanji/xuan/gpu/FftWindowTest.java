@@ -7,24 +7,20 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * {@link FftWindow} 的单元测试。**纯算术，零 GL 依赖。**
+ * {@link FftWindow} 的单元测试——纯算术，零 GL 依赖。
  *
- * <h2>为什么断言落在物理性质上，而不是一组魔数</h2>
- * <p>参考项目 ngscopeclient 的窗增益系数是 2.013 / 1.862 / 2.805，而教科书值应当是
- * 2.0 / 1.852 / …。<b>两者对不上，原因不明</b>——而那份代码里确实有一个被它自己的
- * 单元测试掩盖的 BH 窗公式 bug（测试的黄金模型照抄了同一个公式）。
- *
- * <p>所以这里不写死任何系数：<b>系数由定义推导，断言检验它的物理含义</b>。
+ * 断言落在物理性质上，不写死任何系数：参考项目 ngscopeclient 的窗增益系数是
+ * 2.013 / 1.862 / 2.805，而教科书值应当是 2.0 / 1.852 / …，两者对不上且原因不明——
+ * 而那份代码里确实有一个被它自己的单元测试掩盖的 BH 窗公式 bug（测试的黄金模型
+ * 照抄了同一个公式）。所以这里由定义推导系数，断言检验它的物理含义。
  */
 class FftWindowTest {
 
     private static final int N = 512;
 
     /**
-     * 单频信号的谱峰幅度（未归一化）。
-     *
-     * <p>{@code re} / {@code im} 是 {@code X[k0] = Σ w·x·exp(−i·angle)} 的实虚部，
-     * 其中 {@code x = cos(angle)}、{@code angle = 2πk₀i/n}。
+     * 单频信号的谱峰幅度（未归一化）：{@code X[k0] = Σ w·x·exp(−i·angle)} 的模，
+     * 其中 {@code x = cos(angle)}、{@code angle = 2πk₀i/n}；
      * 对矩形窗与整周期信号，这个值是 {@code n/2}。
      */
     private static double peakOf(FftWindow window, int n, double k0) {
@@ -69,7 +65,7 @@ class FftWindowTest {
 
     @Test
     void 每一个窗都关于中心对称() {
-        // 对称性是窗函数的定义性质之一。写错分母（N 与 N-1 之分）会破坏它，
+        // 对称性是窗函数的定义性质之一：写错分母（N 与 N-1 之分）会破坏它，
         // 而那种错在谱上只表现为"主瓣略宽"，肉眼看不出来。
         for (FftWindow w : FftWindow.values()) {
             for (int i = 0; i < N / 2; i++) {
@@ -98,8 +94,8 @@ class FftWindowTest {
 
     @Test
     void 相干增益在常量信号上精确成立() {
-        // 常量信号的能量全在 bin 0，而 bin 0 就是系数之和——**没有任何泄漏**，
-        // 所以这条可以钉得很紧（1e-9）。它精确地把"相干增益"这个量本身钉住。
+        // 常量信号的能量全在 bin 0，而 bin 0 就是系数之和——没有任何泄漏，所以这条
+        // 可以钉得很紧（1e-9），它精确地把"相干增益"这个量本身钉住。
         for (FftWindow w : FftWindow.values()) {
             double sum = 0;
             for (int i = 0; i < N; i++) {
@@ -114,22 +110,15 @@ class FftWindowTest {
 
     @Test
     void 补偿后谱峰回到不加窗的高度() {
-        // ★ 这是把"窗写对了"与"窗写错了"分开的断言。
-        //
-        // ⚠️ 容差是**量出来的，不是推出来的**：
-        //
-        //     peakOf(w, N, k0) = |Σ w·cos(θ)·e^{-iθ}| = ½·|W[0] + W[2k0]|
-        //
-        // 第二项**不是零**——它是窗函数自身在 bin 2k₀ 处的谱值，所以补偿后会留下残差。
-        // **不要靠"这个窗的旁瓣是多少 dB"去估它**：那样会把它当成该窗的**最高**旁瓣
-        // （Hann 是 −31 dB），而 bin 2k₀ 落在旁瓣裙边的深处，实际低得多。
-        //
-        // **实测残差（N=512, k0=7）**：矩形 0% · Hann 0.0010% · Hamming 0.0009% · BH 0.0001%
-        //
+        // 把"窗写对了"与"窗写错了"分开的断言。容差是量出来的，不是推出来的：
+        // peakOf(w, N, k0) = |Σ w·cos(θ)·e^{-iθ}| = ½·|W[0] + W[2k0]|，第二项不是零——
+        // 它是窗函数自身在 bin 2k₀ 处的谱值，所以补偿后会留下残差。不要靠"这个窗的旁瓣
+        // 是多少 dB"去估它：那样会把它当成该窗的最高旁瓣（Hann 是 −31 dB），而 bin 2k₀
+        // 落在旁瓣裙边的深处，实际低得多。
+        // 实测残差（N=512, k0=7）：矩形 0% · Hann 0.0010% · Hamming 0.0009% · BH 0.0001%。
         // 取 1e-4（0.01%）：比实测最大残差宽 10 倍，又比结构性错误小两个数量级。
-        //
-        // ⚠️ **不要把它改回 1e-9**——那个值**每条都会失败**（实测残差比它大 4 个数量级），
-        // 而失败信息会指向"窗增益补偿写错了"，把人引到完全错误的方向。
+        // 不要把它改回 1e-9——那个值每条都会失败（实测残差比它大 4 个数量级），而失败
+        // 信息会指向"窗增益补偿写错了"，把人引到完全错误的方向。
         int k0 = 7;
         double unwindowed = peakOf(FftWindow.RECTANGULAR, N, k0);
         for (FftWindow w : FftWindow.values()) {
@@ -141,9 +130,8 @@ class FftWindowTest {
 
     @Test
     void 布莱克曼哈里斯的旁瓣比汉宁低得多() {
-        // 规格选 BH 作默认，理由是"大载波旁边看小谐波"。这条把它钉住：
-        // 若有人把 BH 的系数抄错（例如抄成参考项目那个 cos(6*num)），
-        // 旁瓣会显著抬高，这条会失败。
+        // 规格选 BH 作默认，理由是"大载波旁边看小谐波"；这条把它钉住：若有人把 BH 的
+        // 系数抄错（例如抄成参考项目那个 cos(6*num)），旁瓣会显著抬高，这条会失败。
         double bh = sidebandFloor(FftWindow.BLACKMAN_HARRIS);
         double hann = sidebandFloor(FftWindow.HANN);
         assertTrue(bh < hann * 0.1,
@@ -152,17 +140,14 @@ class FftWindowTest {
 
     @Test
     void 枚举序号必须与着色器的_u_WindowKind_一致() {
-        // ★ 这条钉的是一处**跨语言的位置耦合**：Java 侧用 ordinal() 传参，
-        //    GLSL 侧（FftKernel 的 windowAt）用硬编码的 0/1/2/3 分支。
-        //
-        // 一旦有人往枚举**中间**插一个窗，Java 侧 compensation 算的是新序号的窗，
-        // 而着色器乘的是另一个窗——**幅度读数差一点，画面上完全看不出来**。
-        //
-        // ⚠️ 而那条"换窗不改变读数"的断言**抓不到这个**：它观测的是"换窗后读数
-        //    是否相同"，两边一起错的时候反而自洽。**那条防的是"补偿写错"，
-        //    防不了"两边一起错"。** 所以这里必须单独钉一次顺序。
-        //
-        // 改 FftKernel 的 windowAt 分支号时，这条会提醒你同步改这里。
+        // 钉的是一处跨语言的位置耦合：Java 侧用 ordinal() 传参，GLSL 侧（FftKernel 的
+        // windowAt）用硬编码的 0/1/2/3 分支。一旦有人往枚举中间插一个窗，Java 侧
+        // compensation 算的是新序号的窗，而着色器乘的是另一个窗——幅度读数差一点，
+        // 画面上完全看不出来。
+        // 而那条"换窗不改变读数"的断言抓不到这个：它观测的是"换窗后读数是否相同"，
+        // 两边一起错的时候反而自洽——那条防的是"补偿写错"，防不了"两边一起错"，
+        // 所以这里必须单独钉一次顺序。改 FftKernel 的 windowAt 分支号时，这条会提醒
+        // 你同步改这里。
         assertEquals(0, FftWindow.RECTANGULAR.ordinal(), "u_WindowKind=0 是矩形窗");
         assertEquals(1, FftWindow.HANN.ordinal(), "u_WindowKind=1 是 Hann");
         assertEquals(2, FftWindow.HAMMING.ordinal(), "u_WindowKind=2 是 Hamming");
@@ -171,12 +156,10 @@ class FftWindowTest {
 
     @Test
     void 退化长度明确报错而不是返回无穷大() {
-        // ★ 原稿这条写的是 `assertTrue(w.compensation(2) > 0.0)`——**对 HANN 是恒真的**：
-        //    它在 n=2 时两个系数都是 0，相干增益为 0，compensation 返回 Infinity，
-        //    而 `Infinity > 0.0` 照样成立。那是一条橡皮图章。
-        //
-        // 现在改成断言"它会响亮地失败"——因为静默返回一个无穷大，
-        // 那个值会一路传到顶点位置上，而画面只是"有点怪"。
+        // 原稿这条写的是 `assertTrue(w.compensation(2) > 0.0)`——对 HANN 是恒真的：它在
+        // n=2 时两个系数都是 0，相干增益为 0，compensation 返回 Infinity，而
+        // `Infinity > 0.0` 照样成立，那是一条橡皮图章。现在改成断言"它会响亮地失败"：
+        // 静默返回一个无穷大，那个值会一路传到顶点位置上，而画面只是"有点怪"。
         for (FftWindow w : FftWindow.values()) {
             assertThrows(IllegalArgumentException.class, () -> w.coherentGain(1),
                     w + " 在 n=1 上应当明确报错");
