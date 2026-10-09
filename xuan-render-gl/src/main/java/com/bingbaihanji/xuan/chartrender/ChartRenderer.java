@@ -554,6 +554,13 @@ public final class ChartRenderer implements Disposable {
         //   一路、或容量/写指针与别人不同的，照旧走单例 FftKernel——**那条路径逐字节没变**。
         //   （为什么放在这里：分组要用到 SeriesBuffer 的容量与写指针，而它们由 bufferFor 懒创建；
         //     预扫自己会调 bufferFor，主循环再调一次是同一个对象。）
+        //
+        //   ⚠️ **缓冲必须由这里（ChartRenderer.bufferFor）取，不能交给渲染器去调
+        //     `ctx.bufferFor(series)`**：后者有一道"必须是当前正在渲染的那个系列"的守卫，
+        //     而 currentSeries 是**主循环**在预扫之后才设的 ⇒ 预扫里调它必然抛
+        //     IllegalStateException（只要有 ≥2 条 SPECTRUM 系列就必然走到，一条时早在
+        //     size() < 2 那一支返回了，所以这条缺陷在单系列的场景里看不见）。
+        //     实测：`ChartVerifier` 新增的"多路频谱"一节（两条同组系列）第一次跑就撞上它。
         List<Series> spectrumSeries = new ArrayList<>();
         for (Layer layer : chart.layers()) {
             for (Series s : layer.series()) {
@@ -562,7 +569,7 @@ public final class ChartRenderer implements Disposable {
                 }
             }
         }
-        spectrumRenderer.prepareFrame(ctx, spectrumSeries);
+        spectrumRenderer.prepareFrame(spectrumSeries, this::bufferFor);
 
         for (Layer layer : chart.layers()) {
             int barCount = requireSameBarGaps(layer);

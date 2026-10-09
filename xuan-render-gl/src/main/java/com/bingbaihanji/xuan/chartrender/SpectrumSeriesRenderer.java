@@ -21,6 +21,7 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL20.glEnableVertexAttribArray;
@@ -482,15 +483,27 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
      * 所以 {@code uploadedBytesThisFrame()} 的口径不变（每系列每帧仍只算一次）。
      *
      * <p>由 {@code ChartRenderer} 在逐系列绘制<b>之前</b>调用一次（同包，包级可见）。
+     *
+     * <p><b>★ 缓冲为什么由参数传进来，而不是自己调 {@code ctx.bufferFor}。</b>
+     * {@link GLRenderContextImpl#bufferFor} 有一道守卫：传进来的系列必须是"当前正在渲染的
+     * 那个"（拦"渲染器自己缓存了跨系列缓冲引用"）。而那件事是 {@code ChartRenderer} 的
+     * <b>主循环</b>在预扫<b>之后</b>才做的 ⇒ 预扫里调它<b>必然抛 IllegalStateException</b>。
+     * 只要图里有 ≥2 条 SPECTRUM 系列就必然走到（一条时早在下面 {@code size() < 2}
+     * 那一支返回了，所以这条缺陷在单系列的场景里完全看不见）。
+     * {@code ChartRenderer} 因此把 {@code bufferFor} 传进来——预扫取到的是同一个对象
+     * （它是懒创建 + 缓存，主循环再调一次拿到的还是它）。
+     *
+     * @param buffers 系列 → 它的常驻缓冲（渲染器自己看不到兄弟系列，这是它唯一能拿到
+     *                别人缓冲的入口；也只有 {@code ChartRenderer} 有权创建它们）
      */
-    void prepareFrame(GLRenderContext ctx, List<Series> spectrumSeries) {
+    void prepareFrame(List<Series> spectrumSeries, Function<Series, SeriesBuffer> buffers) {
         batchSlots.clear();
         if (spectrumSeries.size() < 2) {
             return; // 只有一路就没有"批量"可言，照旧走单路
         }
         Map<Long, List<Series>> groups = new LinkedHashMap<>();
         for (Series s : spectrumSeries) {
-            SeriesBuffer b = ctx.bufferFor(s);
+            SeriesBuffer b = buffers.apply(s);
             b.uploadNewSamples();
             long key = ((long) b.capacity() << 40) ^ b.writeCount();
             groups.computeIfAbsent(key, k -> new ArrayList<>()).add(s);
@@ -499,7 +512,7 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
             if (group.size() < 2) {
                 continue; // 这个 (容量, 写指针) 只有一路，单路更省
             }
-            SeriesBuffer first = ctx.bufferFor(group.get(0));
+            SeriesBuffer first = buffers.apply(group.get(0));
             int ringCapacity = first.capacity();
             int n = transformLength(ringCapacity);
             long writeCount = first.writeCount();
@@ -514,7 +527,7 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
                 FftBatchKernel kernel = batchKernelFor(n);
                 int[] vbos = new int[chunk.size()];
                 for (int i = 0; i < chunk.size(); i++) {
-                    vbos[i] = ctx.bufferFor(chunk.get(i)).vboId();
+                    vbos[i] = buffers.apply(chunk.get(i)).vboId();
                 }
                 kernel.execute(vbos, chunk.size(), ringStart, ringCapacity, WINDOW);
                 for (int i = 0; i < chunk.size(); i++) {
