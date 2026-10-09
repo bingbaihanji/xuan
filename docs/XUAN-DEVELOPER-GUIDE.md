@@ -397,6 +397,68 @@ gc.pickable(labelId) {
 与 MIT 声明冲突）。构造时指定：`xuan { font = File(…) }` 或
 `FXGLTransfer(font = FontFile.load(…))`。**没给时 `drawText` / `measureText`
 会抛异常**并说明怎么补，其余绘制照常。
+  
+## 3b. 图片模块
+
+### 3b.1 图像从哪来
+
+**本库不做加载**——它不认文件、不认流，只认一个 `IntArray`。像素按 `0xAARRGGBB`
+排布（与 `util/Color` 同一个契约），长度必须等于 `width * height`，**数组第 0 行是
+图像的顶行**。JavaFX 的读法逐位就是这个契约：
+
+```kotlin
+val w = image.width.toInt()
+val h = image.height.toInt()
+val argb = IntArray(w * h)
+image.pixelReader.getPixels(0, 0, w, h, PixelFormat.getIntArgbInstance(), argb, 0, w)
+```
+
+### 3b.2 两种画法
+
+```kotlin
+// 入口一：直接给像素数组。库内部按【数组对象身份】缓存纹理
+gc.drawImage(argb, w, h, 40f, 40f)                  // 按原始像素尺寸画
+gc.drawImage(argb, w, h, 40f, 40f, 200f, 120f)      // 缩放到目标矩形
+
+// 入口二：先建句柄（纯 CPU，不碰 GL，第一次绘制才上传）
+val logo = gc.createImage(argb, w, h)
+gc.drawImage(logo, 40f, 40f)
+gc.drawImage(logo, 40f, 40f, 200f, 120f)
+logo.dispose()                                      // 可选
+```
+
+`(dx, dy)` 是目标矩形的**左上角**，**不是基线**（和 `drawText` 的 `y` 不一样）。
+
+### 3b.3 只上传一次，不画了就自动释放
+
+同一张图无论画多少帧、用哪种入口画，都**只上传一次**。判定"是同一张图"用的是
+**数组的对象身份**，于是有一条必须知道的约定：
+
+> **交进去的数组改了内容不会被感知**。要换图请传**新的数组**（或新建句柄），
+> 新数组会重新上传，旧纹理在连续两代没被画到之后自动释放。
+
+同一个数组配不同的宽高会**明确抛异常**（否则会拿旧尺寸的纹理按错误跨距解释，
+画出一张扭曲但完全正常的图）。
+
+**不需要手动管理生命周期**：不再画的图连续两帧没被画到就自动释放。
+`dispose()` 只是"我现在就要还掉"的提前释放，忘了调不会泄漏——它必须在 GL 线程上调用。
+
+### 3b.4 抗锯齿、裁剪与拾取
+
+图片是一类普通图元：**裁剪、z 序、变换、GPU 拾取全部自动生效**。
+两件要知道的行为：
+
+- **`gc.antialias` 对图片无效**（它是填充类几何，和 `fillRect` 同类）。
+  图片边缘要抗锯齿请在构造时开 `msaa`。
+- **拾取范围是整个矩形，包括全透明的像素**（拾取不看 alpha）。想要"点在图上的
+  可见部分才命中"，请自己按 alpha 判或改用 `isPointInPath`。
+
+```kotlin
+gc.pickable(logoId) {
+    gc.drawImage(argb, w, h, 40f, 40f)
+}
+```
+
 ## 4. 统计图表模块
 
 ### 4.1 分层

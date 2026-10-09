@@ -11,3 +11,5 @@ out/
 
 *.iml
 *.log
+*.txt
+CLAUDE.md

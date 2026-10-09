@@ -34,7 +34,7 @@ import kotlin.Unit;
 public class BirdsFlockApp extends Application {
 
     // ---- 鸟群配置 ----
-    private static final int BIRDS_PER_FLOCK = 26667;
+    private static final int BIRDS_PER_FLOCK = 120000;
 
     // ---- 窗口参数 ----
     private static final int WIDTH = 1000;

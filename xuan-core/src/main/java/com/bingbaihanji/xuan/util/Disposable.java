@@ -1,12 +1,12 @@
 package com.bingbaihanji.xuan.util;
 
 /**
- * Represents a resource that can be disposed to release associated resources.
+ * 表示可以释放以释放关联资源的资源
  */
 public interface Disposable {
 
     /**
-     * Disposes of this resource, releasing any underlying resources.
+     * 处置此资源，释放任何底层资源
      */
     void dispose();
 }
