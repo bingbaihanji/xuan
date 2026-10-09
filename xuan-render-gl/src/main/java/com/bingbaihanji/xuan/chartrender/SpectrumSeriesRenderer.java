@@ -8,13 +8,17 @@ import com.bingbaihanji.xuan.chart.Series;
 import com.bingbaihanji.xuan.chart.SeriesRenderer;
 import com.bingbaihanji.xuan.gl.GLAbstraction;
 import com.bingbaihanji.xuan.gl.ShaderProgram;
+import com.bingbaihanji.xuan.gpu.FftBatchKernel;
 import com.bingbaihanji.xuan.gpu.FftKernel;
 import com.bingbaihanji.xuan.gpu.FftWindow;
 import com.bingbaihanji.xuan.util.Rect;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -121,6 +125,29 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
      * 每个系列的 {@code execute} 都紧接着它自己的绘制，不存在交叉覆盖。
      */
     private final Map<Integer, FftKernel> kernels = new HashMap<>();
+
+    /**
+     * 本帧的**批量结果**：系列 → (批量核, 它在那批里的路号)。
+     *
+     * <p><b>每帧由 {@link #prepareFrame} 重建</b>——写指针每帧都在变，缓存跨帧会画出
+     * 一帧前的谱（形状正常，内容是旧的）。
+     *
+     * <p>不在表里的系列（只有一路、或容量/写指针与别人不同）走**单路 `FftKernel`**，
+     * 即改动前那条**已验证**的路径。
+     */
+    private final Map<Series, BatchSlot> batchSlots = new IdentityHashMap<>();
+
+    /**
+     * 变换长度 → 批量核。
+     *
+     * <p>与 {@link #kernels} 同一条理由：批量核把"最多几路"写死在编译期常量里，
+     * 而与容量无关，所以按 `n` 缓存即可。
+     */
+    private final Map<Integer, FftBatchKernel> batchKernels = new HashMap<>();
+
+    /** 一次批量里属于某个系列的那一片：哪个核、第几路。 */
+    private record BatchSlot(FftBatchKernel kernel, int channel) {
+    }
 
     private boolean disposed = false;
 
@@ -297,17 +324,30 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
         }
         int ringStart = (int) ((writeCount - n) & (ringCapacity - 1));
 
-        FftKernel kernel = kernelFor(ringCapacity, n);
-        // ★ 必须在绘制之前跑：execute 内部的 memoryBarrier 是"compute 写 → 顶点属性读"
-        //   之间唯一的那道屏障（见类文档）。顺序反了读到旧值，数值错而不报错。
-        kernel.execute(buffer.vboId(), ringStart, WINDOW);
+        // ★ 本系列若已被帧前预扫收进某个批，就**跳过自己的 execute**，
+        //   改从批输出的对应切片取数（firstInstanceBase）。屏障由批量核的 execute
+        //   内部发过，而预扫发生在绘制之前 ⇒ "compute 写 → 顶点属性读"那道屏障照样成立。
+        BatchSlot slot = batchSlots.get(series);
+        final int outputBuffer;
+        final int firstInstanceBase;
+        if (slot != null) {
+            outputBuffer = slot.kernel().outputBufferId();
+            firstInstanceBase = slot.channel() * slot.kernel().binCount();
+        } else {
+            FftKernel kernel = kernelFor(ringCapacity, n);
+            // ★ 必须在绘制之前跑：execute 内部的 memoryBarrier 是"compute 写 → 顶点属性读"
+            //   之间唯一的那道屏障（见类文档）。顺序反了读到旧值，数值错而不报错。
+            kernel.execute(buffer.vboId(), ringStart, WINDOW);
+            outputBuffer = kernel.outputBufferId();
+            firstInstanceBase = 0;
+        }
 
         // 可见窗口就是 x 轴的窗口，而 x 轴的单位是 **bin**（规格 §5：x = bin 索引，
         // 要显示成 Hz 由应用自己换算轴标签）。
         double windowStart = axes[0].windowMin();
         double windowEnd = axes[0].windowMax();
 
-        int binCount = kernel.binCount();
+        int binCount = n / 2 + 1;   // 单路与批量都是 n/2+1（含 DC 与 Nyquist）
         // 线段版（不是 computePoints）：频谱是**相邻 bin 连线**，最后一个实例要右端已算出来。
         // 上界因此是 binCount - 1，最后一个实例是 (binCount-2, binCount-1)——
         // 正好覆盖到 Nyquist 那个 bin。写成 computePoints 会让最后一个实例去读
@@ -331,7 +371,7 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
         gl.setBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
         gl.bindVao(vao);
-        configureDataAttributes(kernel.outputBufferId());
+        configureDataAttributes(outputBuffer);
 
         ShaderProgram shader = c.lineShader();
         shader.use();
@@ -375,7 +415,8 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
             shader.setUniform("uFirstRelIndex",
                     (float) (seg.firstDataIndex() - windowFloor - (windowStart - windowFloor)));
             gl.drawArraysInstancedBaseInstance(
-                    GL_TRIANGLE_STRIP, 0, 4, seg.instanceCount(), seg.firstInstance());
+                    GL_TRIANGLE_STRIP, 0, 4, seg.instanceCount(),
+                            seg.firstInstance() + firstInstanceBase);
         }
 
         shader.unuse();
@@ -414,7 +455,8 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
                             (float) (seg.firstDataIndex() - windowFloor
                                     - (windowStart - windowFloor)));
                     gl.drawArraysInstancedBaseInstance(
-                            GL_TRIANGLE_STRIP, 0, 4, seg.instanceCount(), seg.firstInstance());
+                            GL_TRIANGLE_STRIP, 0, 4, seg.instanceCount(),
+                            seg.firstInstance() + firstInstanceBase);
                 }
             });
             pick.unuse();
@@ -423,6 +465,73 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
         gl.bindVao(0);
         gl.disableBlend();
         gl.setScissorEnabled(scissorWasOn);
+    }
+
+    /**
+     * ★ 帧前预扫：把本帧所有 {@code SPECTRUM} 系列按 <b>(环容量, 写指针)</b> 分组，
+     * 每组**一次**批量 dispatch。
+     *
+     * <h2>为什么分组键是这两个</h2>
+     * <p>{@link FftBatchKernel} 的 {@code u_RingCapacity} 与 {@code u_RingStart} 是
+     * <b>所有路共享</b>的 uniform，所以一次 batch 只装得下"环容量相同、写指针相同"的系列。
+     * 同步采集（多路同时采样）天然满足；不满足的留在表外，走单路。
+     *
+     * <h2>为什么在这里先 uploadNewSamples</h2>
+     * <p>分组键里的"写指针"来自 {@link SeriesBuffer#writeCount()}，不上传的话它是 0。
+     * 提前上传不影响 {@link #render} 里那一次：{@code uploadedCount == written} 时直接返回，
+     * 所以 {@code uploadedBytesThisFrame()} 的口径不变（每系列每帧仍只算一次）。
+     *
+     * <p>由 {@code ChartRenderer} 在逐系列绘制<b>之前</b>调用一次（同包，包级可见）。
+     */
+    void prepareFrame(GLRenderContext ctx, List<Series> spectrumSeries) {
+        batchSlots.clear();
+        if (spectrumSeries.size() < 2) {
+            return; // 只有一路就没有"批量"可言，照旧走单路
+        }
+        Map<Long, List<Series>> groups = new LinkedHashMap<>();
+        for (Series s : spectrumSeries) {
+            SeriesBuffer b = ctx.bufferFor(s);
+            b.uploadNewSamples();
+            long key = ((long) b.capacity() << 40) ^ b.writeCount();
+            groups.computeIfAbsent(key, k -> new ArrayList<>()).add(s);
+        }
+        for (List<Series> group : groups.values()) {
+            if (group.size() < 2) {
+                continue; // 这个 (容量, 写指针) 只有一路，单路更省
+            }
+            SeriesBuffer first = ctx.bufferFor(group.get(0));
+            int ringCapacity = first.capacity();
+            int n = transformLength(ringCapacity);
+            long writeCount = first.writeCount();
+            if (writeCount < n) {
+                continue; // 预热期：与 render() 里的早退一致，这一帧不画
+            }
+            int ringStart = (int) ((writeCount - n) & (ringCapacity - 1));
+            // 超过 MAX_BATCH 就分批——数组块的长度是编译期常量，装不下更多。
+            for (int from = 0; from < group.size(); from += FftBatchKernel.MAX_BATCH) {
+                List<Series> chunk = group.subList(
+                        from, Math.min(group.size(), from + FftBatchKernel.MAX_BATCH));
+                FftBatchKernel kernel = batchKernelFor(n);
+                int[] vbos = new int[chunk.size()];
+                for (int i = 0; i < chunk.size(); i++) {
+                    vbos[i] = ctx.bufferFor(chunk.get(i)).vboId();
+                }
+                kernel.execute(vbos, chunk.size(), ringStart, ringCapacity, WINDOW);
+                for (int i = 0; i < chunk.size(); i++) {
+                    batchSlots.put(chunk.get(i), new BatchSlot(kernel, i));
+                }
+            }
+        }
+    }
+
+    /** 取（必要时创建）该变换长度的批量核。只在 GL 线程上调用。 */
+    private FftBatchKernel batchKernelFor(int n) {
+        FftBatchKernel kernel = batchKernels.get(n);
+        if (kernel == null) {
+            kernel = new FftBatchKernel(gl, n);
+            batchKernels.put(n, kernel);
+        }
+        return kernel;
     }
 
     /** 取（必要时创建）该环容量的 FFT 核。只在 GL 线程上调用。 */
@@ -442,6 +551,8 @@ final class SpectrumSeriesRenderer implements SeriesRenderer {
         }
         disposed = true;
         kernels.values().forEach(FftKernel::dispose);
+        batchKernels.values().forEach(FftBatchKernel::dispose);
+        batchKernels.clear();
         kernels.clear();
         gl.deleteVbo(cornerVbo);
         gl.deleteVao(vao);

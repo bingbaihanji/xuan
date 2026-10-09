@@ -13,7 +13,9 @@ import com.bingbaihanji.xuan.renderer.PickRegistry;
 import com.bingbaihanji.xuan.util.Disposable;
 import com.bingbaihanji.xuan.util.Rect;
 
+import java.util.ArrayList;
 import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.function.BooleanSupplier;
@@ -545,6 +547,22 @@ public final class ChartRenderer implements Disposable {
                 stepShader, stepPickShader, areaShader, areaPickShader,
                 barShader, barPickShader, pickPass, layout, viewportWidth, viewportHeight,
                 antialias.getAsBoolean());
+
+        // ★ 频谱批处理预扫：在逐系列绘制**之前**，把本帧所有 SPECTRUM 系列交给频谱渲染器
+        //   按 (环容量, 写指针) 分组、每组一次批量 dispatch。≥2 路同组者被收进批，
+        //   随后在 SpectrumSeriesRenderer.render() 里**跳过自己的 execute**、改从批输出的切片取数。
+        //   一路、或容量/写指针与别人不同的，照旧走单例 FftKernel——**那条路径逐字节没变**。
+        //   （为什么放在这里：分组要用到 SeriesBuffer 的容量与写指针，而它们由 bufferFor 懒创建；
+        //     预扫自己会调 bufferFor，主循环再调一次是同一个对象。）
+        List<Series> spectrumSeries = new ArrayList<>();
+        for (Layer layer : chart.layers()) {
+            for (Series s : layer.series()) {
+                if (s.type() == ChartType.SPECTRUM) {
+                    spectrumSeries.add(s);
+                }
+            }
+        }
+        spectrumRenderer.prepareFrame(ctx, spectrumSeries);
 
         for (Layer layer : chart.layers()) {
             int barCount = requireSameBarGaps(layer);
