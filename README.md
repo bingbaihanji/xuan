@@ -1,7 +1,5 @@
 # Xuan - JavaFX OpenGL 2D 绘图框架
 
-开发者设计、模块边界和扩展说明见 [Xuan 开发者手册](docs/Xuan-DEVELOPER-GUIDE.md)。
-
 一个基于 JavaFX + OpenGL 的 2D 绘图框架。API 手感类似 HTML Canvas（立即模式、像素坐标、
 `fillRect` / `strokePath` 这类方法形状），内部走 **GPU 批处理管线**：绘制调用只往顶点缓冲里
 追加数据，每帧一次性提交重放。
