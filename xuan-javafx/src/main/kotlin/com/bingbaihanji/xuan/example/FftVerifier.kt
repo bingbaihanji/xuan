@@ -2,6 +2,7 @@ package com.bingbaihanji.xuan.example
 
 import com.bingbaihanji.xuan.gl.LwjglGLAbstraction
 import com.bingbaihanji.xuan.glview.FXGLTransfer
+import com.bingbaihanji.xuan.gpu.ComplexFft
 import com.bingbaihanji.xuan.gpu.FftKernel
 import com.bingbaihanji.xuan.gpu.FftWindow
 import com.bingbaihanji.xuan.view.MainView
@@ -390,6 +391,8 @@ class FftVerifierApp : Application() {
         val gl = LwjglGLAbstraction()
         val harnesses = ArrayList<FftHarness>()
         fun harness(n: Int): FftHarness = FftHarness(gl, n, RING_CAP).also { harnesses.add(it) }
+        // ComplexFft 那一节的夹具（类型不同，单独一张表；同样在 finally 里释放）。
+        val complexHarnesses = ArrayList<ComplexFftHarness>()
 
         println("=== Xuan FFT 校验器（gpu/FftKernel.java）===")
         println("主长度 N = $N_MAIN（半谱 $N_MAIN/2+1 个 bin），频率 k0 = ${K0_LIST.joinToString()}，环容量 $RING_CAP")
@@ -884,9 +887,213 @@ class FftVerifierApp : Application() {
                 )
             }
 
+            // ==================================================================
+            // 七、ComplexFft：通用复数正/逆变换（真 GL 上算得对不对）
+            // ==================================================================
+            //
+            // 这一节与上面六节的分工：上面测的是 FftKernel（实数 → 加窗 → 半谱幅度），
+            // 这里测的是 ComplexFft（复数 → 复数、正/逆、批量）。两者的输出格式不同，
+            // 参考实现也不同（这里要**完整复数谱**，不是半谱），所以各持一份夹具与参考。
+            println("\n-- 九、ComplexFft：复数正向对 CPU 参考、正逆往返、批量、实/复两路一致 --")
+
+            var complexBlocker: Throwable? = null
+            val cx = try {
+                ComplexFftHarness(gl, COMPLEX_N, COMPLEX_BATCH).also { complexHarnesses.add(it) }
+            } catch (t: Throwable) {
+                complexBlocker = t
+                null
+            }
+            report(
+                "★ ComplexFft 的着色器能编译并链接（N=$COMPLEX_N）",
+                complexBlocker == null,
+                complexBlocker?.message?.trim()?.take(500)
+                    ?: "编译并链接通过——被测对象是可运行状态"
+            )
+
+            fun cxBlocked(): String =
+                complexBlocker?.let { "无法评估：ComplexFft 没能构造出来 —— ${it.message?.trim()?.take(200)}" }
+                    ?: "无法评估（夹具为 null）"
+
+            // ── 7.1 复数正向与 CPU 复数 DFT 逐点比对 ──────────────────────────
+            // 输入刻意**实部虚部都非零**（余弦 + 正弦）：只喂纯实数的话，
+            // "实虚部串扰"（t3 = (b−d)·(−i) 写错、cmul 的交叉项写反）全都看不出来。
+            val cRe = DoubleArray(COMPLEX_N) { (cos(2.0 * PI * COMPLEX_K0 * it / COMPLEX_N)).toFloat().toDouble() }
+            val cIm = DoubleArray(COMPLEX_N) { (sin(2.0 * PI * COMPLEX_K0 * it / COMPLEX_N)).toFloat().toDouble() }
+            val cWant = CpuComplexReference(COMPLEX_N).forward(cRe, cIm)
+            var cGot: DoubleArray? = null
+            if (cx != null) {
+                cx.uploadComplex(arrayOf(cRe), arrayOf(cIm), 1)
+                cx.forwardComplex(1)
+                cGot = cx.readOutput(1)
+            }
+            val cErr = if (cGot != null) maxRelError(cGot, cWant, complexPeak(cWant)) else Double.NaN
+            report(
+                "★ ComplexFft 复数正向与 CPU 复数 DFT 逐点一致（实虚部都非零）",
+                cGot != null && cErr < COMPLEX_REF_TOL,
+                if (cGot == null) cxBlocked()
+                else "相对峰值最大误差 ${"%.3e".format(cErr)}（门槛 $COMPLEX_REF_TOL）；" +
+                        "最亮的 3 个 bin：${topComplexBins(cGot, 3)}"
+            )
+
+            // ── 7.2 正逆往返：forward → inverse 必须回到原信号 ─────────────────
+            // 中间必须**经 CPU 转一手**：forward 读输入 SSBO、写输出 SSBO，
+            // 而 inverse 读的是**输入** SSBO——不转这一手，inverse 读到的还是原信号。
+            var rtDiff = Double.NaN
+            if (cx != null) {
+                cx.uploadComplex(arrayOf(cRe), arrayOf(cIm), 1)
+                cx.forwardComplex(1)
+                val fwd = cx.readOutput(1)
+                val fr = DoubleArray(COMPLEX_N) { fwd[2 * it] }
+                val fi = DoubleArray(COMPLEX_N) { fwd[2 * it + 1] }
+                cx.uploadComplex(arrayOf(fr), arrayOf(fi), 1)
+                cx.inverse(1)
+                val back = cx.readOutput(1)
+                var worst = 0.0
+                for (i in 0 until COMPLEX_N) {
+                    worst = maxOf(worst, abs(back[2 * i] - cRe[i]), abs(back[2 * i + 1] - cIm[i]))
+                }
+                rtDiff = worst
+            }
+            report(
+                "★ ComplexFft 正逆往返恢复原信号（逆向的 1/N 归一化）",
+                rtDiff < ROUND_TRIP_TOL,
+                if (rtDiff.isNaN()) cxBlocked()
+                else "往返后与原始信号的最大绝对差 ${"%.3e".format(rtDiff)}（门槛 $ROUND_TRIP_TOL）"
+            )
+
+            // ── 7.3 批量逐点一致：单路跑 vs 批量里第 0 路 ─────────────────────
+            // 同一份数据、同一个 workgroup（都取 gl_WorkGroupID.x = 0），
+            // 唯一差别是 dispatch 的路数 ⇒ 结果必须**逐位相同**。
+            var batchDiff = Double.NaN
+            if (cx != null) {
+                cx.uploadReal(arrayOf(cRe), 1)
+                cx.forwardReal(1)
+                val single = cx.readOutput(1)
+                cx.uploadReal(arrayOf(cRe, cRe, cRe, cRe), COMPLEX_BATCH)
+                cx.forwardReal(COMPLEX_BATCH)
+                val batched = cx.readOutput(COMPLEX_BATCH)
+                var worst = 0.0
+                for (i in 0 until 2 * COMPLEX_N) worst = maxOf(worst, abs(single[i] - batched[i]))
+                batchDiff = worst
+            }
+            report(
+                "★ ComplexFft 批量与单路逐位一致（batched[0] == single）",
+                batchDiff <= EXACT_TOL,
+                if (batchDiff.isNaN()) cxBlocked()
+                else "最大绝对差 ${"%.3e".format(batchDiff)}（门槛 $EXACT_TOL，0 表示逐位相同）"
+            )
+
+            // ── 7.4 实/复两条路一致 ───────────────────────────────────────────
+            // 同一实数信号：stride=1（实数快通道）与 stride=2（补零虚部）必须给出同样的谱。
+            // ★ 这条封的是本类最容易静默出错的设计——"一个缓冲两种含义"。
+            var strideDiff = Double.NaN
+            if (cx != null) {
+                val x = cosineInput(COMPLEX_N, COMPLEX_K0)
+                cx.uploadReal(arrayOf(x), 1)
+                cx.forwardReal(1)
+                val viaReal = cx.readOutput(1)
+                cx.uploadComplex(arrayOf(x), arrayOf(DoubleArray(COMPLEX_N)), 1)
+                cx.forwardComplex(1)
+                val viaComplex = cx.readOutput(1)
+                var worst = 0.0
+                for (i in 0 until 2 * COMPLEX_N) worst = maxOf(worst, abs(viaReal[i] - viaComplex[i]))
+                strideDiff = worst
+            }
+            report(
+                "★ ComplexFft 实数快通道与复数通道给出同一结果（stride=1 vs stride=2）",
+                strideDiff <= EXACT_TOL,
+                if (strideDiff.isNaN()) cxBlocked()
+                else "最大绝对差 ${"%.3e".format(strideDiff)}（门槛 $EXACT_TOL）"
+            )
+
+            // ── 7.5 归一化：单位幅度余弦的正向谱峰是 N/2（不归一）──────────────
+            var peakRel = Double.NaN
+            if (cx != null) {
+                val x = cosineInput(COMPLEX_N, COMPLEX_K0)
+                cx.uploadReal(arrayOf(x), 1)
+                cx.forwardReal(1)
+                val out = cx.readOutput(1)
+                val mag = hypot(out[2 * COMPLEX_K0], out[2 * COMPLEX_K0 + 1])
+                peakRel = abs(mag - COMPLEX_N / 2.0) / (COMPLEX_N / 2.0)
+            }
+            report(
+                "★ ComplexFft 正向不归一：单位幅度余弦的谱峰 = N/2",
+                peakRel < AMP_TOL,
+                if (peakRel.isNaN()) cxBlocked()
+                else "偏差 ${"%.3e".format(peakRel)}（门槛 $AMP_TOL，期望峰高 ${COMPLEX_N / 2.0}）"
+            )
+
+            // ── 7.6 batch 偏移不串：第 c 路的峰必须落在第 c 路自己的输出段 ──────
+            // ★ 这条钉的是"batch 偏移写成 0"那类缺陷——写成 0 的话每一路都算成第一路，
+            //   而**画面完全正常**（每条谱线形状都对，只是内容都是第 0 路）。
+            //   判据不是"峰在正确的 bin"（那对第 0 路也成立），而是**每一路的峰各不相同、
+            //   且各自等于自己那个频率**。
+            val expectK = IntArray(COMPLEX_BATCH) { COMPLEX_K0 + it * 7 }
+            val gotPeaks = IntArray(COMPLEX_BATCH) { -1 }
+            var peaksOk = false
+            if (cx != null) {
+                val xs = Array(COMPLEX_BATCH) { c -> cosineInput(COMPLEX_N, expectK[c]) }
+                cx.uploadReal(xs, COMPLEX_BATCH)
+                cx.forwardReal(COMPLEX_BATCH)
+                val out = cx.readOutput(COMPLEX_BATCH)
+                for (c in 0 until COMPLEX_BATCH) {
+                    var best = 0
+                    var bestMag = -1.0
+                    for (k in 0 until COMPLEX_N) {
+                        val m = hypot(out[2 * (c * COMPLEX_N + k)], out[2 * (c * COMPLEX_N + k) + 1])
+                        if (m > bestMag) { bestMag = m; best = k }
+                    }
+                    gotPeaks[c] = best
+                }
+                // ★ 判据只能写"落在自己那一对**共轭**里"，不能写 `== k0`。
+                //   实数正弦的谱有**两个**等高的峰（k 与 N−k），谁被选成"最大值"
+                //   由 float32 舍入方向决定——实测第一版写成 ==k0 时，
+                //   第 0、3 路落在 k0 上，第 1、2 路落在 N−k0 上，于是那条假红。
+                //   而"偏移写成 0"的签名是**几路完全相同**，不是"落在共轭上"。
+                peaksOk = (0 until COMPLEX_BATCH).all { c ->
+                    gotPeaks[c] == expectK[c] || gotPeaks[c] == COMPLEX_N - expectK[c]
+                }
+            }
+            report(
+                "★ ComplexFft 批量：第 c 路的谱峰落在第 c 路自己的输出段（偏移不串）",
+                peaksOk,
+                if (cx == null) cxBlocked()
+                else "每路期望频率 ${expectK.joinToString()}（峰落在 k0 或 N−k0 都算对），" +
+                        "实测峰 ${gotPeaks.joinToString()}——若几路完全相同，就是 batch 偏移按 0 算了"
+            )
+
+            // ── 7.7 ComplexFft 的 uniform 名字都能解析出 location ─────────────
+            // 与 verifyUniformNames 同源，但对着 ComplexFft 的着色器。名字写错时
+            // glGetUniformLocation 返回 −1 而 glUniform1i 不报错，值静默不生效。
+            val cxSource = readShaderSourceOf(ComplexFft::class.java)
+            var cxProbe: ShaderProbe? = null
+            var cxProbeErr: Throwable? = null
+            if (cxSource != null) {
+                try { cxProbe = ShaderProbe(cxSource) } catch (t: Throwable) { cxProbeErr = t }
+            }
+            try {
+                val cxCompiled = cxProbe?.compiled == true
+                val unresolved = if (cxCompiled) {
+                    COMPLEX_UNIFORM_NAMES.filter { requireNotNull(cxProbe).location(it) < 0 }
+                } else emptyList()
+                report(
+                    "★ ComplexFft 的 ${COMPLEX_UNIFORM_NAMES.size} 个 uniform 名字都能解析出 location",
+                    cxCompiled && unresolved.isEmpty(),
+                    when {
+                        cxProbeErr != null -> cxProbeErr.message?.trim()?.take(200) ?: cxProbeErr.toString()
+                        !cxCompiled -> "无法评估：源码取不到或编译不过"
+                        unresolved.isEmpty() -> COMPLEX_UNIFORM_NAMES.joinToString() + " —— 全部解析成功"
+                        else -> "解析不出来的是 ${unresolved.joinToString()}"
+                    }
+                )
+            } finally {
+                cxProbe?.close()
+            }
+
             return finish(failures)
         } finally {
             // GL 资源必须在 GL 线程上释放，而这里正是 GL 线程；异常路径上也走到。
+            complexHarnesses.asReversed().forEach { it.close() }
             harnesses.asReversed().forEach { it.close() }
             drainGlError()
         }
@@ -1009,6 +1216,21 @@ class FftVerifierApp : Application() {
      */
     private fun readShaderSource(): String? = try {
         val method = FftKernel::class.java.getDeclaredMethod("shaderSource")
+        method.isAccessible = true
+        method.invoke(null) as? String
+    } catch (t: Throwable) {
+        null
+    }
+
+    /**
+     * 同 [readShaderSource]，但对着任意一个核的类——ComplexFft 那一节用它。
+     *
+     * <p>反射而不是手抄：手抄的那份会随上游改动**静默失真**。
+     * `shaderSource()` 在 Java 侧是**包级可见**（本项目刻意的可测性做法），
+     * Kotlin 跨包调不到，所以只能反射。
+     */
+    private fun readShaderSourceOf(clazz: Class<*>): String? = try {
+        val method = clazz.getDeclaredMethod("shaderSource")
         method.isAccessible = true
         method.invoke(null) as? String
     } catch (t: Throwable) {
@@ -1317,3 +1539,175 @@ private fun topBins(mag: DoubleArray, count: Int): String =
  */
 private fun cosineInput(n: Int, k0: Int, amp: Double = 1.0): DoubleArray =
     DoubleArray(n) { (amp * cos(2.0 * PI * k0 * it / n)).toFloat().toDouble() }
+
+// ---------------------------------------------------------------------------
+// ComplexFft 那一节（七）：常量、夹具、CPU 复数参考
+// ---------------------------------------------------------------------------
+
+/**
+ * 第七节（ComplexFft）用的变换长度。
+ *
+ * <p>比主干那个 `N_MAIN` **小**：那一节的参考是**朴素 O(N²) DFT**（复数、完整谱、N 个 bin），
+ * 而这一节要跑好几趟（正向 / 往返 / 批量 / 实复两路 / 归一化 / 批量偏移）。
+ * N=1024 时单趟约一百万次复数乘加，几趟下来仍在秒级以内。
+ */
+private const val COMPLEX_N = 1024
+
+/** 第七节批量那几条用的路数（≥2 才能验"偏移不串"）。 */
+private const val COMPLEX_BATCH = 4
+
+/** 第七节复数正向那一路的频率。取既非 0 也非 N/2 的位置。 */
+private const val COMPLEX_K0 = 100
+
+/** 与 CPU 复数参考逐点比对的门槛（相对峰值）。与 [CPU_REF_TOL] 同源同理由。 */
+private const val COMPLEX_REF_TOL = 1e-4
+
+/** 正逆往返的恢复误差门槛。float32 走两趟变换，1e-4 留了足够余量。 */
+private const val ROUND_TRIP_TOL = 1e-4
+
+/**
+ * "逐位一致"类断言的门槛（批量 vs 单路、实数通道 vs 复数通道）。
+ *
+ * <p>取一个**远小于任何真实差异、又容得下 ±0.0** 的极小值——这两条比的是
+ * **同一段着色器代码、同一批输入**，理论上逐位相同；写成 0.0 的话
+ * 一个假想的 `-0.0 vs 0.0` 会让断言假红，而那种差异毫无意义。
+ */
+private const val EXACT_TOL = 1e-12
+
+/**
+ * `ComplexFft` 会去设置的那 4 个 uniform 名字。
+ *
+ * <p>与 [UNIFORM_NAMES] 同一条理由：手写一份、与生产代码各持——
+ * 着色器里改名而 Java 侧没跟着改时，`glGetUniformLocation` 返回 −1 而
+ * `glUniform1i` **不报错**，值静默不生效。
+ */
+private val COMPLEX_UNIFORM_NAMES = listOf("u_N", "u_InStride", "u_Inverse", "u_Scale")
+
+/** 复数谱（交错）里幅值最大的 bin 的幅值。 */
+private fun complexPeak(x: DoubleArray): Double {
+    var best = 0.0
+    var k = 0
+    while (k + 1 < x.size) {
+        val m = hypot(x[k], x[k + 1])
+        if (m > best) best = m
+        k += 2
+    }
+    return best
+}
+
+/** 复数谱里最亮的几个 bin，打印用。 */
+private fun topComplexBins(x: DoubleArray, count: Int): String =
+    (0 until x.size / 2)
+        .sortedByDescending { hypot(x[2 * it], x[2 * it + 1]) }
+        .take(count)
+        .joinToString { "k=$it |X|=${"%.4f".format(hypot(x[2 * it], x[2 * it + 1]))}" }
+
+/**
+ * `ComplexFft` 的夹具：一个**交错复数**输入 SSBO + 被测核 + 读回。
+ *
+ * <p>输入缓冲按 `2 × n × maxBatch` 个 float 分配（够 stride=2 用；stride=1 只用前半）。
+ * 每次上传都**整块重写**：输入变了而缓冲没变的话，断言看的是上一次的数据。
+ */
+private class ComplexFftHarness(
+    private val gl: LwjglGLAbstraction,
+    val n: Int,
+    val maxBatch: Int,
+) : AutoCloseable {
+
+    val inputBuffer: Int = gl.createBuffer()
+
+    init {
+        gl.bindShaderStorageBuffer(inputBuffer)
+        gl.allocateBufferStorage(2L * n * maxBatch * Float.SIZE_BYTES)
+        gl.bindShaderStorageBuffer(0)
+    }
+
+    val kernel = ComplexFft(gl, n, maxBatch)
+
+    /** 按**交错复数**上传 `count` 路（通道优先，每路 n 个复数）。 */
+    fun uploadComplex(inRe: Array<DoubleArray>, inIm: Array<DoubleArray>, count: Int) {
+        val data = FloatArray(2 * n * count)
+        for (c in 0 until count) {
+            for (i in 0 until n) {
+                data[2 * (c * n + i)] = inRe[c][i].toFloat()
+                data[2 * (c * n + i) + 1] = inIm[c][i].toFloat()
+            }
+        }
+        upload(data)
+    }
+
+    /** 按**实数**上传 `count` 路（stride=1，每路 n 个 float）。 */
+    fun uploadReal(x: Array<DoubleArray>, count: Int) {
+        val data = FloatArray(n * count)
+        for (c in 0 until count) for (i in 0 until n) data[c * n + i] = x[c][i].toFloat()
+        upload(data)
+    }
+
+    private fun upload(data: FloatArray) {
+        val bytes = BufferUtils.createByteBuffer(data.size * Float.SIZE_BYTES)
+        bytes.asFloatBuffer().put(data)
+        gl.bindShaderStorageBuffer(inputBuffer)
+        gl.uploadBufferSubData(0L, bytes)
+        gl.bindShaderStorageBuffer(0)
+    }
+
+    fun forwardComplex(count: Int) = kernel.forward(inputBuffer, count, 2)
+
+    fun forwardReal(count: Int) = kernel.forward(inputBuffer, count, 1)
+
+    fun inverse(count: Int) = kernel.inverse(inputBuffer, count)
+
+    /** 读回输出：`count` 路、每路 n 个复数，返回 `2·n·count` 个交错的 float。 */
+    fun readOutput(count: Int): DoubleArray {
+        val floats = 2 * n * count
+        val fb = BufferUtils.createFloatBuffer(floats)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, kernel.outputBufferId())
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0L, fb)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+        return DoubleArray(floats) { fb.get(it).toDouble() }
+    }
+
+    override fun close() {
+        kernel.dispose()
+        gl.deleteBuffer(inputBuffer)
+    }
+}
+
+/**
+ * 朴素 O(N²) **复数** DFT 参考：`X[k] = Σ x[t]·exp(−2πi·k·t/n)`，**不归一**，出完整谱。
+ *
+ * <p>与 [CpuReference] 同一套理由：刻意**不写成 FFT**——它的全部价值在于**显然是对的**。
+ * 与生产代码共享的只有"三角函数的定义"这一件事，变换本身各写各的。
+ *
+ * <p>归一化刻意**不在这里做**：正向就是不归一（`ComplexFft.scaleFor(n, false) == 1`），
+ * 所以参考里连乘号都没有——这样"正向不该乘任何东西"这条才真的被钉住。
+ */
+private class CpuComplexReference(private val n: Int) {
+
+    private val cosTab = DoubleArray(n) { cos(-2.0 * PI * it / n) }
+    private val sinTab = DoubleArray(n) { sin(-2.0 * PI * it / n) }
+
+    /** 返回 `2n` 个交错 float：`[re0, im0, re1, im1, ...]`。 */
+    fun forward(inRe: DoubleArray, inIm: DoubleArray): DoubleArray {
+        require(inRe.size == n && inIm.size == n) { "输入长度必须等于 $n" }
+        val out = DoubleArray(2 * n)
+        for (k in 0 until n) {
+            var sr = 0.0
+            var si = 0.0
+            // exp(−2πi·k·t/n) 的下标就是 (k·t) mod n，用累加代替乘法。
+            var idx = 0
+            for (t in 0 until n) {
+                val c = cosTab[idx]
+                val s = sinTab[idx]
+                // (re + i·im)·(c + i·s) = (re·c − im·s) + i(re·s + im·c)
+                sr += inRe[t] * c - inIm[t] * s
+                si += inRe[t] * s + inIm[t] * c
+                idx += k
+                if (idx >= n) idx -= n
+            }
+            out[2 * k] = sr
+            out[2 * k + 1] = si
+        }
+        return out
+    }
+}
