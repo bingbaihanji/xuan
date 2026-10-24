@@ -229,6 +229,11 @@ public final class FakeGLAbstraction implements GLAbstraction {
     }
 
     @Override
+    public void setTextureFilter(int texture, boolean linear) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public void attachTextureToColor0(int texture) {
         // 假实现不做附件检查，完整性由 statusToReturn 单独控制
     }

@@ -396,6 +396,18 @@ public class LwjglGLAbstraction implements GLAbstraction {
         }
     }
 
+    @Override
+    public void setTextureFilter(int texture, boolean linear) {
+        int filter = linear ? GL11.GL_LINEAR : GL11.GL_NEAREST;
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+        try {
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, filter);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, filter);
+        } finally {
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+        }
+    }
+
     /**
      * 校验 image 纹理的尺寸，由 {@link #createImageTexture} 与 {@link #readTextureImage}
      * <strong>共用一个说法</strong>。

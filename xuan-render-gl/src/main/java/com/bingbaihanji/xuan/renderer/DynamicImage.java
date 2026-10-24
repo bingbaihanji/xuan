@@ -88,6 +88,21 @@ public final class DynamicImage implements Disposable {
         }
     }
 
+    /**
+     * 设置放大/缩小过滤。
+     *
+     * <p>模拟器画面通常更适合 {@code false}（最近邻，像素清晰）；
+     * 视频类内容用 {@code true}（线性，平滑）。
+     *
+     * <p>必须在 GL 线程调用。
+     *
+     * @param linear true 为线性过滤，false 为最近邻
+     */
+    public void setLinearFilter(boolean linear) {
+        checkNotDisposed();
+        gl.setTextureFilter(textureId, linear);
+    }
+
     /** 纹理 GL 名字，供 {@code Gc} 内部使用。 */
     public int textureId() {
         checkNotDisposed();

@@ -357,6 +357,19 @@ public interface GLAbstraction extends Disposable {
     void uploadArgbSubImage(int texture, int x, int y, int width, int height, int[] pixels);
 
     /**
+     * 设置纹理的放大/缩小过滤方式。
+     *
+     * <p>{@code linear = true} 为 {@code GL_LINEAR}（平滑，适合视频）；
+     * {@code false} 为 {@code GL_NEAREST}（像素清晰，适合像素画与模拟器画面）。
+     *
+     * <p>必须在 GL 线程调用。
+     *
+     * @param texture 纹理 ID
+     * @param linear  是否使用线性过滤
+     */
+    void setTextureFilter(int texture, boolean linear);
+
+    /**
      * 创建一张可被 compute 着色器以 image 方式写入的纹理（{@code GL_RGBA8}）。
      *
      * <p>与 {@link #createTexture} 只差用途：那个接收 CPU 侧已经有的像素，这个的
