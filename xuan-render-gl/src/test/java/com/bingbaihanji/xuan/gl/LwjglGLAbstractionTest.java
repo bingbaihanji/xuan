@@ -103,6 +103,63 @@ class LwjglGLAbstractionTest {
         assertEquals(0x01, rgba.get() & 0xFF);
     }
 
+    /**
+     * 回读方向的字节序：必须是上传方向那条断言的<strong>反面</strong>，而不是另一份契约。
+     *
+     * <p>上传写的是 R,G,B,A 四个字节（上一条断言），回读用的是 {@code GL_BGRA}：
+     * 内存里 B,G,R,A 正好是 {@code 0xAARRGGBB} 在小端机上的表示。所以同一个整数在两处
+     * 的字节排列是镜像关系——这条断言钉的就是这个镜像，钉反了的表现是"读回来的图红蓝互换"，
+     * 而它只在看图时显眼、在数值上完全正常。
+     */
+    @Test
+    void 读回纹理的字节序与上传方向互为镜像() {
+        // 0x80_12_34_56 ⇒ GL_BGRA 字节 [0x56, 0x34, 0x12, 0x80]（上传那边是 [12,34,56,80]）
+        ByteBuffer bgra = ByteBuffer.allocateDirect(8);
+        bgra.put((byte) 0x56).put((byte) 0x34).put((byte) 0x12).put((byte) 0x80);
+        bgra.put((byte) 0xC0).put((byte) 0xB0).put((byte) 0xA0).put((byte) 0xFF);
+        bgra.flip();
+
+        int[] out = new int[2];
+        LwjglGLAbstraction.bgraToArgb(bgra, 2, out);
+
+        assertEquals(0x80_12_34_56, out[0]);
+        assertEquals(0xFF_A0_B0_C0, out[1]);
+    }
+
+    @Test
+    void 读回像素数非法时明确拒绝() {
+        ByteBuffer enough = ByteBuffer.allocateDirect(16);
+        int[] out = new int[4];
+        // 缓冲装不下
+        assertThrows(IllegalArgumentException.class,
+                () -> LwjglGLAbstraction.bgraToArgb(ByteBuffer.allocateDirect(8), 4, out));
+        // 数组装不下
+        assertThrows(IllegalArgumentException.class,
+                () -> LwjglGLAbstraction.bgraToArgb(enough, 4, new int[3]));
+        // null 两个方向都要挡住：否则要么 NPE、要么读进空气
+        assertThrows(IllegalArgumentException.class,
+                () -> LwjglGLAbstraction.bgraToArgb(null, 4, out));
+        assertThrows(IllegalArgumentException.class,
+                () -> LwjglGLAbstraction.bgraToArgb(enough, 4, null));
+        // 正向控制：恰好装得下时必须放行（否则上面四条可能只是恒抛）
+        LwjglGLAbstraction.bgraToArgb(ByteBuffer.allocateDirect(16), 4, new int[4]);
+    }
+
+    @Test
+    void image纹理尺寸非正时明确拒绝() {
+        // 校验必须发生在 glGenTextures 之前，否则非法尺寸会留下一个没人删得掉的名字。
+        // 两个入口（createImageTexture / readTextureImage）共用这一份，
+        // 所以这里钉的就是"多大算合法"的唯一说法。
+        assertThrows(IllegalArgumentException.class,
+                () -> LwjglGLAbstraction.requirePositiveImageSize(0, 4));
+        assertThrows(IllegalArgumentException.class,
+                () -> LwjglGLAbstraction.requirePositiveImageSize(4, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> LwjglGLAbstraction.requirePositiveImageSize(4, -1));
+        // 正向控制
+        LwjglGLAbstraction.requirePositiveImageSize(1, 1);
+    }
+
     @Test
     void 预乘那一份的尺寸校验与不预乘的完全相同() {
         assertThrows(IllegalArgumentException.class,

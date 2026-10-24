@@ -239,6 +239,9 @@ public final class RenderBatch implements Disposable {
     /** SDF 文本使用的着色器程序。 */
     private final ShaderProgram sdfShader;
 
+    /** 用户提供的自定义着色器（Material.CUSTOM 时使用）。 */
+    private volatile ShaderProgram customShader;
+
     /**
      * 字体；**可空**——本类不再自带字体（2026-09-28 起）。
      *
@@ -503,6 +506,14 @@ public final class RenderBatch implements Disposable {
     }
 
     /**
+     * 设置 Material.CUSTOM 使用的自定义着色器。
+     * 传 null 恢复默认（COLOR）。
+     */
+    public void setCustomShader(ShaderProgram program) {
+        this.customShader = program;
+    }
+
+    /**
      * 提交并绘制一批已收集的顶点。
      *
      * <p><strong>同一帧内可以被调用任意多次</strong>：帧中途 flush
@@ -552,7 +563,11 @@ public final class RenderBatch implements Disposable {
             if (command.vertexCount() == 0) {
                 continue;
             }
-            ShaderProgram wanted = command.material() == Material.SDF_TEXT ? sdfShader : shader;
+            ShaderProgram wanted = switch (command.material()) {
+                case SDF_TEXT -> sdfShader;
+                case CUSTOM -> customShader != null ? customShader : shader;
+                default -> shader;
+            };
             if (wanted != current) {
                 current.unuse();
                 wanted.use();

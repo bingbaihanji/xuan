@@ -20,6 +20,18 @@ public interface GLAbstraction extends Disposable {
     int FRAMEBUFFER_COMPLETE = 0x8CD5;
 
     /**
+     * {@code GL_WRITE_ONLY} 的枚举值，供 {@link #bindImageTexture} 的 {@code access} 参数使用。
+     *
+     * <p>与 {@link #FRAMEBUFFER_COMPLETE} 同理放在接口上：调用方不该为了传一个访问模式
+     * 而引入 LWJGL 的常量。
+     *
+     * <p>只给出这一个而不是三个：把纹理以 image 方式绑定后<strong>反过来用</strong>
+     * （绑成 {@code READ_ONLY} 却写它、绑成 {@code WRITE_ONLY} 却读它）在 GL 里是
+     * <strong>未定义行为</strong>，不报错——所以本项目不把另外两个值摆出来当选项。
+     */
+    int IMAGE_ACCESS_WRITE_ONLY = 0x88B9;
+
+    /**
      * 初始化 OpenGL 状态。
      */
     void initialize();
@@ -313,6 +325,91 @@ public interface GLAbstraction extends Disposable {
      * @param pixels  数据，长度必须为 {@code width * height}，按行存储
      */
     void uploadR8SubImage(int texture, int x, int y, int width, int height, byte[] pixels);
+
+    /**
+     * 创建一张 {@code GL_RGB565} 纹理（内容未初始化），用于模拟器等高频更新场景。
+     *
+     * <p>RGB_565 是 16-bit 5:6:5 格式，GB/GBA 模拟器的默认输出。
+     * 直接用此格式可避免 CPU 侧转 ARGB。
+     *
+     * @param width  宽度（像素）
+     * @param height 高度（像素）
+     * @return 纹理 ID
+     */
+    int createRgb565Texture(int width, int height);
+
+    /**
+     * 用 RGB_565 数据更新纹理的指定矩形区域（{@code glTexSubImage2D}）。
+     *
+     * @param texture 纹理 ID
+     * @param pixels  direct ByteBuffer，内容为 RGB_565（每像素 2 字节）
+     */
+    void uploadRgb565SubImage(int texture, int x, int y, int width, int height, ByteBuffer pixels);
+
+    /**
+     * 用 {@code 0xAARRGGBB} 数据更新纹理的指定矩形区域（{@code glTexSubImage2D}）。
+     *
+     * <p>与 {@link #uploadRgb565SubImage} 不同，此方法会把 ARGB 转成 RGBA 字节序。
+     *
+     * @param texture 纹理 ID
+     * @param pixels  像素数据，长度必须等于 {@code width * height}
+     */
+    void uploadArgbSubImage(int texture, int x, int y, int width, int height, int[] pixels);
+
+    /**
+     * 创建一张可被 compute 着色器以 image 方式写入的纹理（{@code GL_RGBA8}）。
+     *
+     * <p>与 {@link #createTexture} 只差用途：那个接收 CPU 侧已经有的像素，这个的
+     * <strong>内容由 {@code imageStore} 填</strong>，创建时是未初始化的。
+     *
+     * <p>过滤固定 {@code GL_NEAREST}：这类纹理的典型内容是"一格一格的"（声谱图的一列
+     * 就是一个时间窗），{@code GL_LINEAR} 会把相邻两列糊在一起——而画面只是"糊了点"，
+     * 不会报错。要平滑过滤就该由调用方另建一张纹理，而不是改这一张的默认值。
+     *
+     * @param width  宽度（像素），必须为正
+     * @param height 高度（像素），必须为正
+     * @return 纹理的 ID
+     * @throws IllegalArgumentException 尺寸非正时（<strong>在创建任何 GL 对象之前</strong>抛出）
+     */
+    int createImageTexture(int width, int height);
+
+    /**
+     * 把一张纹理绑到某个 image unit（{@code glBindImageTexture}）。
+     *
+     * <p>与"绑到纹理单元当采样器用"是<strong>两套独立的命名空间</strong>：同一个 0 号
+     * 可以既是一个 image unit、又是一个纹理单元，互不妨碍。
+     *
+     * <p><strong>写入的可见性不属于本抽象</strong>：compute 写完到别处读走之间仍必须插一次
+     * {@code glMemoryBarrier}（{@code gpu/ComputeShader.memoryBarrier()} 用的是
+     * {@code GL_ALL_BARRIER_BITS}，够用）。漏掉它的表现是<strong>读到旧内容——数值错，
+     * 而不报任何 GL 错误</strong>。
+     *
+     * @param imageUnit image unit 号
+     * @param texture   纹理 ID；<strong>0 表示解绑</strong>
+     * @param access    访问模式，见 {@link #IMAGE_ACCESS_WRITE_ONLY}
+     */
+    void bindImageTexture(int imageUnit, int texture, int access);
+
+    /**
+     * 读回一张纹理的全部像素，像素契约是<strong>与 {@code Gc.drawImage} 相同的
+     * {@code 0xAARRGGBB}</strong>。
+     *
+     * <p>存在的理由是"要让 compute 写了什么看得见"：{@code imageStore} 的结果没有任何
+     * 其它观测口，而校验器只能比像素。上传方向（{@link #createTexture}）与回读方向
+     * 必须是同一个字节序——本仓库为"同一份契约、两份实现"付过代价
+     * （{@code gl/Texture} 里那份独立拷贝把 RGB 写成了 BGR，没有任何东西发现它，
+     * 该文件已于 2026-10-09 删除）。
+     *
+     * <p>行序是 GL 约定（自下而上，第 0 行是纹理坐标系里最下面那一行），
+     * 与 {@link #readUnsignedIntPixels} 一致：调用方要用"原点左上"的口径时自己翻。
+     *
+     * @param texture 纹理 ID
+     * @param width   宽度（像素），必须为正
+     * @param height  高度（像素），必须为正
+     * @param outArgb 结果，长度至少为 {@code width * height}
+     * @throws IllegalArgumentException 尺寸非正或数组装不下时
+     */
+    void readTextureImage(int texture, int width, int height, int[] outArgb);
 
     /**
      * 创建帧缓冲对象（FBO）。

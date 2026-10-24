@@ -63,17 +63,19 @@ import java.util.function.Consumer;
  * 发号成本与点数无关——一条百万点的曲线也只注册一个 ID。
  *
  * <h2>不支持的图型明确报错</h2>
- * <p>热力图与瀑布图（{@code polylineFamily() == false}）本期没有渲染器。
- * 遇到这些<b>抛异常</b>——静默不画是本项目最典型的静默错误输出：
- * 画面里少一张图，与"这张图没数据"在视觉上完全一样。
+ * <p>热力图（{@code HEATMAP}）本期没有渲染器；遇到它<b>抛异常</b>——静默不画是本项目
+ * 最典型的静默错误输出：画面里少一张图，与"这张图没数据"在视觉上完全一样。
+ * 瀑布图（{@code WATERFALL}）已于声谱图那一步接上渲染器（{@link SpectrogramRenderer}）。
  *
- * <p>本期已实现的图型有七种：{@link ChartType#LINE} 与
+ * <p>本期已实现的图型有八种：{@link ChartType#LINE} 与
  * {@link ChartType#LINE_AND_MARKERS}（折线渲染器；后者是折线 + 标记点，
  * 标记点那一半复用散点渲染器的几何）、
  * {@link ChartType#SCATTER}（散点渲染器）、{@link ChartType#STEP}（阶梯）、
- * {@link ChartType#AREA}（面积：填充 + 轮廓线）、{@link ChartType#BAR}（柱状）
- * 以及 {@link ChartType#SPECTRUM}（{@link SpectrumSeriesRenderer}——它的顶点由
- * GPU 上的 FFT 算出，因此不是折线族，见 {@link #rendererFor} 里那条必须走在前面的例外）。
+ * {@link ChartType#AREA}（面积：填充 + 轮廓线）、{@link ChartType#BAR}（柱状）、
+ * {@link ChartType#SPECTRUM}（{@link SpectrumSeriesRenderer}——它的顶点由
+ * GPU 上的 FFT 算出，因此不是折线族，见 {@link #rendererFor} 里那条必须走在前面的例外）
+ * 以及 {@link ChartType#WATERFALL}（{@link SpectrogramRenderer}——顶点是一整块
+ * 按频谱上色的矩形，同样不是折线族）。
  *
  * <h2>柱状图的并排分组在这里算</h2>
  * <p>{@code SeriesRenderer.render} 只拿得到自己那一个系列，<b>看不到兄弟系列</b>，
@@ -148,6 +150,14 @@ public final class ChartRenderer implements Disposable {
      * （见 {@link SpectrumSeriesRenderer} 的字段说明），因为核的环容量在构造时就定死了。
      */
     private final SpectrumSeriesRenderer spectrumRenderer;
+
+    /**
+     * 声谱图渲染器，全局一个。
+     *
+     * <p>它是唯一一个<b>持有常驻纹理</b>的渲染器：声谱图的每一列写一次就不再变，
+     * 纹理要跨帧留着（见 {@link SpectrogramRenderer} 的类文档）。它的状态逐系列持有。
+     */
+    private final SpectrogramRenderer spectrogramRenderer;
 
     /**
      * 着色器程序：{@code {折线, 散点, 阶梯, 面积, 柱状} × {绘制, 拾取}}。
@@ -307,6 +317,7 @@ public final class ChartRenderer implements Disposable {
         this.stepRenderer = new StepSeriesRenderer(gl);
         this.barRenderer = new BarSeriesRenderer(gl);
         this.spectrumRenderer = new SpectrumSeriesRenderer(gl);
+        this.spectrogramRenderer = new SpectrogramRenderer(gl);
     }
 
     private static void drawTooltip(ChartPainter painter,
@@ -560,14 +571,22 @@ public final class ChartRenderer implements Disposable {
         // 实测：ChartVerifier 新增的"多路频谱"一节（两条同组系列）第一次跑就撞上它。
         // bufferFor 是懒创建 + 缓存，所以主循环再调拿到的是同一个对象。
         List<Series> spectrumSeries = new ArrayList<>();
+        List<Series> waterfallSeries = new ArrayList<>();
         for (Layer layer : chart.layers()) {
             for (Series s : layer.series()) {
                 if (s.type() == ChartType.SPECTRUM) {
                     spectrumSeries.add(s);
+                } else if (s.type() == ChartType.WATERFALL) {
+                    waterfallSeries.add(s);
                 }
             }
         }
         spectrumRenderer.prepareFrame(spectrumSeries, this::bufferFor);
+        // 声谱图那一份预扫只做一件事：丢掉本帧不在图里的系列的时间轴状态（连同它那张
+        // 常驻纹理）。状态按 Series 的**对象身份**索引，而"每帧重建 Chart"是最自然的写法
+        // ——没有这次清扫，那种写法会每帧新建一张纹理与一个 compute program 且永不释放。
+        // 本类不管那些资源（它们归 SpectrogramRenderer），所以只能把"本帧活着的"告诉它。
+        spectrogramRenderer.prepareFrame(waterfallSeries);
 
         for (Layer layer : chart.layers()) {
             int barCount = requireSameBarGaps(layer);
@@ -808,6 +827,24 @@ public final class ChartRenderer implements Disposable {
     }
 
     /**
+     * 声谱图（{@link ChartType#WATERFALL}）因一帧上限而<b>被丢弃的 hop 总数</b>，单调递增。
+     *
+     * <h2>它为什么存在</h2>
+     * <p>丢 hop 与"FFT 算错了"在画面上是同一类症状（谱的形状不太对、时间轴好像跳了一下），
+     * 两者都<b>不报错</b>，而它们是完全不同的事。没有这个读数，"时间轴跳了"只能靠眼睛猜。
+     * 与 {@link #takeUploadedBytes} / {@link #cachedBufferCount} 一样，它是
+     * <b>为一个断言而存在的观测口</b>，生产代码不该依赖它；它只是
+     * {@link SpectrogramRenderer#droppedHops()} 的透传。
+     *
+     * <p>本类持有的是<b>唯一那个</b>声谱图渲染器，所以这个计数是全部声谱图系列之和。
+     *
+     * @return 丢弃的 hop 总数；从没画过声谱图时为 0
+     */
+    public long droppedHops() {
+        return spectrogramRenderer.droppedHops();
+    }
+
+    /**
      * 图型 → 渲染器。不支持的图型明确抛异常，不静默不画。
      *
      * <h2>它是"哪些图型归谁"的唯一判断处</h2>
@@ -857,8 +894,16 @@ public final class ChartRenderer implements Disposable {
         if (type == ChartType.SPECTRUM) {
             return spectrumRenderer;
         }
-        // 剩下的是热力图与瀑布图：它们的顶点不是"每个样本一个点"，而是
-        // "每个像素列一个直方图"之类，需要各自的独立渲染器（见 ChartType 的类文档）。
+        if (type == ChartType.WATERFALL) {
+            // 声谱图（时间 × 频率 × 颜色）：顶点不是"每个样本一个点"，而是一整块按
+            // 频谱上色的矩形，所以它有自己的渲染器。数据模型不变——它照样收一个
+            // 时域样本的环，FFT 与彩色化都在渲染器内部（见 SpectrogramRenderer 的类文档）。
+            return spectrogramRenderer;
+        }
+        // 剩下的是热力图：它的顶点不是"每个样本一个点"，而是"每个像素列一个直方图"之类，
+        // 需要它自己的独立渲染器（见 ChartType 的类文档）。水瀑布图（WATERFALL）已于
+        // 声谱图那一步接上渲染器，从这里摘出去了——**这是唯一被摘掉的图型**，
+        // 别顺手把 HEATMAP 也摘掉：它没有渲染器，静默不画才是更坏的结果。
         throw new UnsupportedOperationException(
                 "图型 " + type + " 本期还没有渲染器（它的顶点不是\"每个样本一个点\"，"
                         + "要一个独立的渲染器）。明确报错而不是静默不画："
@@ -892,6 +937,7 @@ public final class ChartRenderer implements Disposable {
         areaRenderer.dispose();
         barRenderer.dispose();
         spectrumRenderer.dispose();
+        spectrogramRenderer.dispose();
         lineShader.dispose();
         pickShader.dispose();
         scatterShader.dispose();

@@ -25,5 +25,13 @@ public enum Material {
      * <p>0 = 远在字形外，128 = 边界，255 = 远在字形内。片段着色器用屏幕空间的
      * 导数（{@code fwidth}）把边缘重新求一遍，因此同一个字形在任意字号下都清晰。
      */
-    SDF_TEXT
+    SDF_TEXT,
+
+    /**
+     * 自定义着色器：由调用方提供 ShaderProgram，用于 CRT/LCD 等后处理效果。
+     *
+     * <p>使用时需先通过 {@code Gc.setCustomShader(ShaderProgram)} 设置着色器。
+     * 未设置时退化为 {@link #COLOR}。
+     */
+    CUSTOM
 }

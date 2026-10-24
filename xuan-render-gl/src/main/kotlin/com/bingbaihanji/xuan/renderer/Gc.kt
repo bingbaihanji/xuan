@@ -990,6 +990,52 @@ class Gc constructor(private val batch: RenderBatch) {
     }
 
     /**
+     * 绘制可更新纹理（DynamicImage），可选自定义着色器。
+     *
+     * @param image  可更新纹理
+     * @param dx     目标矩形左上角 x（用户坐标）
+     * @param dy     目标矩形左上角 y（用户坐标）
+     * @param dw     目标矩形宽度；≤ 0 时什么都不画
+     * @param dh     目标矩形高度；同上
+     */
+    fun drawDynamicImage(image: DynamicImage, dx: Float, dy: Float, dw: Float, dh: Float) {
+        require(dx.isFinite() && dy.isFinite() && dw.isFinite() && dh.isFinite()) {
+            "drawDynamicImage 的目标矩形必须是有限数：dx=$dx dy=$dy dw=$dw dh=$dh"
+        }
+        if (dw <= 0f || dh <= 0f) return
+        flushIfNeeded()
+        syncState(image.textureId(), Material.COLOR)
+        emitImageQuad(dx, dy, dw, dh)
+    }
+
+    /**
+     * 绘制可更新纹理，使用自定义着色器（CRT/LCD 等后处理）。
+     *
+     * <p>绘制前会把 shader 设为 RenderBatch 的 customShader，绘制后恢复。
+     */
+    fun drawDynamicImage(
+        image: DynamicImage, dx: Float, dy: Float, dw: Float, dh: Float,
+        shader: com.bingbaihanji.xuan.gl.ShaderProgram
+    ) {
+        require(dx.isFinite() && dy.isFinite() && dw.isFinite() && dh.isFinite()) {
+            "drawDynamicImage 的目标矩形必须是有限数：dx=$dx dy=$dy dw=$dw dh=$dh"
+        }
+        if (dw <= 0f || dh <= 0f) return
+        flushIfNeeded()
+        batch.setCustomShader(shader)
+        syncState(image.textureId(), Material.CUSTOM)
+        emitImageQuad(dx, dy, dw, dh)
+    }
+
+    /**
+     * 设置 Material.CUSTOM 使用的全局自定义着色器。
+     * 传 null 恢复默认。
+     */
+    fun setCustomShader(shader: com.bingbaihanji.xuan.gl.ShaderProgram?) {
+        batch.setCustomShader(shader)
+    }
+
+    /**
      * 发射图片的那个四边形
      *
      * <h2>★ UV 的两个角决定图像正不正</h2>

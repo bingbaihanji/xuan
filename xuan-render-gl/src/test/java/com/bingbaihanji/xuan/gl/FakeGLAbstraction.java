@@ -214,6 +214,21 @@ public final class FakeGLAbstraction implements GLAbstraction {
     }
 
     @Override
+    public int createRgb565Texture(int width, int height) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void uploadRgb565SubImage(int texture, int x, int y, int width, int height, java.nio.ByteBuffer pixels) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void uploadArgbSubImage(int texture, int x, int y, int width, int height, int[] pixels) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public void attachTextureToColor0(int texture) {
         // 假实现不做附件检查，完整性由 statusToReturn 单独控制
     }
@@ -465,6 +480,19 @@ public final class FakeGLAbstraction implements GLAbstraction {
     @Override
     public void drawArraysInstancedBaseInstance(int mode, int first, int count,
                                                 int instanceCount, int baseInstance) {throw new UnsupportedOperationException();}
+
+    // image 写入一组（compute 写纹理）。**一个都不放开**：SpectrogramKernel 的单测只测它
+    // 生成的着色器字符串（构造它要真 GL 上下文，ComputeShader 直通 LWJGL），所以这一组
+    // 当前零消费者。"写进去的像素对不对"归真上下文那支校验器（读回纹理再比像素），
+    // 那正是 readTextureImage 存在的理由。后面哪个任务真的需要，那时再放开那一个。
+    @Override
+    public int createImageTexture(int width, int height) {throw new UnsupportedOperationException();}
+
+    @Override
+    public void bindImageTexture(int imageUnit, int texture, int access) {throw new UnsupportedOperationException();}
+
+    @Override
+    public void readTextureImage(int texture, int width, int height, int[] outArgb) {throw new UnsupportedOperationException();}
 
     // SSBO 一组（compute 用）。**一个都不放开**：当前没有任何单测会碰它们
     // （D-③-1 的下一个任务是纯算术，再往后的都要真 GL 上下文）。每多放开一个方法，

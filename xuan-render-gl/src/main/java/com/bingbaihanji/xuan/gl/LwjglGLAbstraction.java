@@ -357,6 +357,137 @@ public class LwjglGLAbstraction implements GLAbstraction {
     }
 
     @Override
+    public int createRgb565Texture(int width, int height) {
+        int texture = GL11.glGenTextures();
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
+        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGB, width, height, 0,
+                GL12.GL_RGB, GL12.GL_UNSIGNED_SHORT_5_6_5, (ByteBuffer) null);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+        return texture;
+    }
+
+    @Override
+    public void uploadRgb565SubImage(int texture, int x, int y, int width, int height, ByteBuffer pixels) {
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+        // RGB_565 每像素 2 字节，每行可能不是 4 字节对齐
+        GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 2);
+        try {
+            GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, x, y, width, height,
+                    GL12.GL_RGB, GL12.GL_UNSIGNED_SHORT_5_6_5, pixels);
+        } finally {
+            GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 4);
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+        }
+    }
+
+    @Override
+    public void uploadArgbSubImage(int texture, int x, int y, int width, int height, int[] pixels) {
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+        try {
+            ByteBuffer buf = argbToRgba(width, height, pixels);
+            GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, x, y, width, height,
+                    GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, buf);
+        } finally {
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+        }
+    }
+
+    /**
+     * 校验 image 纹理的尺寸，由 {@link #createImageTexture} 与 {@link #readTextureImage}
+     * <strong>共用一个说法</strong>。
+     *
+     * <p>包级可见且不碰 GL，<strong>专为可测</strong>——理由与 {@link #allocateReadBuffer}
+     * 完全相同：真正那两个方法需要 GL 上下文，在单测里调用会让 JVM 直接 abort。
+     */
+    static void requirePositiveImageSize(int width, int height) {
+        if (width <= 0 || height <= 0) {
+            throw new IllegalArgumentException("纹理尺寸必须为正数：" + width + "x" + height);
+        }
+    }
+
+    /**
+     * 把 {@code GL_BGRA} 读回来的字节重新解释成 {@code 0xAARRGGBB} 整数。
+     *
+     * <p>它是 {@link #argbToRgba} 的<strong>另一个方向</strong>，而之所以不必再写第二份通道
+     * 映射，就在读回格式取的是 {@code GL_BGRA}：内存里依次是 B,G,R,A 四个字节，正好与
+     * {@code 0xAARRGGBB} 在小端机上的内存表示逐字节相同，于是 {@code asIntBuffer()} 出来
+     * 就是 {@code 0xAARRGGBB}——<strong>全仓的通道映射仍然只有 argbToRgba 那一份</strong>。
+     *
+     * <p>反面就是 {@code GL_RGBA} 读：那会得到 R,G,B,A 的顺序，必须再写一次
+     * {@code r/g/b/a} 的提取，正是本仓库刚删掉的那类"同一份契约、两份实现"。
+     *
+     * <p>依赖本机小端字节序这一件事照实说（大端机上要换成显式的重排）：同文件里的
+     * {@link #readUnsignedIntPixelFromPixelPackBuffer} 用的是同一条路
+     * （{@code byteBuffer.order(nativeOrder()).getInt(0)}）。本项目当前是 Windows 专用。
+     */
+    static void bgraToArgb(ByteBuffer bgra, int pixels, int[] out) {
+        if (bgra == null || bgra.remaining() < pixels * 4) {
+            throw new IllegalArgumentException(
+                    "BGRA 缓冲至少要能装下 " + pixels + " 个像素（每像素 4 字节），实际剩余 "
+                            + (bgra == null ? 0 : bgra.remaining()) + " 字节");
+        }
+        if (out == null || out.length < pixels) {
+            throw new IllegalArgumentException(
+                    "输出数组至少要能装下 " + pixels + " 个像素，实际 "
+                            + (out == null ? 0 : out.length));
+        }
+        bgra.order(ByteOrder.nativeOrder()).asIntBuffer().get(out, 0, pixels);
+    }
+
+    @Override
+    public int createImageTexture(int width, int height) {
+        // 校验先于 glGenTextures：尺寸不合法时异常在创建任何 GL 对象之前抛出，
+        // 不会留下一个没人删得掉的名字（Disposable 契约第 3 条）。
+        requirePositiveImageSize(width, height);
+        int texture = GL11.glGenTextures();
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+        // NEAREST 而不是 LINEAR：这张纹理的每一列是一个独立的时间窗，列与列之间是真边界。
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
+        // CLAMP_TO_EDGE 而不是默认的 REPEAT：环形映射由调用方在 UV 上做，
+        // uv 取到 1.0 时不该绕回另一侧采到边缘的反面像素。
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
+        // 内容不传：由 compute 的 imageStore 填。
+        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA8, width, height, 0,
+                GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, (ByteBuffer) null);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+        return texture;
+    }
+
+    @Override
+    public void bindImageTexture(int imageUnit, int texture, int access) {
+        // level / layered / layer 固定 0/false/0：本项目只用第 0 级、不是数组纹理。
+        // 格式固定 GL_RGBA8，与 createImageTexture 建出来的那张一致；纹理为 0 时 GL 不看它。
+        GL42.glBindImageTexture(imageUnit, texture, 0, false, 0, access, GL11.GL_RGBA8);
+    }
+
+    @Override
+    public void readTextureImage(int texture, int width, int height, int[] outArgb) {
+        requirePositiveImageSize(width, height);
+        // 有像素包缓冲绑着时 glGetTexImage 会把像素写进那个缓冲而不是 out，
+        // 于是 out 一个字节都没动过——不报错、全是 0。临时解绑，事后再还原
+        // （与 enqueueUnsignedIntPixelRead 同一条口径）。
+        int previousPack = GL11.glGetInteger(GL21.GL_PIXEL_PACK_BUFFER_BINDING);
+        GL15.glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, 0);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+        try {
+            // 不能用 MemoryStack（64 KB 上限，见 allocateReadBuffer）。用 GL_BGRA 读，
+            // 于是小端机上 asIntBuffer() 直接就是 0xAARRGGBB，见 bgraToArgb。
+            ByteBuffer pixels = BufferUtils.createByteBuffer(width * height * 4);
+            GL11.glGetTexImage(GL11.GL_TEXTURE_2D, 0, GL12.GL_BGRA, GL11.GL_UNSIGNED_BYTE, pixels);
+            bgraToArgb(pixels, width * height, outArgb);
+        } finally {
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+            GL15.glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, previousPack);
+        }
+    }
+
+    @Override
     public int createFramebuffer() {
         return GL30.glGenFramebuffers();
     }

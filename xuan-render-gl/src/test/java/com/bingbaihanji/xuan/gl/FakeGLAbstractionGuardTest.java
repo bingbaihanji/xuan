@@ -50,6 +50,10 @@ class FakeGLAbstractionGuardTest {
             "enableBlend()", "disableBlend()", "setBlendFunc(int,int)",
             "createShader(String,String)", "createTexture(int,int,int[])",
             "setVertexAttribDivisor(int,int)", "drawArraysInstancedBaseInstance(int,int,int,int,int)",
+            // image 写入一组（compute 写纹理）：现无单测会碰（SpectrogramKernel 的单测
+            // 只测着色器字符串，构造它要真 GL 上下文），按"按需放开"纪律一个都不放开
+            "createImageTexture(int,int)", "bindImageTexture(int,int,int)",
+            "readTextureImage(int,int,int,int[])",
             // SSBO 一组（compute 用）：现无单测会碰，按"按需放开"纪律一个都不放开
             "createBuffer()", "bindShaderStorageBuffer(int)",
             "allocateBufferStorage(long)", "uploadBufferSubData(long,ByteBuffer)",
