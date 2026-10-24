@@ -514,6 +514,22 @@ public final class RenderBatch implements Disposable {
     }
 
     /**
+     * 用**标准图像顶点着色器** + 自定义片段着色器创建程序。
+     *
+     * <p>{@link #setCustomShader} 换上的整个程序必须接受与本批处理相同的顶点布局
+     * （位置/UV/颜色/ID/边距），否则属性指针与着色器对不上，画面要么全黑要么串位。
+     * 应用层不该自己拼顶点着色器，所以这里把它作为唯一入口开放出来。
+     *
+     * <p>必须在 GL 线程调用。
+     *
+     * @param fragmentSource 片段着色器源码（GLSL 330 core）
+     * @return 编译好的程序；编译失败时抛 {@link RuntimeException}
+     */
+    public ShaderProgram createImageShader(String fragmentSource) {
+        return gl.createShader(VERTEX_SHADER, fragmentSource);
+    }
+
+    /**
      * 提交并绘制一批已收集的顶点。
      *
      * <p><strong>同一帧内可以被调用任意多次</strong>：帧中途 flush

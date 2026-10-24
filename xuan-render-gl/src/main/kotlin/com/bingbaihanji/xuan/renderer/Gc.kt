@@ -990,13 +990,41 @@ class Gc constructor(private val batch: RenderBatch) {
     }
 
     /**
-     * 绘制可更新纹理（DynamicImage），可选自定义着色器。
+     * 创建可更新纹理（DynamicImage），用于模拟器/视频等每帧刷新的数据。
      *
-     * @param image  可更新纹理
-     * @param dx     目标矩形左上角 x（用户坐标）
-     * @param dy     目标矩形左上角 y（用户坐标）
-     * @param dw     目标矩形宽度；≤ 0 时什么都不画
-     * @param dh     目标矩形高度；同上
+     * <p>与 [createImage] 的区别：DynamicImage 直接持有 GL 纹理名，
+     * 通过 `glTexSubImage2D` 增量更新，不会因为像素数组换了对象就重新分配纹理。
+     *
+     * <p>**必须在 GL 线程调用**，用完调用 `dispose()`（同样要在 GL 线程）。
+     *
+     * @param width  纹理宽度（像素）
+     * @param height 纹理高度（像素）
+     * @param format 像素格式
+     * @return 可更新纹理
+     */
+    fun createDynamicImage(width: Int, height: Int, format: DynamicImage.PixelFormat): DynamicImage =
+        DynamicImage(batch.glAbstraction(), width, height, format)
+
+    /**
+     * 用标准图像顶点着色器 + 自定义片段着色器创建程序。
+     *
+     * <p>片段着色器里可用的输入：`vUV`、`vColor`；`uTex` 绑定当前纹理。
+     * **必须在 GL 线程调用。**
+     *
+     * @param fragmentSource 片段着色器源码（GLSL 330 core）
+     * @return 着色器程序
+     */
+    fun createImageShader(fragmentSource: String): com.bingbaihanji.xuan.gl.ShaderProgram =
+        batch.createImageShader(fragmentSource)
+
+    /**
+     * 按原始像素尺寸绘制可更新纹理。
+     *
+     * @param image 可更新纹理
+     * @param dx    目标矩形左上角 x（用户坐标）
+     * @param dy    目标矩形左上角 y（用户坐标）
+     * @param dw    目标矩形宽度；≤ 0 时什么都不画
+     * @param dh    目标矩形高度；同上
      */
     fun drawDynamicImage(image: DynamicImage, dx: Float, dy: Float, dw: Float, dh: Float) {
         require(dx.isFinite() && dy.isFinite() && dw.isFinite() && dh.isFinite()) {
